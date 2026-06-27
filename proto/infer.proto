@@ -1,0 +1,20 @@
+syntax = "proto3";
+
+package myflows;
+
+// 图像推理服务：输入 RGB 原始字节，输出模型 logits 或控制量
+service InferService {
+  rpc Predict(PredictRequest) returns (PredictResponse);
+}
+
+message PredictRequest {
+  bytes image_rgb = 1;   // 行优先 RGB，长度 = width * height * 3
+  int32 width = 2;
+  int32 height = 3;
+  int32 channels = 4;    // 默认 3
+}
+
+message PredictResponse {
+  repeated float outputs = 1;
+  string model_type = 2; // regression | classification
+}

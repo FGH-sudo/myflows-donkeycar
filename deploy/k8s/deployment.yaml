@@ -1,0 +1,39 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: myflows-infer
+  labels:
+    app: myflows-infer
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: myflows-infer
+  template:
+    metadata:
+      labels:
+        app: myflows-infer
+    spec:
+      containers:
+        - name: infer
+          image: myflows-infer:latest
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: SERVE_MODE
+              value: grpc
+            - name: MODEL_PATH
+              value: /models/model.onnx
+            - name: PORT
+              value: "50051"
+          ports:
+            - containerPort: 50051
+              name: grpc
+          volumeMounts:
+            - name: models
+              mountPath: /models
+              readOnly: true
+      volumes:
+        - name: models
+          hostPath:
+            path: /path/to/mycar/models
+            type: Directory

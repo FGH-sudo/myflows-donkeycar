@@ -1,0 +1,3 @@
+tensorflow==2.15.1
+psutil>=5.9.0
+matplotlib>=3.7.0

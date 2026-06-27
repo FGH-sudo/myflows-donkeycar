@@ -1,0 +1,69 @@
+# Python caches
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Local environments and secrets
+.venv/
+venv/
+env/
+ENV/
+.env
+.env.*
+
+# IDE and OS files
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Local Codex/agent state
+.codex/
+.agents/
+
+# DonkeyCar runtime data and large external assets
+DonkeySimWin/
+mycar/data/
+mycar/generated-road-data/
+mycar/logs/
+mycar/models/
+
+# Training, model, and experiment outputs
+*.log
+*.onnx
+*.npz
+*.h5
+*.pt
+*.pth
+*.ckpt
+*.pb
+benchmark/results.csv
+docs/experiments/**/*.png
+docs/experiments/**/*.jpg
+docs/experiments/**/*.jpeg
+docs/experiments/**/*.json
+docs/experiments/**/*.csv
+
+# TensorBoard and profiling artifacts
+events.out.tfevents*
+profile/
+wandb/
+runs/
+
+# Build and package artifacts
+build/
+dist/
+*.egg-info/
+
+# Worktree scratch directories
+.worktrees/
+worktrees/
+
+# Keep MyFlows/ visible to Git as its existing nested repository/submodule entry.
+# Do not add a broad MyFlows/ ignore rule here.

@@ -1,0 +1,8 @@
+grpcio>=1.60.0
+grpcio-tools>=1.60.0
+onnxruntime>=1.16.0
+onnx>=1.14.0
+fastapi>=0.110.0
+uvicorn[standard]>=0.27.0
+python-multipart>=0.0.9
+opencv-python-headless>=4.8.0

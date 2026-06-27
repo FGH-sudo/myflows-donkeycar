@@ -1,0 +1,26 @@
+services:
+  infer-grpc:
+    build:
+      context: ../..
+      dockerfile: deploy/docker/Dockerfile
+    environment:
+      SERVE_MODE: grpc
+      MODEL_PATH: /models/model.onnx
+      PORT: "50051"
+    volumes:
+      - ../../mycar/models:/models:ro
+    ports:
+      - "50051:50051"
+
+  infer-fastapi:
+    build:
+      context: ../..
+      dockerfile: deploy/docker/Dockerfile
+    environment:
+      SERVE_MODE: fastapi
+      MODEL_PATH: /models/model.onnx
+      FASTAPI_PORT: "8000"
+    volumes:
+      - ../../mycar/models:/models:ro
+    ports:
+      - "8000:8000"
