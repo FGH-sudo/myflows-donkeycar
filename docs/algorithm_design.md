@@ -22,9 +22,9 @@ DonkeyCar 样本索引和图像预处理由 `apps/common/donkey_data.py`、`apps
 
 Batch 级 MixUp/CutMix 在 `apply_batch_pairwise_mix` 中随机配对。
 
-## 3. 角度离散分类（VGG）
+## 3. VGG 图像回归
 
-连续 `angle∈[-1,1]` 映射为 K 类（默认 5 档），见 `layers/vgg.py` `angle_to_class`。损失：`CrossEntropy`。
+VGG11 直接输出 `[angle, throttle]` 两维控制量，与 ResNet 回归任务保持同一标签口径。损失：`MSELoss`。
 
 ## 4. 计算图优化（拓展 3）
 
@@ -56,7 +56,7 @@ b' = (b - μ) · γ/√(σ²+ε) + β
 - **动态量化**：`quantize_onnx_dynamic`，权 INT8、激活 FP32
 - **静态量化**：`quantize_onnx_static` + `scripts/calibration_reader.py`（复用公共图像预处理）
 
-对比脚本：`scripts/run_quantize_eval.py` → `docs/experiments/int8_report.md`
+对比脚本：`scripts/run_quantize_eval.py` 复用 `apps.common` 的 DonkeyCar 数据索引、`train/val/test` split 和固定油门配置，统一输出 FP32、动态 INT8、静态 INT8 的 angle/throttle/overall MSE、方向符号准确率、单帧延迟、P99 和模型体积。正式结果写入 `docs/experiments/int8_report.md`、`docs/experiments/int8_report.png`、`docs/experiments/int8_metrics.json`。
 
 ## 5.1 模型保存与导出分层
 
@@ -75,7 +75,7 @@ b' = (b - μ) · γ/√(σ²+ε) + β
 
 ## 7. 跨框架 Benchmark
 
-`benchmark/compare_frameworks.py`：合成小 CNN，对比 MyFlows / PyTorch / TensorFlow 训练耗时与峰值内存；`benchmark/plot_compare.py` 出图。
+`benchmark/compare_frameworks.py`：读取 DonkeyCar 图像回归子集，对比 MyFlows / PyTorch / PaddlePaddle 的 VGG11 训练耗时与峰值内存；`benchmark/plot_compare.py` 出图。
 
 ## 8. 生产者-消费者数据流水线（拓展 4）
 

@@ -1,19 +1,15 @@
-# FP32 vs INT8 推理对比报告（未生成）
+# FP32 vs INT8 Inference Report
 
-> 当前文件是占位说明，不包含真实实验结果。运行 `scripts/run_quantize_eval.py` 后会被自动覆盖：
+- Data: `D:\DL\testmyflow\mycar\data`
+- Split: `test` via `D:\DL\testmyflow\mycar\logs\resnet18_split.json`
+- Samples: 1000
+- FP32 model: `D:\DL\testmyflow\mycar\models\myflow_resnet18_best.onnx`
 
-```bash
-python scripts/run_quantize_eval.py --fp32 mycar/models/myflow_resnet18_best.onnx --max-samples 500 --device auto
-```
+| Variant | angle MSE | throttle MSE | overall MSE | angle sign acc | mean latency (ms) | P99 (ms) | size (MB) |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| fp32 | 0.001698 | 0.000399 | 0.001048 | 0.9470 | 3.50 | 4.51 | 42.679 |
+| int8_dynamic | 0.001529 | 0.000451 | 0.000990 | 0.9590 | 397.14 | 519.95 | 10.767 |
+| int8_static | 0.004257 | 0.015295 | 0.009776 | 0.8480 | 5.29 | 7.24 | 10.772 |
 
-## 指标说明
-
-| 列 | 含义 |
-|----|------|
-| MSE | 转向角回归均方误差 |
-| 符号准确率 | `angle_sign_accuracy` |
-| 平均延迟 | 单张 ONNX Runtime 推理 ms |
-| P99 | 延迟 99 分位 |
-| 体积 | 模型文件 MB |
-
-运行后将覆盖本文件并生成 `int8_metrics.json`。
+- Raw JSON: `D:\DL\testmyflow\docs\experiments\int8_metrics.json`
+- Plot: `D:\DL\testmyflow\docs\experiments\int8_report.png`

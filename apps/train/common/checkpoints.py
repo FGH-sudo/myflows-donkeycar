@@ -24,3 +24,13 @@ def with_run_id(path_str: str, run_id: str) -> str:
     if path.name.endswith(suffix):
         return str(path)
     return str(path.parent / f"{path.name}{suffix}")
+
+
+def checkpoint_score_to_loss(score: float | None) -> float | None:
+    """Return positive regression loss from new loss checkpoints or old -loss ones."""
+    if score is None:
+        return None
+    value = float(score)
+    if value == 0.0:
+        return None
+    return -value if value < 0.0 else value

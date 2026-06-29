@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-在相同合成数据上对比 MyFlows / PyTorch / TensorFlow / Paddle 小 CNN 训练耗时与内存。
+在 DonkeyCar 图像回归子集上对比 MyFlows / PyTorch / PaddlePaddle 的 VGG11 训练耗时与内存。
 
 用法:
-  python benchmark/compare_frameworks.py --epochs 3 --batch 8 --samples 128 --device auto
+  python benchmark/compare_frameworks.py --data mycar/data --samples 64 --epochs 2 --batch 8 --device cuda
 
 依赖（按需安装）:
-  pip install torch tensorflow paddlepaddle psutil
-  pip install cupy-cuda12x   # MyFlows GPU
+  pip install torch psutil matplotlib
+  pip install paddlepaddle-gpu==3.3.1 -i https://www.paddlepaddle.org.cn/packages/stable/cu126/
 """
 from __future__ import annotations
 
@@ -25,20 +25,44 @@ import numpy as np
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-import MyFlows as ms
-from tools.device_runtime import resolve_myflows_device
-from MyFlows.core.graph import Graph
-from MyFlows.core.node import Variable
-from MyFlows.layers.layer import Conv2D, Dense, Flatten, MaxPool2d
-from MyFlows.ops.activation import ReLU
-from MyFlows.ops.loss import CrossEntropy
-from MyFlows.train.opt import Adam
+from apps.common.donkey_data import load_donkey_index
+from apps.common.image_preprocess import imread_nchw, pad_fixed_batch
+from MyFlows.layers.vgg import VGG11, vgg_fc_input_dim
+from tools.device_runtime import myflows_scalar_float, resolve_myflows_device
 
 
-def _synthetic_batch(n: int, h: int = 32, w: int = 32, num_classes: int = 5, seed: int = 0):
-    rng = np.random.default_rng(seed)
-    x = rng.standard_normal((n, 3, h, w), dtype=np.float64) * 0.1
-    y = rng.integers(0, num_classes, size=(n, 1), dtype=np.int64)
+def load_donkey_regression_subset(
+    data_dir: str | Path,
+    *,
+    catalog: str = "catalog_generated.catalog",
+    samples: int = 64,
+    image_h: int = 120,
+    image_w: int = 160,
+    fixed_throttle: float = 0.5,
+    angle_scale: float = 1.0,
+    sample_seed: int | None = 42,
+) -> tuple[np.ndarray, np.ndarray]:
+    """读取轻量 DonkeyCar 回归子集，返回 NCHW 图像和 [angle, throttle] 标签。"""
+    data_path = Path(data_dir)
+    rows = load_donkey_index(data_path, fixed_throttle, angle_scale, catalog)
+    if not rows:
+        raise SystemExit(f"未找到 DonkeyCar 样本: {data_path}")
+
+    if samples and samples > 0 and samples < len(rows):
+        if sample_seed is None:
+            rows = rows[:samples]
+        else:
+            rng = np.random.default_rng(int(sample_seed))
+            indices = rng.choice(len(rows), size=int(samples), replace=False)
+            rows = [rows[int(i)] for i in indices]
+
+    n = len(rows)
+    x = np.zeros((n, 3, int(image_h), int(image_w)), dtype=np.float64)
+    y = np.zeros((n, 2), dtype=np.float64)
+    for i, (rel, angle, throttle) in enumerate(rows):
+        x[i] = imread_nchw(data_path / rel, (int(image_w), int(image_h)), np.float64)[0]
+        y[i, 0] = float(angle)
+        y[i, 1] = float(throttle)
     return x, y
 
 
@@ -53,93 +77,101 @@ def _peak_mb() -> float:
         return 0.0
 
 
-def bench_myflows(x_train, y_train, epochs: int, batch: int, lr: float, device: str) -> dict:
-    resolve_myflows_device(device)
-    B = batch
-    n = x_train.shape[0]
-    steps = (n + B - 1) // B
-    h, w = x_train.shape[2], x_train.shape[3]
-    K = int(y_train.max()) + 1
+def bench_myflows(x_train: np.ndarray, y_train: np.ndarray, epochs: int, batch: int, lr: float, device: str) -> dict:
+    try:
+        import MyFlows as ms
+    except ImportError:
+        return {"framework": "MyFlows", "error": "not installed"}
 
-    x_var = Variable(x_train[:B].copy(), name="X")
-    y_var = Variable(y_train[:B].copy(), name="y")
-    conv = Conv2D(3, 16, 3, padding=1, activation=ReLU)
-    pool = MaxPool2d(2, 2)
-    flat = Flatten()
-    dense1 = Dense(16 * (h // 2) * (w // 2), 32, activation=ReLU)
-    dense2 = Dense(32, K)
-    logits = dense2(dense1(flat(pool(conv(x_var)))))
-    loss = CrossEntropy(logits, y_var)
-    graph = Graph(loss)
-    opt = Adam(graph, learning_rate=lr)
+    try:
+        resolved_device = resolve_myflows_device(device)
+    except Exception as exc:
+        return {"framework": "MyFlows", "error": str(exc)}
+    if device == "cuda" and resolved_device != "cuda":
+        return {"framework": "MyFlows", "error": "cuda unavailable", "device": resolved_device}
+
+    bsz = int(batch)
+    _, _, h, w = x_train.shape
+    x_var = ms.Variable(np.zeros((bsz, 3, h, w), dtype=np.float32), name="X")
+    y_var = ms.Variable(np.zeros((bsz, 2), dtype=np.float32), name="y")
+    model = VGG11(in_channels=3, output_dim=2, image_h=h, image_w=w, name="vgg11_bench")
+    pred = model(x_var)
+    loss_node = ms.MSELoss(pred, y_var, name="loss")
+    graph = ms.Graph(loss_node)
+    opt = ms.Adam(graph, learning_rate=lr)
 
     gc.collect()
-    tracemalloc.start()
     t0 = time.perf_counter()
+    model.train(True)
     for _ in range(epochs):
-        for s in range(steps):
-            sl = slice(s * B, (s + 1) * B)
-            x_var.value = x_train[sl]
-            y_var.value = y_train[sl]
+        for i in range(0, x_train.shape[0], bsz):
+            x_batch = x_train[i : i + bsz].astype(np.float32, copy=False)
+            y_batch = y_train[i : i + bsz].astype(np.float32, copy=False)
+            x_batch, y_batch = pad_fixed_batch(x_batch, y_batch, bsz)
+            x_var.value = x_batch
+            y_var.value = y_batch
             opt.one_step()
             opt.update()
     elapsed = time.perf_counter() - t0
-    peak = _peak_mb()
-    tracemalloc.stop()
-    from tools.device_runtime import myflows_scalar_float
-
     return {
         "framework": "MyFlows",
         "time_s": elapsed,
-        "peak_mb": peak,
-        "final_loss": myflows_scalar_float(loss.value),
+        "peak_mb": _peak_mb(),
+        "final_loss": myflows_scalar_float(loss_node.value),
         "device": ms.get_device(),
     }
 
 
-def bench_pytorch(x_train, y_train, epochs: int, batch: int, lr: float, device: str) -> dict:
+def bench_pytorch(x_train: np.ndarray, y_train: np.ndarray, epochs: int, batch: int, lr: float, device: str) -> dict:
     try:
         import torch
         import torch.nn as nn
     except ImportError:
         return {"framework": "PyTorch", "error": "not installed"}
 
-    if device == "cpu":
-        torch_device = torch.device("cpu")
-    elif device in ("cuda", "gpu", "auto"):
-        torch_device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    else:
-        torch_device = torch.device("cpu")
-    n, _, h, w = x_train.shape
-    K = int(y_train.max()) + 1
+    if device == "cuda" and not torch.cuda.is_available():
+        return {"framework": "PyTorch", "error": "cuda unavailable"}
+    torch_device = torch.device("cuda" if device in ("cuda", "auto") and torch.cuda.is_available() else "cpu")
 
-    class SmallCNN(nn.Module):
+    _, _, h, w = x_train.shape
+
+    class TorchVGG11Regressor(nn.Module):
         def __init__(self):
             super().__init__()
-            self.net = nn.Sequential(
-                nn.Conv2d(3, 16, 3, padding=1),
-                nn.ReLU(),
-                nn.MaxPool2d(2),
+            layers: list[nn.Module] = []
+            in_ch = 3
+            for num_convs, out_ch in ((2, 64), (2, 128), (2, 256), (2, 512), (2, 512)):
+                for _ in range(num_convs):
+                    layers.append(nn.Conv2d(in_ch, out_ch, 3, padding=1))
+                    layers.append(nn.ReLU())
+                    in_ch = out_ch
+                layers.append(nn.MaxPool2d(2, 2))
+            self.features = nn.Sequential(*layers)
+            fc_in = vgg_fc_input_dim(h, w, 512)
+            self.head = nn.Sequential(
                 nn.Flatten(),
-                nn.Linear(16 * (h // 2) * (w // 2), 32),
+                nn.Linear(fc_in, 4096),
                 nn.ReLU(),
-                nn.Linear(32, K),
+                nn.Linear(4096, 4096),
+                nn.ReLU(),
+                nn.Linear(4096, 2),
             )
 
         def forward(self, x):
-            return self.net(x)
+            return self.head(self.features(x))
 
-    model = SmallCNN().to(torch_device)
+    model = TorchVGG11Regressor().to(torch_device)
     opt = torch.optim.Adam(model.parameters(), lr=lr)
-    crit = nn.CrossEntropyLoss()
+    crit = nn.MSELoss()
     xt = torch.from_numpy(x_train.astype(np.float32))
-    yt = torch.from_numpy(y_train.reshape(-1).astype(np.int64))
+    yt = torch.from_numpy(y_train.astype(np.float32))
 
     gc.collect()
     t0 = time.perf_counter()
     model.train()
+    loss = None
     for _ in range(epochs):
-        for i in range(0, n, batch):
+        for i in range(0, x_train.shape[0], batch):
             xb = xt[i : i + batch].to(torch_device)
             yb = yt[i : i + batch].to(torch_device)
             opt.zero_grad()
@@ -147,164 +179,133 @@ def bench_pytorch(x_train, y_train, epochs: int, batch: int, lr: float, device: 
             loss.backward()
             opt.step()
     elapsed = time.perf_counter() - t0
-    with torch.no_grad():
-        final = float(crit(model(xt[:batch].to(torch_device)), yt[:batch]).item())
-    return {
-        "framework": "PyTorch",
-        "time_s": elapsed,
-        "peak_mb": _peak_mb(),
-        "final_loss": final,
-        "device": str(torch_device),
-    }
+    final = float(loss.item()) if loss is not None else 0.0
+    return {"framework": "PyTorch", "time_s": elapsed, "peak_mb": _peak_mb(), "final_loss": final, "device": str(torch_device)}
 
 
-def bench_tensorflow(x_train, y_train, epochs: int, batch: int, lr: float, device: str) -> dict:
-    try:
-        import tensorflow as tf
-    except ImportError:
-        return {"framework": "TensorFlow", "error": "not installed"}
-
-    tf.keras.backend.clear_session()
-    if device in ("cuda", "gpu", "auto"):
-        try:
-            gpus = tf.config.list_physical_devices("GPU")
-            if gpus:
-                for gpu in gpus:
-                    try:
-                        tf.config.experimental.set_memory_growth(gpu, True)
-                    except Exception:
-                        pass
-        except Exception:
-            pass
-    n, _, h, w = x_train.shape
-    K = int(y_train.max()) + 1
-    model = tf.keras.Sequential([
-        tf.keras.layers.Conv2D(16, 3, padding="same", activation="relu", input_shape=(h, w, 3)),
-        tf.keras.layers.MaxPooling2D(2),
-        tf.keras.layers.Flatten(),
-        tf.keras.layers.Dense(32, activation="relu"),
-        tf.keras.layers.Dense(K),
-    ])
-    model.compile(
-        optimizer=tf.keras.optimizers.Adam(learning_rate=lr),
-        loss=tf.keras.losses.SparseCategoricalCrossentropy(from_logits=True),
-    )
-    x_hwc = np.transpose(x_train, (0, 2, 3, 1)).astype(np.float32)
-    y_flat = y_train.reshape(-1).astype(np.int32)
-
-    gc.collect()
-    t0 = time.perf_counter()
-    hist = model.fit(x_hwc, y_flat, epochs=epochs, batch_size=batch, verbose=0)
-    elapsed = time.perf_counter() - t0
-    return {
-        "framework": "TensorFlow",
-        "time_s": elapsed,
-        "peak_mb": _peak_mb(),
-        "final_loss": float(hist.history["loss"][-1]),
-    }
-
-
-def bench_paddle(x_train, y_train, epochs: int, batch: int, lr: float, device: str) -> dict:
+def bench_paddle(x_train: np.ndarray, y_train: np.ndarray, epochs: int, batch: int, lr: float, device: str) -> dict:
     try:
         import paddle
         import paddle.nn as nn
     except ImportError:
-        return {"framework": "Paddle", "error": "not installed"}
+        return {"framework": "PaddlePaddle", "error": "not installed"}
 
+    if device == "cuda" and not paddle.device.is_compiled_with_cuda():
+        return {"framework": "PaddlePaddle", "error": "cuda unavailable"}
     if device == "cpu":
         paddle.set_device("cpu")
-    elif device in ("cuda", "gpu", "auto"):
+    elif device in ("cuda", "auto"):
         paddle.set_device("gpu" if paddle.device.is_compiled_with_cuda() else "cpu")
     else:
         paddle.set_device("cpu")
-    n, _, h, w = x_train.shape
-    K = int(y_train.max()) + 1
+    active_device = paddle.get_device()
 
-    class SmallCNN(nn.Layer):
+    _, _, h, w = x_train.shape
+
+    class PaddleVGG11Regressor(nn.Layer):
         def __init__(self):
             super().__init__()
-            self.conv = nn.Conv2D(3, 16, 3, padding=1)
-            self.pool = nn.MaxPool2D(2, 2)
-            self.fc1 = nn.Linear(16 * (h // 2) * (w // 2), 32)
-            self.fc2 = nn.Linear(32, K)
+            layers = []
+            in_ch = 3
+            for num_convs, out_ch in ((2, 64), (2, 128), (2, 256), (2, 512), (2, 512)):
+                for _ in range(num_convs):
+                    layers.append(nn.Conv2D(in_ch, out_ch, 3, padding=1))
+                    layers.append(nn.ReLU())
+                    in_ch = out_ch
+                layers.append(nn.MaxPool2D(2, 2))
+            self.features = nn.Sequential(*layers)
+            self.fc1 = nn.Linear(vgg_fc_input_dim(h, w, 512), 4096)
+            self.fc2 = nn.Linear(4096, 4096)
+            self.fc3 = nn.Linear(4096, 2)
 
         def forward(self, x):
-            x = paddle.nn.functional.relu(self.conv(x))
-            x = self.pool(x)
+            x = self.features(x)
             x = paddle.flatten(x, 1)
             x = paddle.nn.functional.relu(self.fc1(x))
-            return self.fc2(x)
+            x = paddle.nn.functional.relu(self.fc2(x))
+            return self.fc3(x)
 
-    model = SmallCNN()
+    model = PaddleVGG11Regressor()
     opt = paddle.optimizer.Adam(learning_rate=lr, parameters=model.parameters())
-    crit = nn.CrossEntropyLoss()
+    crit = nn.MSELoss()
     xt = paddle.to_tensor(x_train.astype(np.float32))
-    yt = paddle.to_tensor(y_train.reshape(-1).astype(np.int64))
+    yt = paddle.to_tensor(y_train.astype(np.float32))
 
     gc.collect()
     t0 = time.perf_counter()
     model.train()
+    loss = None
     for _ in range(epochs):
-        for i in range(0, n, batch):
-            logits = model(xt[i : i + batch])
-            loss = crit(logits, yt[i : i + batch])
+        for i in range(0, x_train.shape[0], batch):
+            pred = model(xt[i : i + batch])
+            loss = crit(pred, yt[i : i + batch])
             loss.backward()
             opt.step()
             opt.clear_grad()
     elapsed = time.perf_counter() - t0
-    return {"framework": "Paddle", "time_s": elapsed, "peak_mb": _peak_mb(), "final_loss": float(loss.numpy())}
+    final = float(loss.numpy()) if loss is not None else 0.0
+    return {"framework": "PaddlePaddle", "time_s": elapsed, "peak_mb": _peak_mb(), "final_loss": final, "device": active_device}
 
 
-def estimate_flops_myflows(n, h, w, steps, epochs) -> float:
-    """粗算：一次 step 主要卷积+全连接乘加次数（近似）。"""
-    conv_ops = n * 16 * 3 * 3 * 3 * h * w
-    fc_ops = n * (16 * (h // 2) * (w // 2) * 32 + 32 * 5)
-    return float(conv_ops + fc_ops) * steps * epochs
+BENCHMARK_RUNNERS = (bench_myflows, bench_pytorch, bench_paddle)
 
 
 def main() -> None:
     ap = argparse.ArgumentParser()
+    ap.add_argument("--data", type=str, default="mycar/data")
+    ap.add_argument("--catalog", type=str, default="catalog_generated.catalog")
+    ap.add_argument("--samples", type=int, default=64, help="使用的 DonkeyCar 子集大小；0=全部")
+    ap.add_argument("--sample-seed", type=int, default=42)
+    ap.add_argument("--image-h", type=int, default=120)
+    ap.add_argument("--image-w", type=int, default=160)
+    ap.add_argument("--fixed-throttle", type=float, default=0.5)
+    ap.add_argument("--angle-scale", type=float, default=1.0)
     ap.add_argument("--epochs", type=int, default=2)
     ap.add_argument("--batch", type=int, default=8)
-    ap.add_argument("--samples", type=int, default=64)
-    ap.add_argument("--lr", type=float, default=0.01)
+    ap.add_argument("--lr", type=float, default=0.001)
     ap.add_argument("--out", type=str, default="benchmark/results.csv")
     ap.add_argument(
         "--device",
         type=str,
-        default="auto",
+        default="cuda",
         choices=("auto", "cpu", "cuda"),
-        help="各框架尽量使用 GPU（不可用则回退 CPU）",
+        help="cuda 为严格 GPU 模式；auto 会在可用时使用 GPU，否则回退 CPU",
     )
     args = ap.parse_args()
 
-    x, y = _synthetic_batch(args.samples, seed=42)
-    runners = [bench_myflows, bench_pytorch, bench_tensorflow, bench_paddle]
+    x, y = load_donkey_regression_subset(
+        (ROOT / args.data).resolve(),
+        catalog=args.catalog,
+        samples=args.samples,
+        image_h=args.image_h,
+        image_w=args.image_w,
+        fixed_throttle=args.fixed_throttle,
+        angle_scale=args.angle_scale,
+        sample_seed=args.sample_seed,
+    )
+    runners = list(BENCHMARK_RUNNERS)
     rows: list[dict] = []
 
-    print(f"Benchmark: samples={args.samples} batch={args.batch} epochs={args.epochs} device={args.device}")
+    print(
+        f"Benchmark: task=donkey_regression model=VGG11 samples={len(x)} "
+        f"batch={args.batch} epochs={args.epochs} device={args.device}"
+    )
     for fn in runners:
         try:
             row = fn(x, y, args.epochs, args.batch, args.lr, args.device)
         except Exception as exc:
             row = {"framework": fn.__name__, "error": str(exc)}
+        row.update({"task": "donkey_regression", "model": "VGG11", "samples": len(x)})
         rows.append(row)
         print(row)
-
-    rows.append({
-        "framework": "MyFlows_FLOPs_est",
-        "flops_est": estimate_flops_myflows(
-            args.samples, 32, 32, (args.samples + args.batch - 1) // args.batch, args.epochs
-        ),
-    })
 
     out_path = (ROOT / args.out).resolve()
     out_path.parent.mkdir(parents=True, exist_ok=True)
     keys = sorted({k for r in rows for k in r})
     with out_path.open("w", newline="", encoding="utf-8") as f:
-        w = csv.DictWriter(f, fieldnames=keys, extrasaction="ignore")
-        w.writeheader()
-        w.writerows(rows)
+        writer = csv.DictWriter(f, fieldnames=keys, extrasaction="ignore")
+        writer.writeheader()
+        writer.writerows(rows)
     print(f"已写入: {out_path}")
 
 

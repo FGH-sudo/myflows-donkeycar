@@ -5,8 +5,8 @@
 | 文件 | 来源 |
 |------|------|
 | `resnet_loss.png` | `python -m apps.train.train_myflows_donkey --save-png-plots` 或 TensorBoard 导出 |
-| `vgg_accuracy.png` | `python -m apps.train.train_vgg_donkey_classify` + TensorBoard |
-| `confusion_matrix.png` | `python -m apps.eval.eval_vgg_donkey_classify` |
+| `vgg_loss.png` | `python -m apps.train.train_vgg_donkey_regression` + TensorBoard |
+| `vgg_regression_metrics.png` | `python -m apps.eval.eval_vgg_donkey_regression` |
 | `tensorboard_scalars.png` | TensorBoard Scalars 截图 |
 | `gradients_params.png` | TensorBoard Gradients / Params 截图 |
 | `activations.png` | TensorBoard Activations 截图 |
@@ -18,8 +18,8 @@
 
 ```bash
 python -m apps.train.train_myflows_donkey --max-samples 500 --epochs 2 --augment --save-png-plots
-python -m apps.train.train_vgg_donkey_classify --max-samples 500 --epochs 2
-python -m tools.explain_donkey_gradcam --model-type resnet --checkpoint mycar/models/myflow_resnet18_best --max-samples 8
-python -m apps.eval.eval_vgg_donkey_classify --checkpoint mycar/models/...
+python -m apps.train.train_vgg_donkey_regression --max-samples 500 --epochs 2
+python -m tools.explain_donkey_gradcam --model-type resnet --checkpoint mycar/models/myflow_resnet18_best --data mycar/data --split-file mycar/logs/resnet18_split.json --split test --max-samples 8 --fixed-throttle 0.2 --force-fixed-throttle --target-output angle --device cuda
+python -m apps.eval.eval_vgg_donkey_regression --checkpoint mycar/models/...
 tensorboard --logdir mycar/logs/tensorboard
 ```

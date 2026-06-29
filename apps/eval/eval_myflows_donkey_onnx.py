@@ -33,6 +33,7 @@ sys.path.insert(0, str(ROOT))
 
 from apps.common.donkey_data import load_donkey_index
 from apps.common.image_preprocess import imread_nchw, read_rgb
+from apps.common.splits import load_split, select_split
 from tools.device_runtime import create_ort_inference_session, print_ort_device
 
 
@@ -46,7 +47,11 @@ def main() -> None:
         help="评估用的 catalog 文件名（默认仅生成路网 catalog_generated.catalog）",
     )
     ap.add_argument("--checkpoint", type=str, required=True)
+    ap.add_argument("--fixed-throttle", type=float, default=0.5)
+    ap.add_argument("--force-fixed-throttle", action="store_true", help="忽略 catalog 中的 user/throttle，强制使用 --fixed-throttle")
     ap.add_argument("--max-samples", type=int, default=1000, help="评估条数上限(0=catalog 全部)")
+    ap.add_argument("--split-file", type=str, default=None)
+    ap.add_argument("--split", type=str, default="all", choices=("train", "val", "test", "all"))
     ap.add_argument("--batch", type=int, default=8)
     ap.add_argument(
         "--device",
@@ -74,9 +79,21 @@ def main() -> None:
     if not checkpoint_path.is_file():
         raise SystemExit(f"ONNX 不存在: {checkpoint_path}")
 
-    index = load_donkey_index(data_dir, fixed_throttle=0.5, angle_scale=1.0, catalog_name=args.catalog)
+    index = load_donkey_index(
+        data_dir,
+        fixed_throttle=args.fixed_throttle,
+        angle_scale=1.0,
+        catalog_name=args.catalog,
+        force_fixed_throttle=bool(args.force_fixed_throttle),
+    )
     if not index:
         raise SystemExit("未找到带 cam/image_array 的 tub 行")
+    if args.split_file:
+        payload = load_split((ROOT / args.split_file).resolve())
+        index = select_split(index, payload["splits"], args.split)
+        print(f"[split] file={(ROOT / args.split_file).resolve()} split={args.split} samples={len(index)}")
+        if not index:
+            raise SystemExit(f"split {args.split!r} 为空")
     if args.max_samples and args.max_samples > 0:
         index = index[: args.max_samples]
 

@@ -6,8 +6,8 @@
 |------|------|
 | `MyFlows/` | 自研深度学习框架源码：计算图、算子、层、优化器、数据流水线、测试 |
 | `apps/common/` | 应用共享工具：DonkeyCar 数据索引、图像预处理、batch padding |
-| `apps/train/` | 课程训练入口：ResNet 回归、VGG 分类 |
-| `apps/eval/` | 离线评估入口：MyFlows checkpoint、ONNX、VGG 分类 |
+| `apps/train/` | 课程训练入口：ResNet 回归、VGG 回归 |
+| `apps/eval/` | 离线评估入口：MyFlows checkpoint、ONNX、VGG 回归 |
 | `apps/serve/` | 在线推理服务：gRPC、FastAPI、客户端 SDK、ONNX predictor、日志/指标/schema/config 分层 |
 | `tools/` | 数据转换、量化、设备选择等通用工具 |
 | `generated/grpc/` | 由 `proto/infer.proto` 生成的 gRPC Python 代码 |
@@ -26,9 +26,9 @@
 | 训练公共工具 | `apps/train/common/` | 日志、checkpoint stem、run-id 路径工具 |
 | 可视化分析 | `MyFlows/utils/observers/` | 参数、梯度、激活、标签分布统计 |
 | 可视化编排 | `MyFlows/utils/training_dashboard.py` | 统一训练 TensorBoard tag 与写入时机 |
-| 保存导出 | `MyFlows/utils/checkpoint.py` / `onnx_exporter.py` / `serialization.py` | checkpoint、ONNX 导出和兼容 API |
+| 保存导出 | `MyFlows/utils/checkpoint.py` / `onnx_exporter.py` / `serialization.py` / `tools/export_resnet_onnx.py` | checkpoint、ONNX lowering、ResNet/VGG 部署图导出 |
 | 指标 | `MyFlows/utils/metrics_core/` / `metrics.py` | 回归、分类、Donkey 指标和兼容 API |
-| 解释 CLI | `tools/explain/` / `tools/explain_donkey_gradcam.py` | Grad-CAM 模型构建、目标选择、报告与 CLI 编排 |
+| 解释 CLI | `tools/explain/` / `tools/explain_donkey_gradcam.py` | Grad-CAM 模型构建、回归输出目标选择、报告与 CLI 编排 |
 
 ## 生成代码
 
@@ -47,10 +47,10 @@ python -m grpc_tools.protoc -I proto --python_out=generated/grpc --grpc_python_o
 ```bash
 python -m tools.convert_generated_road_to_tub_v2 --src mycar/generated-road-data --dst mycar/data --clear-dst
 python -m apps.train.train_myflows_donkey --max-samples 0 --epochs 20 --batch 2 --augment --graph-opt --checkpoint-every 500 --export-onnx --device auto
-python -m apps.train.train_vgg_donkey_classify --max-samples 0 --epochs 10 --device auto --export-onnx
-python -m apps.eval.eval_vgg_donkey_classify --checkpoint mycar/models/vgg11_classify_best --max-samples 2000 --device auto
-python benchmark/compare_frameworks.py --epochs 2 --samples 64 --device auto
+python -m apps.train.train_vgg_donkey_regression --max-samples 0 --epochs 10 --device auto --export-onnx
+python -m apps.eval.eval_vgg_donkey_regression --checkpoint mycar/models/vgg11_regression_best --max-samples 2000 --device auto
+python benchmark/compare_frameworks.py --data mycar/data --epochs 2 --samples 64 --device cuda
 python benchmark/plot_compare.py
-python scripts/run_quantize_eval.py --fp32 mycar/models/myflow_resnet18_best.onnx --max-samples 500 --device auto
+python scripts/run_quantize_eval.py --fp32 mycar/models/myflow_resnet18_best.onnx --data mycar/data --split-file mycar/logs/resnet18_split.json --split test --max-samples 0 --fixed-throttle 0.2 --force-fixed-throttle --device cuda --out-json docs/experiments/int8_metrics.json --out-md docs/experiments/int8_report.md --out-png docs/experiments/int8_report.png
 python benchmark/serve_bench.py --mode local --model mycar/models/myflow_resnet18_best.onnx
 ```

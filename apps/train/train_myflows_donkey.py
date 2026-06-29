@@ -45,14 +45,21 @@ from apps.common.donkey_data import (
 )
 from apps.common.image_preprocess import imread_nchw as _imread_nchw
 from apps.common.image_preprocess import pad_fixed_batch as _pad_fixed_batch
+from apps.common.splits import resolve_splits, select_split
 from apps.train.common.checkpoints import (
     DEFAULT_RESNET_BEST_OUT,
     DEFAULT_RESNET_CHECKPOINT_OUT,
+    checkpoint_score_to_loss,
     checkpoint_stem as _checkpoint_stem,
     with_run_id as _with_run_id,
 )
+from apps.train.common.training_control import BestScore, EarlyStopping
+from apps.train.common.validation import run_loss_validation
 from apps.train.common.logging import TeeLogger
 from MyFlows.data.pipeline import MultiprocessDataLoader
+from MyFlows.train.regularization import RegularizationConfig, apply_regularization
+from MyFlows.utils.model_inspector import format_inspection_report, format_model_summary, inspect_graph, model_summary
+from tools.export_resnet_onnx import export_resnet18_onnx
 from tools.device_runtime import myflows_scalar_float, print_myflows_device, resolve_myflows_device
 from MyFlows.utils.training_observer import (
     global_gradient_norm,
@@ -76,6 +83,7 @@ def main() -> None:
     ap.add_argument("--data", type=str, default="mycar/data", help="Donkey tub 根目录(含 images 与 catalog)")
     ap.add_argument("--catalog", type=str, default="catalog_generated.catalog", help="优先读取的 catalog 文件名；不存在时回退到解析 images 文件名")
     ap.add_argument("--fixed-throttle", type=float, default=0.5, help="catalog 缺少 throttle 或文件名模式下使用的固定 user/throttle")
+    ap.add_argument("--force-fixed-throttle", action="store_true", help="忽略 catalog 中的 user/throttle，强制使用 --fixed-throttle")
     ap.add_argument("--angle-scale", type=float, default=1.0, help="对标签 angle 的缩放（可用于翻符号或调整幅度）")
     ap.add_argument("--epochs", type=int, default=1)
     ap.add_argument("--batch", type=int, default=1, help="批大小(须固定，与构图一致)")
@@ -86,6 +94,13 @@ def main() -> None:
         default=None,
         help="与 --max-samples 联用：按该种子无放回随机抽 N 条；不设则仍取排序后前 N 条",
     )
+    ap.add_argument("--val-ratio", type=float, default=0.0, help="验证集比例；默认 0 表示不划分")
+    ap.add_argument("--test-ratio", type=float, default=0.0, help="测试集比例；默认 0 表示不划分")
+    ap.add_argument("--val-size", type=int, default=0, help="验证集固定条数；优先于 --val-ratio")
+    ap.add_argument("--test-size", type=int, default=0, help="测试集固定条数；优先于 --test-ratio")
+    ap.add_argument("--split-seed", type=int, default=42, help="train/val/test 划分随机种子")
+    ap.add_argument("--split-out", type=str, default=None, help="保存本次 split JSON，供评估复用")
+    ap.add_argument("--split-file", type=str, default=None, help="复用已有 split JSON")
     ap.add_argument(
         "--device",
         type=str,
@@ -95,6 +110,14 @@ def main() -> None:
     )
     ap.add_argument("--dtype", type=str, default="float32", choices=("float32", "float64"), help="训练计算 dtype（float32 通常更快）")
     ap.add_argument("--lr", type=float, default=1e-3)
+    ap.add_argument("--weight-decay", type=float, default=0.0, help="L2 正则系数；默认关闭")
+    ap.add_argument("--l1-coeff", type=float, default=0.0, help="L1 正则系数；默认关闭")
+    ap.add_argument("--regularize-bias-bn", action="store_true", help="正则化 bias/BN 参数；默认跳过")
+    ap.add_argument("--dropout", type=float, default=0.0, help="ResNet FC 前 dropout 概率；默认关闭")
+    ap.add_argument("--early-stopping", action="store_true", help="按验证 loss 启用早停；无验证集时按训练 loss")
+    ap.add_argument("--patience", type=int, default=5, help="early stopping 容忍 epoch 数")
+    ap.add_argument("--min-delta", type=float, default=1e-4, help="early stopping 最小改善幅度")
+    ap.add_argument("--initializer", type=str, default="kaiming_normal", help="权重初始化：kaiming_normal/xavier_uniform/xavier_normal/kaiming_uniform/normal/constant")
     ap.add_argument("--out", type=str, default=DEFAULT_RESNET_CHECKPOINT_OUT, help="训练断点输出基名，会生成 .json + .npz")
     ap.add_argument("--best-out", type=str, default=DEFAULT_RESNET_BEST_OUT, help="最佳模型输出基名，会生成 .json + .npz")
     ap.add_argument(
@@ -165,6 +188,9 @@ def main() -> None:
     ap.add_argument("--tb-activation-interval", type=int, default=200, help="每多少 step 记录激活统计和特征图（0=关闭）")
     ap.add_argument("--tb-max-hist-params", type=int, default=24, help="每次最多记录多少个参数/梯度 histogram")
     ap.add_argument("--tb-feature-channels", type=int, default=16, help="每个激活层最多记录多少个 feature map 通道")
+    ap.add_argument("--check-shape", action="store_true", help="首个 batch 后打印图节点 shape 检查")
+    ap.add_argument("--check-content", action="store_true", help="首个 batch 后检查 NaN/Inf/全零输出")
+    ap.add_argument("--summary-once", action="store_true", help="训练开始前打印一次模型参数 summary")
     ap.add_argument(
         "--num-workers",
         type=int,
@@ -219,6 +245,7 @@ def main() -> None:
         fixed_throttle=args.fixed_throttle,
         angle_scale=args.angle_scale,
         catalog_name=args.catalog,
+        force_fixed_throttle=bool(args.force_fixed_throttle),
     )
     if not index:
         raise SystemExit("未找到训练样本：请确认 images/*.jpg 存在。")
@@ -232,6 +259,31 @@ def main() -> None:
         else:
             index = index[:n_take]
             print(f"[data] 取排序后前 {n_take} 条")
+
+    splits, split_path = resolve_splits(
+        index,
+        split_file=(ROOT / args.split_file).resolve() if args.split_file else None,
+        split_out=(ROOT / args.split_out).resolve() if args.split_out else None,
+        val_ratio=args.val_ratio,
+        test_ratio=args.test_ratio,
+        val_size=args.val_size,
+        test_size=args.test_size,
+        seed=args.split_seed,
+    )
+    val_index = []
+    test_index = []
+    if splits is not None:
+        full_count = len(index)
+        train_index = select_split(index, splits, "train")
+        val_index = select_split(index, splits, "val")
+        test_index = select_split(index, splits, "test")
+        if not train_index:
+            raise SystemExit("split 后训练集为空，请减小 val/test 规模")
+        index = train_index
+        split_msg = f"[split] source={full_count} train={len(index)} val={len(val_index)} test={len(test_index)}"
+        if split_path is not None:
+            split_msg += f" file={split_path}"
+        print(split_msg)
 
     # 用第一条样本定输入分辨率
     first_p = data_dir / index[0][0]
@@ -259,10 +311,12 @@ def main() -> None:
     )
     model = ms.ResNet18(
         in_channels=3,
-        num_classes=2,
+        output_dim=2,
         stem=args.stem,
         base_width=64,
         name="resnet18_donkey",
+        dropout=args.dropout,
+        initializer=args.initializer,
     )
     logits = model(x_var)
     loss_node = ms.MSELoss(logits, y_var, name="loss")
@@ -271,6 +325,11 @@ def main() -> None:
         optimize=bool(args.graph_opt),
     )
     opt = ms.Adam(graph, learning_rate=args.lr)
+    reg_config = RegularizationConfig(
+        l1=float(args.l1_coeff),
+        l2=float(args.weight_decay),
+        regularize_bias_bn=bool(args.regularize_bias_bn),
+    )
 
     out_base = _checkpoint_stem((ROOT / args.out).resolve())
     best_base = _checkpoint_stem((ROOT / args.best_out).resolve())
@@ -282,8 +341,10 @@ def main() -> None:
     if args.resume:
         loaded_epoch, saved_score = ms.load_checkpoint([model], opt, str(out_base))
         start_epoch = max(0, int(loaded_epoch) + 1)
-        # checkpoint 里 acc 字段被复用为 -loss。
-        best_loss = -saved_score if saved_score else None
+        best_loss = checkpoint_score_to_loss(saved_score)
+    best_tracker = BestScore()
+    best_tracker.best = best_loss
+    early_stopper = EarlyStopping(args.patience, args.min_delta) if args.early_stopping else None
 
     n = len(index)
     steps = (n + B - 1) // B
@@ -293,6 +354,13 @@ def main() -> None:
     print(f"安全暂停文件: {stop_file}")
     print(f"样本数: {n}, batch={B}, steps/epoch={steps}, lr={args.lr}")
     print(f"数据加载: num_workers={int(args.num_workers)}")
+    if args.dropout:
+        print(f"Dropout: p={float(args.dropout)}")
+    if reg_config.enabled:
+        print(f"正则化: l1={reg_config.l1} l2={reg_config.l2} regularize_bias_bn={reg_config.regularize_bias_bn}")
+    if args.summary_once:
+        print("[model-summary]")
+        print(format_model_summary(model_summary(model)))
     dashboard = TrainingDashboard(
         tb_logdir,
         enabled=not args.no_tensorboard,
@@ -325,6 +393,23 @@ def main() -> None:
         (str(data_dir / rel), angle, throttle, w, h, args.dtype)
         for rel, angle, throttle in index
     ]
+    val_dataset = [
+        (str(data_dir / rel), angle, throttle, w, h, args.dtype)
+        for rel, angle, throttle in val_index
+    ]
+    inspect_done = False
+
+    def _validation_step(x_items, y_items):
+        real_count = len(x_items)
+        x_batch = np.asarray(x_items, dtype=dtype)
+        y_batch = np.asarray(y_items, dtype=dtype).reshape(-1, 2)
+        x_batch, y_batch = _pad_fixed_batch(x_batch, y_batch, B)
+        x_var.value = x_batch
+        y_var.value = y_batch
+        model.eval()
+        graph.forward()
+        return myflows_scalar_float(loss_node.value), real_count
+
     for ep in range(start_epoch, start_epoch + args.epochs):
         total_loss = 0.0
         count = 0
@@ -362,6 +447,15 @@ def main() -> None:
             train_start = time.perf_counter()
             opt.one_step()
             train_elapsed_ms = (time.perf_counter() - train_start) * 1000.0
+            if reg_config.enabled:
+                apply_regularization(opt, model.params, reg_config)
+            if (args.check_shape or args.check_content) and not inspect_done:
+                report = inspect_graph(graph, check_shape=args.check_shape, check_content=args.check_content)
+                print("[graph-inspection]")
+                print(format_inspection_report(report))
+                if not report["ok"]:
+                    raise SystemExit("graph inspection failed")
+                inspect_done = True
             grad_norm = global_gradient_norm(model)
             if dashboard.active and dashboard.grad_interval > 0 and (global_step % dashboard.grad_interval == 0):
                 dashboard.tb.log_scalar("gradients/global_norm", grad_norm, global_step)
@@ -399,8 +493,8 @@ def main() -> None:
                     [model],
                     opt,
                     ep,
-                    -float(running_mean_loss),
-                    str(out_base),
+                    filepath=str(out_base),
+                    loss=running_mean_loss,
                 )
                 print(
                     f"已保存训练断点(step {s+1}): {json_path} + {npz_path} "
@@ -412,8 +506,8 @@ def main() -> None:
                     [model],
                     opt,
                     ep,
-                    -float(running_mean_loss),
-                    str(out_base),
+                    filepath=str(out_base),
+                    loss=running_mean_loss,
                 )
                 print(
                     f"检测到暂停文件，已保存训练断点: {json_path} + {npz_path} "
@@ -430,30 +524,55 @@ def main() -> None:
         if count:
             last_mean_loss = total_loss / count
             history.record_epoch(ep + 1, last_mean_loss)
-            dashboard.log_epoch(ep + 1, loss=last_mean_loss, learning_rate=args.lr, epoch_time_s=time.perf_counter() - epoch_start)
+            val_result = run_loss_validation(
+                val_dataset,
+                B,
+                load_fn=_load_training_sample,
+                step_fn=_validation_step,
+                num_workers=0,
+            )
+            validation_loss = val_result.mean_loss if val_result is not None else None
+            dashboard.log_epoch(
+                ep + 1,
+                loss=last_mean_loss,
+                validation_loss=validation_loss,
+                learning_rate=args.lr,
+                epoch_time_s=time.perf_counter() - epoch_start,
+            )
             print(f"epoch {ep+1} mean loss: {last_mean_loss:.6f}")
+            if validation_loss is not None:
+                print(f"epoch {ep+1} val loss: {validation_loss:.6f} ({val_result.samples} samples)")
 
             json_path, npz_path = ms.save_checkpoint(
                 [model],
                 opt,
                 ep,
-                -float(last_mean_loss),
-                str(out_base),
+                filepath=str(out_base),
+                loss=last_mean_loss,
             )
             print(f"已保存训练断点: {json_path} + {npz_path}")
             dashboard.log_checkpoint("latest_epoch", f"epoch={ep+1} path={json_path} mean_loss={last_mean_loss:.6f}", ep + 1)
 
-            if best_loss is None or last_mean_loss < best_loss:
-                best_loss = float(last_mean_loss)
+            score_for_best = float(validation_loss if validation_loss is not None else last_mean_loss)
+            if best_tracker.update(score_for_best):
+                best_loss = float(best_tracker.best)
                 best_json, best_npz = ms.save_checkpoint(
                     [model],
                     None,
                     ep,
-                    -float(best_loss),
-                    str(best_base),
+                    filepath=str(best_base),
+                    loss=best_loss,
                 )
                 print(f"已保存最佳模型: {best_json} + {best_npz} (loss={best_loss:.6f})")
                 dashboard.log_checkpoint("best", f"epoch={ep+1} path={best_json} best_loss={best_loss:.6f}", ep + 1)
+            if early_stopper is not None:
+                stop_state = early_stopper.update(score_for_best)
+                if stop_state.should_stop:
+                    print(
+                        f"early stopping: best={stop_state.best:.6f} "
+                        f"bad_epochs={stop_state.bad_epochs}/{early_stopper.patience}"
+                    )
+                    should_stop = True
         if should_stop:
             break
 
@@ -471,12 +590,17 @@ def main() -> None:
 
     if args.export_onnx:
         onnx_path = (ROOT / args.onnx_out).resolve() if args.onnx_out else best_base.with_suffix(".onnx")
-        model.eval()
-        # ONNX 导出推理图，只把 X 当输入，输出为 [angle, throttle]。
-        infer_graph = ms.Graph(logits, optimize=bool(args.graph_opt))
-        infer_graph.forward()
-        ms.export_onnx(infer_graph, str(onnx_path), input_nodes=[x_var], output_names=["control"])
-        print(f"已导出 ONNX: {onnx_path}")
+        export_resnet18_onnx(
+            best_base,
+            output=onnx_path,
+            batch_size=1,
+            image_w=w,
+            image_h=h,
+            stem=args.stem,
+            device=args.device,
+            graph_opt=bool(args.graph_opt),
+        )
+        print(f"已导出 ONNX: {onnx_path} (batch=1)")
 
     tee.close()
 

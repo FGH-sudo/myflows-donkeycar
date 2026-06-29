@@ -22,8 +22,8 @@ CONTROLLER_TYPE = "mock"
 
 # MyFlows fixed-speed steering pilot. Keep this aligned with training
 # --fixed-throttle unless intentionally changing simulator speed.
-MYFLOWS_FIXED_THROTTLE = 0.5
-MYFLOWS_MAX_THROTTLE = 0.5
+MYFLOWS_FIXED_THROTTLE = 0.2
+MYFLOWS_MAX_THROTTLE = 0.2
 MYFLOWS_STEERING_SCALE = 1.0
 MYFLOWS_DEBUG = False
-MYFLOWS_DEVICE = "auto"  # auto | cuda | cpu
+MYFLOWS_DEVICE = "cuda"  # auto | cuda | cpu

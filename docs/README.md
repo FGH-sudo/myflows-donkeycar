@@ -37,13 +37,15 @@ python -m apps.eval.eval_myflows_donkey_onnx --checkpoint mycar/models/myflow_re
 # 仿真部署
 cd mycar && python manage.py drive --model=models/myflow_resnet18_best.onnx --type=myflows
 
-# VGG 角度分类
-python -m apps.train.train_vgg_donkey_classify --max-samples 0 --epochs 10 --device auto
+# VGG 回归
+python -m apps.train.train_vgg_donkey_regression --max-samples 0 --epochs 10 --device auto
 
 # ONNX INT8
 python -m tools.quantize_onnx --input mycar/models/myflow_resnet18_best.onnx
 python -m apps.eval.eval_myflows_donkey_onnx --checkpoint mycar/models/myflow_resnet18_best.onnx \
-  --int8-model mycar/models/myflow_resnet18_best_int8.onnx --device auto
+  --int8-model mycar/models/myflow_resnet18_best_int8.onnx \
+  --split-file mycar/logs/resnet18_split.json --split test \
+  --max-samples 200 --fixed-throttle 0.2 --force-fixed-throttle --device cuda
 
 # gRPC / FastAPI
 python -m apps.serve.serve_grpc --model mycar/models/myflow_resnet18_best.onnx --device auto
@@ -52,13 +54,18 @@ python -m apps.serve.serve_fastapi --model mycar/models/myflow_resnet18_best.onn
 python -m apps.serve.fastapi_client --image mycar/data/images/1042_0.0000.jpg --url http://127.0.0.1:8000
 
 # INT8 对比报告
-python scripts/run_quantize_eval.py --fp32 mycar/models/myflow_resnet18_best.onnx
+python scripts/run_quantize_eval.py --fp32 mycar/models/myflow_resnet18_best.onnx \
+  --data mycar/data --split-file mycar/logs/resnet18_split.json --split test \
+  --max-samples 0 --fixed-throttle 0.2 --force-fixed-throttle --device cuda \
+  --out-json docs/experiments/int8_metrics.json \
+  --out-md docs/experiments/int8_report.md \
+  --out-png docs/experiments/int8_report.png
 
 # Grad-CAM 解释可视化
-python -m tools.explain_donkey_gradcam --model-type resnet --checkpoint mycar/models/myflow_resnet18_best --max-samples 8
+python -m tools.explain_donkey_gradcam --model-type resnet --checkpoint mycar/models/myflow_resnet18_best --data mycar/data --split-file mycar/logs/resnet18_split.json --split test --max-samples 8 --fixed-throttle 0.2 --force-fixed-throttle --target-output angle --device cuda
 
 # 跨框架 benchmark + 出图
-python benchmark/compare_frameworks.py --epochs 2 --samples 64 --device auto
+python benchmark/compare_frameworks.py --data mycar/data --epochs 2 --samples 64 --device cuda
 python benchmark/plot_compare.py
 
 # 部署压测 / DataLoader 吞吐

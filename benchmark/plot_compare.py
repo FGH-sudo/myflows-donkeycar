@@ -9,6 +9,32 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 
+METRIC_PANELS = [
+  {
+    "column": "time_s",
+    "title": "DonkeyCar VGG Regression time",
+    "ylabel": "seconds",
+    "color": "#4C72B0",
+    "scale": 1.0,
+  },
+  {
+    "column": "peak_mb",
+    "title": "DonkeyCar VGG Regression RSS",
+    "ylabel": "MB",
+    "color": "#55A868",
+    "scale": 1.0,
+  },
+]
+
+
+def _as_float(value):
+  if value in (None, ""):
+    return None
+  try:
+    return float(value)
+  except ValueError:
+    return None
+
 
 def main() -> None:
   ap = argparse.ArgumentParser()
@@ -22,8 +48,6 @@ def main() -> None:
     for row in csv.DictReader(f):
       if row.get("error"):
         continue
-      if row.get("framework", "").endswith("FLOPs_est"):
-        continue
       rows.append(row)
   if not rows:
     raise SystemExit("无可绘制的行")
@@ -36,17 +60,25 @@ def main() -> None:
   except ImportError:
     raise SystemExit("需要 matplotlib: pip install matplotlib")
 
-  names = [r["framework"] for r in rows]
-  times = [float(r["time_s"]) for r in rows if r.get("time_s")]
-  mems = [float(r["peak_mb"]) for r in rows if r.get("peak_mb")]
-
-  fig, axes = plt.subplots(1, 2, figsize=(10, 4))
-  axes[0].bar(names[: len(times)], times, color="#4C72B0")
-  axes[0].set_title("Training time (s)")
-  axes[0].set_ylabel("seconds")
-  axes[1].bar(names[: len(mems)], mems, color="#55A868")
-  axes[1].set_title("Peak RSS (MB)")
-  axes[1].set_ylabel("MB")
+  fig, axes = plt.subplots(1, len(METRIC_PANELS), figsize=(5 * len(METRIC_PANELS), 4))
+  if len(METRIC_PANELS) == 1:
+    axes = [axes]
+  for ax, panel in zip(axes, METRIC_PANELS):
+    names = []
+    values = []
+    for row in rows:
+      value = _as_float(row.get(panel["column"]))
+      if value is None:
+        continue
+      names.append(row["framework"])
+      values.append(value * panel["scale"])
+    if not values:
+      ax.set_visible(False)
+      continue
+    ax.bar(names, values, color=panel["color"])
+    ax.set_title(panel["title"])
+    ax.set_ylabel(panel["ylabel"])
+    ax.tick_params(axis="x", rotation=20)
   plt.tight_layout()
   out = (ROOT / args.out).resolve()
   out.parent.mkdir(parents=True, exist_ok=True)

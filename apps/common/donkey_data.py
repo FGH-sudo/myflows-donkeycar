@@ -63,6 +63,7 @@ def load_donkey_index(
     fixed_throttle: float,
     angle_scale: float,
     catalog_name: str | None = "catalog_generated.catalog",
+    force_fixed_throttle: bool = False,
 ) -> list[tuple[Path, float, float]]:
     """返回 (图片相对 data_dir 的路径, angle, throttle)，优先读 catalog，失败则解析文件名。"""
     data_dir = Path(data_dir)
@@ -92,7 +93,10 @@ def load_donkey_index(
                             angle_value = parse_angle_from_filename(rel.name)
                         throttle_value = rec.get("user/throttle", fixed_throttle)
                         angle = float(angle_value) * float(angle_scale)
-                        throttle = float(fixed_throttle if throttle_value is None else throttle_value)
+                        if force_fixed_throttle:
+                            throttle = float(fixed_throttle)
+                        else:
+                            throttle = float(fixed_throttle if throttle_value is None else throttle_value)
                     except Exception:
                         bad += 1
                         continue

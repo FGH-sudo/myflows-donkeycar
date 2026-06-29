@@ -29,6 +29,7 @@ sys.path.insert(0, str(ROOT))
 import MyFlows as ms
 from apps.common.donkey_data import load_donkey_index
 from apps.common.image_preprocess import imread_nchw, read_rgb
+from apps.common.splits import load_split, select_split
 from apps.train.common.checkpoints import checkpoint_stem as normalize_checkpoint_stem
 from tools.device_runtime import myflows_asnumpy, print_myflows_device, resolve_myflows_device
 from MyFlows.utils.metrics import DonkeyRegressionEvaluator
@@ -48,7 +49,11 @@ def main() -> None:
         help="评估用 catalog（默认 catalog_generated.catalog）",
     )
     ap.add_argument("--checkpoint", type=str, default="mycar/models/myflow_resnet18_best.onnx")
+    ap.add_argument("--fixed-throttle", type=float, default=0.5)
+    ap.add_argument("--force-fixed-throttle", action="store_true", help="忽略 catalog 中的 user/throttle，强制使用 --fixed-throttle")
     ap.add_argument("--max-samples", type=int, default=2000, help="最多评估多少条(0=catalog 全部)")
+    ap.add_argument("--split-file", type=str, default=None, help="训练时保存的 split JSON")
+    ap.add_argument("--split", type=str, default="all", choices=("train", "val", "test", "all"), help="使用 split 中的哪个子集")
     ap.add_argument("--batch", type=int, default=4, help="评估 batch（固定 batch 会用于一次构图）")
     ap.add_argument(
         "--device",
@@ -72,9 +77,22 @@ def main() -> None:
     checkpoint_path = (ROOT / args.checkpoint).resolve()
     checkpoint_stem = _checkpoint_stem(checkpoint_path)
 
-    index = load_donkey_index(data_dir, fixed_throttle=0.5, angle_scale=1.0, catalog_name=args.catalog)
+    index = load_donkey_index(
+        data_dir,
+        fixed_throttle=args.fixed_throttle,
+        angle_scale=1.0,
+        catalog_name=args.catalog,
+        force_fixed_throttle=bool(args.force_fixed_throttle),
+    )
     if not index:
         raise SystemExit("未找到带 cam/image_array 的 tub 行，请确认已采数且 catalog 有图名。")
+
+    if args.split_file:
+        payload = load_split((ROOT / args.split_file).resolve())
+        index = select_split(index, payload["splits"], args.split)
+        print(f"[split] file={(ROOT / args.split_file).resolve()} split={args.split} samples={len(index)}")
+        if not index:
+            raise SystemExit(f"split {args.split!r} 为空")
 
     if args.max_samples and args.max_samples > 0:
         index = index[: args.max_samples]
@@ -97,7 +115,7 @@ def main() -> None:
     x_var = ms.Variable(np.zeros((B, 3, h, w), dtype=dtype), name="X")
     model = ms.ResNet18(
         in_channels=3,
-        num_classes=2,
+        output_dim=2,
         stem="cifar",
         base_width=64,
         name="resnet18_donkey",
