@@ -26,6 +26,7 @@ desktop.ini
 # Local Codex/agent state
 .codex/
 .agents/
+AGENTS.md
 
 # DonkeyCar runtime data and large external assets
 DonkeySimWin/
