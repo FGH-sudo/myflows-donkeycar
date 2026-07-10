@@ -33,6 +33,7 @@ mycar/data/
 mycar/generated-road-data/
 mycar/logs/
 mycar/models/
+mycar/unitylog.txt
 
 # Training, model, and experiment outputs
 *.log
