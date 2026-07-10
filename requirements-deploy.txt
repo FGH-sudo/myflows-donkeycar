@@ -1,6 +1,6 @@
 grpcio>=1.60.0
 grpcio-tools>=1.60.0
-onnxruntime>=1.16.0
+onnxruntime-gpu[cuda,cudnn]>=1.21.0
 onnx>=1.14.0
 fastapi>=0.110.0
 uvicorn[standard]>=0.27.0

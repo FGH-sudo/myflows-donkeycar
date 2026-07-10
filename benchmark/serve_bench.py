@@ -115,6 +115,25 @@ def _summarize(latencies: list[float], errors: int, requested: int) -> dict:
   }
 
 
+def build_bench_stats(
+    *,
+    mode: str,
+    workers: int,
+    model: str,
+    device: str,
+    latencies: list[float],
+    errors: int,
+    requested: int,
+) -> dict:
+  stats = {"mode": mode, "workers": workers, "model": model, **_summarize(latencies, errors, requested)}
+  if mode == "local":
+    stats["device"] = device
+  else:
+    stats["client_device"] = "n/a"
+    stats["server_device"] = "controlled_by_service"
+  return stats
+
+
 def _write_report(stats: dict, out_json: str | None, out_md: str | None) -> None:
   if out_json:
     path = (ROOT / out_json).resolve()
@@ -172,7 +191,15 @@ def main() -> None:
   else:
     lats, errors = bench_fastapi(args.host, port, args.requests, args.workers)
 
-  stats = {"mode": args.mode, "workers": args.workers, "model": args.model, "device": args.device, **_summarize(lats, errors, args.requests)}
+  stats = build_bench_stats(
+      mode=args.mode,
+      workers=args.workers,
+      model=args.model,
+      device=args.device,
+      latencies=lats,
+      errors=errors,
+      requested=args.requests,
+  )
   print(stats)
   _write_report(stats, args.out_json, args.out_md)
   _write_tensorboard(stats, args.tensorboard_logdir)

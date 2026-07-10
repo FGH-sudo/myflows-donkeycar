@@ -3,10 +3,14 @@ services:
     build:
       context: ../..
       dockerfile: deploy/docker/Dockerfile
+    gpus: all
     environment:
       SERVE_MODE: grpc
-      MODEL_PATH: /models/model.onnx
+      MODEL_PATH: /models/myflow_resnet18_best.onnx
       PORT: "50051"
+      DEVICE: cuda
+      NVIDIA_VISIBLE_DEVICES: all
+      NVIDIA_DRIVER_CAPABILITIES: compute,utility
     volumes:
       - ../../mycar/models:/models:ro
     ports:
@@ -16,10 +20,14 @@ services:
     build:
       context: ../..
       dockerfile: deploy/docker/Dockerfile
+    gpus: all
     environment:
       SERVE_MODE: fastapi
-      MODEL_PATH: /models/model.onnx
+      MODEL_PATH: /models/myflow_resnet18_best.onnx
       FASTAPI_PORT: "8000"
+      DEVICE: cuda
+      NVIDIA_VISIBLE_DEVICES: all
+      NVIDIA_DRIVER_CAPABILITIES: compute,utility
     volumes:
       - ../../mycar/models:/models:ro
     ports:

@@ -22,12 +22,21 @@ spec:
             - name: SERVE_MODE
               value: grpc
             - name: MODEL_PATH
-              value: /models/model.onnx
+              value: /models/myflow_resnet18_best.onnx
             - name: PORT
               value: "50051"
+            - name: DEVICE
+              value: cuda
+            - name: NVIDIA_VISIBLE_DEVICES
+              value: all
+            - name: NVIDIA_DRIVER_CAPABILITIES
+              value: compute,utility
           ports:
             - containerPort: 50051
               name: grpc
+          resources:
+            limits:
+              nvidia.com/gpu: 1
           volumeMounts:
             - name: models
               mountPath: /models

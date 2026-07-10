@@ -6,11 +6,11 @@
 | [module_design.md](module_design.md) | 模块划分 |
 | [algorithm_design.md](algorithm_design.md) | 核心算法 |
 | [detailed_design.md](detailed_design.md) | 接口与类设计 |
-| [final_report.md](final_report.md) | 期末报告正文 |
 | [project_structure.md](project_structure.md) | 目录结构与运行入口 |
-| [task_verification_guide.md](task_verification_guide.md) | 按任务书逐项验证和演示系统功能 |
 | [experiments/int8_report.md](experiments/int8_report.md) | FP32/INT8 对比 |
 | [experiments/explainability/README.md](experiments/explainability/README.md) | Grad-CAM 可解释性输出 |
+
+实际运行视频位于根目录 `video/`：`resnet18.mp4` 对应 ResNet-18 FP32 ONNX，`resnet18_int8_static.mp4` 对应 ResNet-18 静态 INT8 ONNX。
 
 ## 常用命令
 

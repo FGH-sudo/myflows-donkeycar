@@ -51,7 +51,6 @@ flowchart TB
 | FastAPI | `apps/serve/serve_fastapi.py` | HTTP 服务化部署 |
 | 客户端 SDK | `apps/serve/grpc_client.py` / `apps/serve/fastapi_client.py` | 封装请求、超时、响应解析 |
 | Docker | `deploy/docker/` | compose 一键起服务 |
-| K8s | `deploy/k8s/` | Deployment + NodePort |
 
 ## 5. 与 Donkeycar 集成
 
@@ -60,6 +59,6 @@ flowchart TB
 ## 6. 实验与文档
 
 - `docs/experiments/int8_report.md` / `int8_report.png` / `int8_metrics.json`：FP32、动态 INT8、静态 INT8 推理对比
+- `video/resnet18.mp4` / `video/resnet18_int8_static.mp4`：ResNet-18 FP32 与静态 INT8 实际运行视频
 - `docs/experiments/explainability/`：Grad-CAM 输出
 - `docs/experiments/training_viz/`：训练曲线与 TB 截图
-- `docs/final_report.md`：期末报告正文

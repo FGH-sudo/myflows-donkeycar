@@ -1,39 +1,48 @@
 # VGG 回归与跨框架 Benchmark 结果
 
-生成时间：2026-06-29
+生成时间：2026-06-30
 
 ## VGG-11 DonkeyCar 回归
 
 命令：
 
 ```bash
-python -m apps.train.train_vgg_donkey_regression --max-samples 500 --epochs 2 --batch 2 --val-size 100 --test-size 100 --split-seed 42 --split-out mycar/logs/vgg_split.json --dropout 0.2 --initializer xavier_uniform --weight-decay 1e-5 --early-stopping --patience 3 --min-delta 1e-4 --fixed-throttle 0.2 --device cuda --export-onnx
-python -m apps.eval.eval_vgg_donkey_regression --checkpoint mycar/models/vgg11_regression_best --split-file mycar/logs/vgg_split.json --split test --max-samples 0 --fixed-throttle 0.2 --device cuda
+python -m apps.train.train_vgg_donkey_regression --max-samples 0 --epochs 20 --batch 2 --split-file mycar/logs/resnet18_split.json --dropout 0.2 --initializer xavier_uniform --weight-decay 1e-5 --early-stopping --patience 5 --min-delta 1e-4 --fixed-throttle 0.2 --force-fixed-throttle --summary-once --check-shape --num-workers 2 --device cuda --export-onnx
+python -m apps.eval.eval_vgg_donkey_regression --checkpoint mycar/models/vgg11_regression_best --split-file mycar/logs/resnet18_split.json --split test --max-samples 0 --fixed-throttle 0.2 --force-fixed-throttle --device cuda
 ```
 
-数据划分：500 张子集，train=300，val=100，test=100。
+数据划分：复用 ResNet 正式划分文件 `mycar/logs/resnet18_split.json`，source=10000，train=8000，val=1000，test=1000。
+
+训练配置：CUDA，固定油门 0.2，数据增强关闭，Dropout=0.2，L2 weight decay=1e-5，early stopping patience=5，min_delta=1e-4。
 
 训练摘要：
 
 | epoch | train mean loss | val loss |
 |---:|---:|---:|
-| 1 | 0.0354 | 0.0294 |
-| 2 | 0.0284 | 0.0306 |
+| 1 | 0.0164 | 0.0171 |
+| 2 | 0.0162 | 0.0166 |
+| 3 | 0.0162 | 0.0167 |
+| 4 | 0.0162 | 0.0166 |
+| 5 | 0.0162 | 0.0165 |
+| 6 | 0.0162 | 0.0166 |
+| 7 | 0.0162 | 0.0166 |
 
-best checkpoint 来自 epoch 1，已导出 `mycar/models/vgg11_regression_best.onnx`。
+训练设置为最多 20 epoch；由于验证集 loss 达到 early stopping 条件，实际在 epoch 7 结束。best checkpoint 来自 epoch 5，checkpoint 记录的 best loss 为 0.016548，已导出 `mycar/models/vgg11_regression_best.onnx`。
 
 test 指标：
 
 | metric | value |
 |---|---:|
-| angle_mse | 0.055677 |
-| throttle_mse | 0.000009 |
-| angle_mae | 0.200305 |
-| throttle_mae | 0.002997 |
-| overall_mse | 0.027843 |
-| angle_sign_accuracy | 0.6200 |
-| mean_abs_angle_true | 0.2016 |
-| mean_abs_angle_pred | 0.0069 |
+| angle_mse | 0.031562 |
+| throttle_mse | 0.000000 |
+| angle_mae | 0.141485 |
+| throttle_mae | 0.000000 |
+| overall_mse | 0.015781 |
+| angle_sign_accuracy | 0.5800 |
+| near_zero_accuracy | 1.0000 |
+| mean_abs_angle_true | 0.1413 |
+| mean_abs_angle_pred | 0.0030 |
+| samples | 1000 |
 
 ## VGG-11 跨框架 Benchmark
 

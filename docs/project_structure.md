@@ -13,8 +13,9 @@
 | `generated/grpc/` | 由 `proto/infer.proto` 生成的 gRPC Python 代码 |
 | `benchmark/` | 框架对比、部署压测、DataLoader 吞吐测试 |
 | `scripts/` | 实验闭环脚本，如 FP32/INT8 量化评估报告生成 |
-| `deploy/` | Docker Compose、Kubernetes、Kubeflow 示例 |
+| `deploy/` | Docker Compose 部署配置 |
 | `docs/` | 任务书、设计文档、报告、实验结果说明 |
+| `video/` | ResNet-18 FP32 与静态 INT8 实际运行视频 |
 | `mycar/` | DonkeyCar 工程、默认数据、模型、日志；不要随意移动 |
 | `DonkeySimWin/` | DonkeyCar 模拟器运行资产；按大文件/外部资产处理 |
 

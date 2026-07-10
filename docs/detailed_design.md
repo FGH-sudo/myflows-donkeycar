@@ -111,5 +111,5 @@ flowchart LR
 ## 6. 依赖
 
 - `MyFlows/requirements-tb.txt`：tensorboard, torch
-- `requirements-deploy.txt`：grpcio, onnxruntime, fastapi, uvicorn
+- `requirements-deploy.txt`：grpcio, onnxruntime-gpu[cuda,cudnn], fastapi, uvicorn
 - `benchmark/requirements-bench.txt`：torch, paddlepaddle-gpu, psutil, matplotlib

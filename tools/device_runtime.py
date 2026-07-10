@@ -8,19 +8,23 @@ MyFlows (CuPy) 与 ONNX Runtime 的统一设备选择。
 
 from __future__ import annotations
 
-import MyFlows as ms
-from MyFlows.core.device import configure_cuda_dll_path
+from MyFlows.core.device import (
+    configure_cuda_dll_path,
+    cuda_available,
+    set_device,
+    use_cuda,
+)
 
 
 def resolve_myflows_device(device_arg: str = "auto") -> str:
     """切换 MyFlows 全局设备，返回实际设备名 ``cpu`` 或 ``cuda``。"""
     name = str(device_arg).strip().lower()
     if name == "auto":
-        return ms.use_cuda()
+        return use_cuda()
     if name in ("cuda", "gpu"):
-        return ms.set_device("cuda")
+        return set_device("cuda")
     if name == "cpu":
-        return ms.set_device("cpu")
+        return set_device("cpu")
     raise ValueError(f"不支持的 device: {device_arg!r}，请使用 auto、cpu 或 cuda")
 
 
@@ -46,6 +50,16 @@ def _wants_ort_gpu(device_arg: str) -> bool:
     return str(device_arg).strip().lower() in ("auto", "cuda", "gpu")
 
 
+def _preload_ort_gpu_libraries(ort) -> None:
+    preload = getattr(ort, "preload_dlls", None)
+    if not callable(preload):
+        return
+    try:
+        preload(cuda=True, cudnn=True, msvc=True, directory="")
+    except TypeError:
+        preload()
+
+
 def ort_execution_providers(device_arg: str = "auto") -> list[str]:
     """ONNX Runtime 推理 Provider 请求列表（``auto``/``cuda`` 时优先 GPU）。"""
     if str(device_arg).strip().lower() == "cpu":
@@ -56,6 +70,7 @@ def ort_execution_providers(device_arg: str = "auto") -> list[str]:
         try:
             import onnxruntime as ort
 
+            _preload_ort_gpu_libraries(ort)
             available = set(ort.get_available_providers())
             for candidate in (
                 "CUDAExecutionProvider",
@@ -74,6 +89,7 @@ def create_ort_inference_session(model_path, device_arg: str = "auto", sess_opti
 
     if _wants_ort_gpu(device_arg):
         configure_cuda_dll_path()
+        _preload_ort_gpu_libraries(ort)
 
     providers = ort_execution_providers(device_arg)
     kwargs: dict = {"providers": providers}
@@ -85,11 +101,11 @@ def create_ort_inference_session(model_path, device_arg: str = "auto", sess_opti
 
 def print_myflows_device(resolved: str, requested: str) -> None:
     if resolved == "cuda":
-        print(f"计算设备: CUDA (CuPy, cuda_available={ms.cuda_available()})")
+        print(f"计算设备: CUDA (CuPy, cuda_available={cuda_available()})")
         return
-    if requested in ("cuda", "gpu") and not ms.cuda_available():
+    if requested in ("cuda", "gpu") and not cuda_available():
         print("警告: 请求 CUDA 但不可用，已回退 CPU；请安装 cupy-cuda12x 等")
-    print(f"计算设备: CPU (cuda_available={ms.cuda_available()})")
+    print(f"计算设备: CPU (cuda_available={cuda_available()})")
 
 
 def print_ort_device(active_providers: list[str], requested: str) -> None:

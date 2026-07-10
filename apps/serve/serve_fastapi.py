@@ -22,6 +22,8 @@ from typing import Optional
 
 import cv2
 import numpy as np
+from fastapi import FastAPI, File, HTTPException, Request, UploadFile
+from pydantic import BaseModel, Field
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
@@ -62,9 +64,6 @@ def create_app(
 ):
   global _predictor
   _predictor = OnnxPredictor(model_path, image_w, image_h, device=device, model_type=model_type)
-
-  from fastapi import FastAPI, File, HTTPException, Request, UploadFile
-  from pydantic import BaseModel, Field
 
   app = FastAPI(title="MyFlows ONNX Inference", version="1.0")
   logger = JsonlLogger(log_file or resolve_repo_path(DEFAULT_FASTAPI_LOG_FILE))

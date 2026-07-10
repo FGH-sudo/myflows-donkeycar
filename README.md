@@ -2,7 +2,7 @@
 
 本项目用于 DonkeyCar 环境下的自动驾驶实验与课程验收。根仓库负责 DonkeyCar 应用层、训练/评估/部署入口、实验脚本、课程文档和展示流程；`MyFlows/` 保留为独立 Git 子模块/嵌套仓库结构，作为自研深度学习框架依赖，不在根仓库中摊平成普通源码目录。
 
-项目围绕 `docs/本学期任务.md` 展开：在上学期 MyFlows 框架基础上，补齐训练可视化、数据增强、模型保存、ONNX/INT8 推理、gRPC 服务化部署、指标评价、卷积池化验证、DonkeyCar VGG 回归、跨框架 benchmark、Docker/Kubernetes 部署和报告文档。
+本项目在上学期 MyFlows 框架基础上，补齐训练可视化、数据增强、模型保存、ONNX/INT8 推理、gRPC 服务化部署、指标评价、卷积池化验证、DonkeyCar VGG 回归、跨框架 benchmark、Docker 部署与架构设计文档。
 
 ## 任务书对应能力矩阵
 
@@ -19,7 +19,7 @@
 | 卷积和池化验证 | `MyFlows/tests/test_convolution.py` | im2col + GEMM、Conv2D/MaxPool 前反向与 naive 结果对比 |
 | DonkeyCar VGG 回归 | `apps/train/train_vgg_donkey_regression.py`、`apps/eval/eval_vgg_donkey_regression.py` | VGG11 输出 `[angle, throttle]`、回归指标 |
 | 跨框架对比 | `benchmark/compare_frameworks.py`、`benchmark/plot_compare.py` | DonkeyCar 回归子集上的 MyFlows / PyTorch / PaddlePaddle 训练耗时、内存 |
-| 总体/模块/算法/详细设计 | `docs/system_design.md`、`docs/module_design.md`、`docs/algorithm_design.md`、`docs/detailed_design.md`、`docs/final_report.md` | 课程报告和答辩材料 |
+| 总体/模块/算法/详细设计 | `docs/system_design.md`、`docs/module_design.md`、`docs/algorithm_design.md`、`docs/detailed_design.md` | 架构与设计说明 |
 
 ## 项目架构
 
@@ -48,8 +48,9 @@ flowchart TB
 | `scripts/` | FP32/INT8 量化评估报告等实验闭环脚本 |
 | `benchmark/` | 跨框架训练对比、DataLoader 吞吐、在线服务压测 |
 | `proto/`、`generated/grpc/` | gRPC 协议定义与生成代码 |
-| `deploy/` | Docker Compose、Kubernetes、Kubeflow 示例 |
-| `docs/` | 任务书、设计文档、验证指南、期末报告、实验结果说明 |
+| `deploy/` | Docker Compose 部署配置 |
+| `docs/` | 架构与设计文档、实验结果说明 |
+| `video/` | ResNet-18 FP32 与静态 INT8 实际运行视频 |
 | `mycar/` | DonkeyCar 工程目录；数据、模型、日志属于本地运行资产 |
 | `DonkeySimWin/` | DonkeyCar Windows 仿真器资产，按外部大文件处理 |
 
@@ -124,10 +125,10 @@ python -m apps.eval.eval_myflows_donkey_onnx --checkpoint mycar/models/myflow_re
 python -m apps.eval.eval_myflows_donkey_onnx --checkpoint mycar/models/myflow_resnet18_best.onnx --split-file mycar/logs/resnet18_split.json --split test --max-samples 0 --fixed-throttle 0.2 --force-fixed-throttle --device cuda
 ```
 
-VGG 回归评估：
+VGG 回归评估作为辅助对比保留；评价模块演示和截图建议优先使用 ResNet test split 指标：
 
 ```bash
-python -m apps.eval.eval_vgg_donkey_regression --checkpoint mycar/models/vgg11_regression_best --max-samples 2000 --device auto
+python -m apps.eval.eval_vgg_donkey_regression --checkpoint mycar/models/vgg11_regression_best --split-file mycar/logs/resnet18_split.json --split test --max-samples 0 --fixed-throttle 0.2 --force-fixed-throttle --device cuda
 ```
 
 FP32/INT8 对比报告：
@@ -136,7 +137,7 @@ FP32/INT8 对比报告：
 python scripts/run_quantize_eval.py --fp32 mycar/models/myflow_resnet18_best.onnx --data mycar/data --split-file mycar/logs/resnet18_split.json --split test --max-samples 0 --fixed-throttle 0.2 --force-fixed-throttle --device cuda --out-json docs/experiments/int8_metrics.json --out-md docs/experiments/int8_report.md --out-png docs/experiments/int8_report.png
 ```
 
-本次正式量化评测使用 test split 1000 张图片，ONNX Runtime 实际启用 CUDAExecutionProvider。结果见 `docs/experiments/int8_report.md`、`docs/experiments/int8_report.png` 和 `docs/experiments/int8_metrics.json`；INT8 将模型体积从约 42.68 MB 压缩到约 10.77 MB，但当前 CUDA 部署推荐 FP32 ONNX。
+本次正式量化评测使用 test split 1000 张图片，ONNX Runtime 实际启用 CUDAExecutionProvider。结果见 `docs/experiments/int8_report.md`、`docs/experiments/int8_report.png` 和 `docs/experiments/int8_metrics.json`；实际运行视频见 `video/resnet18.mp4` 与 `video/resnet18_int8_static.mp4`。INT8 将模型体积从约 42.68 MB 压缩到约 10.77 MB，但当前 CUDA 部署推荐 FP32 ONNX。
 
 ### 服务化部署
 
@@ -207,6 +208,8 @@ Docker Compose：
 docker compose -f deploy/docker/docker-compose.yml up --build
 ```
 
+Compose 会同时启动 gRPC `50051` 和 FastAPI `8000`，两者都直接加载容器内 `/models/myflow_resnet18_best.onnx`。部署镜像安装 `onnxruntime-gpu[cuda,cudnn]`，服务默认 `DEVICE=cuda`，并通过 `gpus: all` 申请 Docker GPU。验收截图建议包含 `docker compose ps`、FastAPI `/model_info` 中的 `CUDAExecutionProvider`，以及容器内 `nvidia-smi`。
+
 ## 展示流程
 
 ### 课堂快速演示
@@ -252,8 +255,6 @@ python benchmark/plot_compare.py
 python benchmark/dataloader_bench.py --data mycar/data --batch 8 --batches 500
 python benchmark/serve_bench.py --mode local --model mycar/models/myflow_resnet18_best.onnx --out-json docs/experiments/serve_bench_local.json --out-md docs/experiments/serve_bench_local.md
 ```
-
-更完整的逐项验证说明见 `docs/task_verification_guide.md`。
 
 ## Git 初始化说明
 

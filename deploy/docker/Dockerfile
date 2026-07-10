@@ -3,7 +3,7 @@ FROM python:3.11-slim
 WORKDIR /app
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    libgl1 libglib2.0-0 \
+    libgl1 libglib2.0-0 zlib1g \
     && rm -rf /var/lib/apt/lists/*
 
 COPY requirements-deploy.txt /app/requirements-deploy.txt
@@ -16,11 +16,11 @@ COPY MyFlows /app/MyFlows
 COPY proto /app/proto
 
 ENV SERVE_MODE=grpc
-ENV MODEL_PATH=/models/model.onnx
+ENV MODEL_PATH=/models/myflow_resnet18_best.onnx
 ENV PORT=50051
 
 COPY deploy/docker/entrypoint.sh /entrypoint.sh
-RUN chmod +x /entrypoint.sh
+RUN sed -i 's/\r$//' /entrypoint.sh && chmod +x /entrypoint.sh
 
 EXPOSE 50051 8000
 

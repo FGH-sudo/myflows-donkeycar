@@ -65,5 +65,10 @@ dist/
 .worktrees/
 worktrees/
 
+# Word/Office lock files and doc render scratch
+~$*
+docs/.format_fix_tmp/
+docs/_word_page_images_*/
+
 # Keep MyFlows/ visible to Git as its existing nested repository/submodule entry.
 # Do not add a broad MyFlows/ ignore rule here.
