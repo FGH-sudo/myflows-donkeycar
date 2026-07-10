@@ -36,13 +36,13 @@ class GradcamReportingTest(unittest.TestCase):
             true_angle=-0.2222,
             pred_angle=-0.189347,
             abs_error=0.032853,
-            overlay_path=Path("D:/DL/testmyflow/docs/experiments/explainability/run/000_overlay.png"),
-            root=Path("D:/DL/testmyflow"),
+            overlay_path=Path("docs/experiments/explainability/run/000_overlay.png"),
+            root=Path("."),
         )
 
         self.assertEqual(
             lines[-1],
-            "| 0 | `images\\1000_-0.2222.jpg` | `angle` | -0.189347 | -0.222200 | -0.189347 | 0.032853 | `docs\\experiments\\explainability\\run\\000_overlay.png` |",
+            "| 0 | `images/1000_-0.2222.jpg` | `angle` | -0.189347 | -0.222200 | -0.189347 | 0.032853 | `docs/experiments/explainability/run/000_overlay.png` |",
         )
 
 

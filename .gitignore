@@ -43,6 +43,7 @@ mycar/models/
 *.pth
 *.ckpt
 *.pb
+*.mp4
 benchmark/results.csv
 docs/experiments/**/*.png
 docs/experiments/**/*.jpg

@@ -116,6 +116,7 @@ def main() -> None:
         fixed_throttle=args.fixed_throttle,
         force_fixed_throttle=bool(args.force_fixed_throttle),
         sample_count=len(index),
+        root=ROOT,
     )
 
     for step, (rel, angle_true, throttle_true) in enumerate(index):

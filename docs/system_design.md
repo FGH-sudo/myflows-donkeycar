@@ -59,6 +59,5 @@ flowchart TB
 ## 6. 实验与文档
 
 - `docs/experiments/int8_report.md` / `int8_report.png` / `int8_metrics.json`：FP32、动态 INT8、静态 INT8 推理对比
-- `video/resnet18.mp4` / `video/resnet18_int8_static.mp4`：ResNet-18 FP32 与静态 INT8 实际运行视频
 - `docs/experiments/explainability/`：Grad-CAM 输出
 - `docs/experiments/training_viz/`：训练曲线与 TB 截图

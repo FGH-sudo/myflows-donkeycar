@@ -10,8 +10,6 @@
 | [experiments/int8_report.md](experiments/int8_report.md) | FP32/INT8 对比 |
 | [experiments/explainability/README.md](experiments/explainability/README.md) | Grad-CAM 可解释性输出 |
 
-实际运行视频位于根目录 `video/`：`resnet18.mp4` 对应 ResNet-18 FP32 ONNX，`resnet18_int8_static.mp4` 对应 ResNet-18 静态 INT8 ONNX。
-
 ## 常用命令
 
 ```bash

@@ -50,7 +50,6 @@ flowchart TB
 | `proto/`、`generated/grpc/` | gRPC 协议定义与生成代码 |
 | `deploy/` | Docker Compose 部署配置 |
 | `docs/` | 架构与设计文档、实验结果说明 |
-| `video/` | ResNet-18 FP32 与静态 INT8 实际运行视频 |
 | `mycar/` | DonkeyCar 工程目录；数据、模型、日志属于本地运行资产 |
 | `DonkeySimWin/` | DonkeyCar Windows 仿真器资产，按外部大文件处理 |
 
@@ -137,7 +136,7 @@ FP32/INT8 对比报告：
 python scripts/run_quantize_eval.py --fp32 mycar/models/myflow_resnet18_best.onnx --data mycar/data --split-file mycar/logs/resnet18_split.json --split test --max-samples 0 --fixed-throttle 0.2 --force-fixed-throttle --device cuda --out-json docs/experiments/int8_metrics.json --out-md docs/experiments/int8_report.md --out-png docs/experiments/int8_report.png
 ```
 
-本次正式量化评测使用 test split 1000 张图片，ONNX Runtime 实际启用 CUDAExecutionProvider。结果见 `docs/experiments/int8_report.md`、`docs/experiments/int8_report.png` 和 `docs/experiments/int8_metrics.json`；实际运行视频见 `video/resnet18.mp4` 与 `video/resnet18_int8_static.mp4`。INT8 将模型体积从约 42.68 MB 压缩到约 10.77 MB，但当前 CUDA 部署推荐 FP32 ONNX。
+本次正式量化评测使用 test split 1000 张图片，ONNX Runtime 实际启用 CUDAExecutionProvider。结果见 `docs/experiments/int8_report.md`、`docs/experiments/int8_report.png` 和 `docs/experiments/int8_metrics.json`。INT8 将模型体积从约 42.68 MB 压缩到约 10.77 MB，但当前 CUDA 部署推荐 FP32 ONNX。
 
 ### 服务化部署
 
@@ -149,9 +148,9 @@ python -m tools.export_resnet_onnx --model vgg11 --checkpoint mycar/models/vgg11
 
 启动 DonkeyCar 仿真自动驾驶。无需提前手动打开模拟器；`mycar/myconfig.py` 已配置 `DONKEY_GYM=True` 和 `DonkeySimWin/donkey_sim.exe`，`drive` 命令会拉起模拟器、加载 MyFlows ONNX pilot，并启动 Web 控制台。
 
-```powershell
-cd D:\DL\testmyflow\mycar
-python manage.py drive --model=models\myflow_resnet18_best.onnx --type=myflows
+```bash
+cd mycar
+python manage.py drive --model=models/myflow_resnet18_best.onnx --type=myflows
 ```
 
 打开控制台：
@@ -162,9 +161,9 @@ http://127.0.0.1:8887
 
 通用写法如下，替换为本次训练导出的 ONNX 文件名即可：
 
-```powershell
-cd D:\DL\testmyflow\mycar
-python manage.py drive --model=models\<your_resnet_best>.onnx --type=myflows
+```bash
+cd mycar
+python manage.py drive --model=models/<your_resnet_best>.onnx --type=myflows
 ```
 
 启动 gRPC 服务并发送单图请求：

@@ -6,10 +6,16 @@ from __future__ import annotations
 from pathlib import Path
 
 
-def _display_path(path: Path | None) -> str:
+def _display_path(path: Path | None, root: Path | None = None) -> str:
     if path is None:
         return ""
-    return Path(path).as_posix()
+    p = Path(path)
+    if root is not None:
+        try:
+            p = p.resolve().relative_to(Path(root).resolve())
+        except ValueError:
+            pass
+    return p.as_posix()
 
 
 def gradcam_report_header(
@@ -23,19 +29,22 @@ def gradcam_report_header(
     fixed_throttle: float = 0.5,
     force_fixed_throttle: bool = False,
     sample_count: int | None = None,
+    root: Path | None = None,
 ) -> list[str]:
-    split_text = f"`{split}` via `{_display_path(split_file)}`" if split_file else f"`{split}`"
+    split_text = (
+        f"`{split}` via `{_display_path(split_file, root)}`" if split_file else f"`{split}`"
+    )
     fixed_text = f"`{fixed_throttle}` forced" if force_fixed_throttle else f"`{fixed_throttle}` fallback"
     return [
         "# Grad-CAM 可视化报告",
         "",
         f"- model_type: `{model_type}`",
-        f"- checkpoint: `{checkpoint}`",
+        f"- checkpoint: `{_display_path(checkpoint, root)}`",
         f"- layer: `{layer_name}`",
         f"- split: {split_text}",
         f"- fixed_throttle: {fixed_text}",
         f"- samples: `{sample_count}`" if sample_count is not None else "- samples: `unknown`",
-        f"- TensorBoard: `{logdir}`",
+        f"- TensorBoard: `{_display_path(logdir, root)}`",
         "- score 是 target_output 对应的模型原始预测值，不是准确率或置信度。",
         "",
         "| # | image | target_output | score | true_angle | pred_angle | abs_error | overlay |",
@@ -57,8 +66,9 @@ def append_gradcam_row(
     root: Path,
 ) -> None:
     lines.append(
-        f"| {step} | `{rel_path}` | `{target_label}` | {score:.6f} | "
-        f"{true_angle:.6f} | {pred_angle:.6f} | {abs_error:.6f} | `{overlay_path.relative_to(root)}` |"
+        f"| {step} | `{_display_path(rel_path)}` | `{target_label}` | {score:.6f} | "
+        f"{true_angle:.6f} | {pred_angle:.6f} | {abs_error:.6f} | "
+        f"`{_display_path(overlay_path, root)}` |"
     )
 
 

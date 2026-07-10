@@ -115,6 +115,16 @@ def _model_size_mb(path: Path) -> float:
     return path.stat().st_size / (1024 * 1024) if path.is_file() else 0.0
 
 
+def _display_repo_path(path: Path | None) -> str:
+    if path is None:
+        return ""
+    p = Path(path)
+    try:
+        return p.resolve().relative_to(ROOT).as_posix()
+    except ValueError:
+        return p.as_posix()
+
+
 def _write_markdown(
     out_md: Path,
     *,
@@ -127,14 +137,14 @@ def _write_markdown(
     out_json: Path,
     out_png: Path | None,
 ) -> None:
-    split_text = f"`{split}` via `{split_file}`" if split_file else "`all`"
+    split_text = f"`{split}` via `{_display_repo_path(split_file)}`" if split_file else "`all`"
     lines = [
         "# FP32 vs INT8 Inference Report",
         "",
-        f"- Data: `{data_dir}`",
+        f"- Data: `{_display_repo_path(data_dir)}`",
         f"- Split: {split_text}",
         f"- Samples: {rows_count}",
-        f"- FP32 model: `{fp32_path}`",
+        f"- FP32 model: `{_display_repo_path(fp32_path)}`",
         "",
         "| Variant | angle MSE | throttle MSE | overall MSE | angle sign acc | mean latency (ms) | P99 (ms) | size (MB) |",
         "|---|---:|---:|---:|---:|---:|---:|---:|",
@@ -145,9 +155,9 @@ def _write_markdown(
             f"{r['overall_mse']:.6f} | {r['angle_sign_acc']:.4f} | "
             f"{r['latency_ms_mean']:.2f} | {r['latency_ms_p99']:.2f} | {r['size_mb']:.3f} |"
         )
-    lines.extend(["", f"- Raw JSON: `{out_json}`"])
+    lines.extend(["", f"- Raw JSON: `{_display_repo_path(out_json)}`"])
     if out_png:
-        lines.append(f"- Plot: `{out_png}`")
+        lines.append(f"- Plot: `{_display_repo_path(out_png)}`")
     lines.append("")
     out_md.parent.mkdir(parents=True, exist_ok=True)
     out_md.write_text("\n".join(lines), encoding="utf-8")
