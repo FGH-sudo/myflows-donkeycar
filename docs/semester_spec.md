@@ -79,7 +79,7 @@ PDF 把任务分成基础部分和拓展优化。本草案按下面的顺序推�
 
 - tools/run_tests.py 已收集框架类测试及原先遗漏的 10 个函数式测试；初始化显式传 seed，保留原训练断言。当前统一入口共 127 项，连续三轮结果归档在阶段报告。
 - 回归另外暴露了多进程 DataLoader 把样本按 worker 分别组批的问题，偶尔产生额外尾批。已改为完整 batch 派发并按 batch_id 返回，增加顺序、非均匀负载、单尾批及异常传播检查。
-- MyFlows/ops/cuda/ 已提供六个自写 CUDA kernel，严格 FP32 分派并保留 NumPy/CuPy；小 CNN 参数/梯度/Adam 状态的 FP32 路径已经验证。
+- MyFlows/ops/cuda_native/ 已提供原生 C/C++ 调度的卷积/池化 CUDA kernel，并在卷积中调用 cuBLAS；小 CNN 参数/梯度/Adam 状态的 FP32 路径已经验证。
 - MyFlows/distributed/ 已提供 CPU 同步 PS/Worker/Launcher/事件监控，1/2/4 worker 的 20 步参数更新与单进程参考等价，四类故障均能失败退出并清理。
 - 三后端完整 P0-P3 矩阵、Systems/Compute 小中规模报告、dX 优化前后普通计时均已归档。性能有规模依赖，CUDA C 并未全面快于 CuPy。
 - requirements-stage1-lock.txt 锁定 Python 3.11 阶段依赖；不继承系统包、不安装 PyTorch 的环境通过框架回归和导出源码复现。每次实验保存两个仓库的实际源码快照、状态与哈希；仓库发布方式后续另行规范。
@@ -115,7 +115,7 @@ PDF 把任务分成基础部分和拓展优化。本草案按下面的顺序推�
 - 参数名从模块路径产生，例如 layer2.0.conv1.weight；不直接用目前重复的 kernel/bias/gamma/beta 作字典键。共享参数按对象去重，遍历顺序稳定。
 - dtype 必须贯穿参数、buffer、梯度、优化器状态、输入和输出；类别索引保持整数。恢复 FP64 老模型必须显式保留或转换，禁止默默当作 FP32 实验。
 - 随机性由明确的 seed 派生并传入初始化器、NumPy/CuPy、数据采样和增强；记录每个 trial 的 seed。不能只调用 np.random.seed。
-- device 表示 cpu/cuda；op_backend 表示 numpy/cupy/cuda_c。正式 CUDA C 测试遇到不支持形状应报错，不可静默退回 CuPy；混合运行单独记录实际后端及覆盖率。
+- device 表示 cpu/cuda；op_backend 表示 numpy/cupy/cuda_native_cublas。正式原生 CUDA 测试遇到不支持形状应报错，不可静默退回 CuPy；混合运行单独记录实际后端及覆盖率。
 - loader_workers 是数据读取进程数，train_workers 是 PS/All-Reduce 训练进程数。两者不可混用，Agent 的 worker 搜索必须指明是哪一个。
 - 每次运行独立保存配置、日志、结果和 checkpoint；主训练入口目前的全局 STOP_TRAINING 文件也要改为运行级路径，避免一个 trial 误停另一个。
 
@@ -532,7 +532,7 @@ PDF 第 7 页分别写第 4 次课、第 8 次课和第 12 次周；这里保留
 | --- | --- | --- | --- | --- |
 | W0 / 框架 | 统一测试入口、seed/dtype、环境清单；先 fixture/小模型，后完整 ResNet 路径 | 无，按接入范围逐步完成 | 12-20 | 78 个现有框架检查被收集；21 个应用检查；同 seed 同权重；FP32 全链路 |
 | W1 / 框架+应用 | 先做 PS 小模型显式参数映射；阶段后统一 ModelState/runner/config/result，兼容旧 checkpoint | 最小映射可独立；完整接口依赖 W0 相关工作 | 16-24 | 两次构图相同 key；命名与 shape 错误拒绝；小任务返回规范结果 |
-| W2 / 框架 | MyFlows/ops/cuda/ 的 .cu、编译/分派；benchmark/cuda_ops.py；误差与 Nsight 证据 | 独立 fixture/环境；小模型集成依赖其 seed/dtype，不依赖完整 W1 | 32-48 | Conv/Pool fwd/bwd 与参考一致；不静默 fallback；三后端规模比较 |
+| W2 / 框架 | MyFlows/ops/cuda_native/ 的 C/C++ 调度、CUDA kernel、cuBLAS；benchmark/cuda_ops.py；误差与 Nsight 证据 | 独立 fixture/环境；小模型集成依赖其 seed/dtype，不依赖完整 W1 | 32-48 | Conv/Pool fwd/bwd 与参考一致；不静默 fallback；CuPy/原生路径规模比较 |
 | W3 / 框架 | MyFlows/distributed/ 的 protocol/ps/worker/launcher；小模型 PS 入口 | 显式小模型参数映射、固定初值；不依赖 CUDA 或完整 W1 | 24-36 | 小 MLP 1/2/4 worker 与 20 步等价已实现；后续接分类；保留分片/重复消息/异常清理回归 |
 | W4 / 框架+实验 | MyFlows/monitoring/ 的 sampler/timer；训练/PS hooks；瓶颈对照 | 首阶段基本计时独立；完整监控与 W1/W2/W3 整合 | 16-24 | B7 指标、通信等待可追踪；量化开销；一项优化前后数据 |
 | W5 / 应用+实验 | CIFAR-10 数据与分类入口；benchmark/compare_frameworks.py 的 ResNet18 三框架协议 | W0/W1；监控依赖 W4 | 24-36 | 无测试集泄漏；单步对齐；独立进程基线、真实精度/峰值 |

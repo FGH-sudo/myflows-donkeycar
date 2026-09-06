@@ -8,7 +8,7 @@
 | --- | --- |
 | MyFlows/core/ | 计算图、节点、Tensor 和 CPU/CUDA 设备切换 |
 | MyFlows/ops/ | 当前 NumPy/CuPy 算子，包括卷积、池化、损失和激活函数 |
-| MyFlows/ops/cuda/ | 自写 FP32 CUDA Conv/Pool 前反向、CUDA im2col/col2im 与 GEMM 实验路径、严格数组 wrapper、NVRTC 源码缓存与编译标识 |
+| MyFlows/ops/cuda_native/ | 原生 C/C++ 调度自写 FP32 Conv/Pool kernel、cuBLAS GEMM、严格数组 wrapper 和运行时 DLL 管理 |
 | MyFlows/distributed/ | CPU 同步 PS 的模型映射、消息校验、server/worker/launcher 和事件监控 |
 | MyFlows/examples/stage1_cnn.py | 同 seed、全链路 FP32 的 32 样本 CNN 训练 fixture |
 | MyFlows/layers/resnet.py | 当前主模型 ResNet18 |

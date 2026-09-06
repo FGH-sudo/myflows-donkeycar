@@ -10,6 +10,7 @@ htmlcov/
 
 # Local environments and secrets
 .venv/
+.venv-system-site/
 venv/
 env/
 ENV/

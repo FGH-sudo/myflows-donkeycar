@@ -1,0 +1,31 @@
+[project]
+name = "testmyflow"
+version = "0.1.0"
+description = "深度学习框架课程项目与 CUDA 卷积算子实验"
+requires-python = ">=3.11,<3.12"
+dependencies = [
+    "numpy==2.2.6",
+    "cupy-cuda12x==14.0.1",
+    "Pillow==12.1.1",
+    "scikit-learn==1.8.0",
+    "onnx==1.21.0",
+    "tensorboard==2.20.0",
+    "psutil==7.2.2",
+    "matplotlib==3.10.8",
+    "opencv-python==4.13.0.92",
+    # CuPy 12.x needs CUDA 12 headers/runtime for NVRTC; keep this separate
+    # from the system CUDA Toolkit used to build the native DLL.
+    "nvidia-cublas-cu12==12.6.4.1",
+    "nvidia-cuda-nvrtc-cu12==12.6.77",
+    "nvidia-cuda-runtime-cu12==12.6.77",
+]
+
+[dependency-groups]
+dev = [
+    "ruff>=0.13.0",
+]
+
+[tool.uv]
+# 仓库包含多个独立的课程/仿真模块，不把根目录作为可安装 Python 包。
+package = false
+default-groups = ["dev"]

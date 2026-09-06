@@ -9,6 +9,7 @@
 | [第一阶段报告](experiments/semester_2026_fall/stage1/README.md) | 实测结果、限制、第四次课演示、复现命令和实验包 | 当前阶段成果 |
 | [第二阶段 CUDA im2col Spec](stage2_cuda_optimized_spec.md) | 同算法路径迁移与 CuPy/CUDA 控制变量对照 | v0.1 实施前方案 |
 | [第二阶段首轮记录](experiments/semester_2026_fall/stage1/stage2_im2col_report.md) | CUDA im2col/col2im 首轮实现与组件计时 | 2026-09-06 首轮 |
+| [原生池化对照报告](experiments/semester_2026_fall/stage1/native_pool_report.md) | 原生 C/C++ 调度最大池化与 CuPy 对照 | 2026-09-06 |
 | [semester_spec_review.md](semester_spec_review.md) | 对照 PDF 与代码的审核发现、实测证据 | 2026-09-05 历史审核，对应 v0.2 |
 | [system_design.md](system_design.md) | 当前系统结构，不包含尚未实现的能力 | 当前有效 |
 | [module_design.md](module_design.md) | 当前有效模块和运行入口 | 当前有效 |

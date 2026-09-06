@@ -10,7 +10,6 @@ from MyFlows.core.device import set_device, xp, asnumpy
 from MyFlows.core.node import Variable
 from MyFlows.examples.stage1_cnn import build, dataset, assert_fp32
 from MyFlows.ops.convolution import Conv2D_Op, MaxPool2d_Op
-from MyFlows.ops.cuda.loader import compilation_metadata, get_kernel
 from MyFlows.tests.cuda_fixtures import CONV_CASES, conv_fixture
 from MyFlows.tests.test_convolution import (
     naive_conv_forward, naive_conv_backward, naive_maxpool_forward, naive_maxpool_backward,
@@ -110,20 +109,6 @@ class Operator:
         return float(xp.cuda.get_elapsed_time(start_event, stop_event)), (time.perf_counter() - start) * 1000
 
 
-def compile_cuda(run):
-    start = time.perf_counter()
-    for filename, names in {
-        "conv2d.cu": ("conv2d_forward_direct", "conv2d_backward_input", "conv2d_backward_weight", "conv2d_backward_bias"),
-        "maxpool2d.cu": ("maxpool2d_forward_direct", "maxpool2d_backward_gather"),
-        "im2col.cu": ("conv2d_im2col_forward", "conv2d_col2im_backward"),
-        "gemm.cu": ("gemm_nt", "gemm_nn", "gemm_tn"),
-    }.items():
-        for name in names:
-            get_kernel(filename, name)
-    run.results["compile_or_cache_load_wall_ms"] = (time.perf_counter() - start) * 1000
-    run.manifest["cuda_compilation"] = compilation_metadata()
-
-
 def run_matrix(args, run):
     rows, measurements, hashes = [], [], {}
     run.results.update(correctness=rows, measurements=measurements)
@@ -147,8 +132,6 @@ def run_matrix(args, run):
         expected = oracle(case)
         for backend in args.backends:
             op = Operator(case, backend)
-            if backend in ("cuda_c", "cuda_im2col", "cuda_native_cublas", "cuda_im2col_gemm") and "cuda_compilation" not in run.manifest:
-                compile_cuda(run)
             actual = op.outputs()
             metrics = {key: error_metrics(actual[key], reference) for key, reference in expected.items()}
             rows.append({"case": case["id"], "backend": backend, "errors": metrics,
@@ -190,7 +173,7 @@ def run_matrix(args, run):
     if not rows:
         raise ValueError("no case matched --case")
     for row in measurements:
-        if row["backend"] == "cuda_c":
+        if row["backend"] == "cuda_native_cublas":
             for ref in ("numpy", "cupy"):
                 match = next((m for m in measurements if (m["case"], m["phase"], m["backend"]) == (row["case"], row["phase"], ref)), None)
                 if match:
@@ -253,8 +236,6 @@ def run_profile(args, run):
     expected, actual = oracle(case), op.outputs()
     if not all(error_metrics(actual[k], v)["allclose"] for k, v in expected.items()):
         raise AssertionError("profile input failed correctness")
-    if op.backend == "cuda_c":
-        compile_cuda(run)
     run.manifest["fixture_sha256"] = array_hash(*case["arrays"])
     for _ in range(args.warmup):
         op.combined()
@@ -277,7 +258,7 @@ def run_profile(args, run):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--suite", choices=("correctness", "performance", "train", "profile"), required=True)
-    parser.add_argument("--backends", default="numpy,cupy,cuda_c")
+    parser.add_argument("--backends", default="numpy,cupy,cuda_native_cublas")
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--out-dir", required=True)
     parser.add_argument("--case")
@@ -288,9 +269,9 @@ def main():
     parser.add_argument("--suite-timeout", type=float, default=1800)
     args = parser.parse_args()
     args.backends = args.backends.split(",")
-    allowed_backends = ("numpy", "cupy", "cuda_c", "cuda_im2col", "cuda_native_cublas", "cuda_im2col_gemm")
+    allowed_backends = ("numpy", "cupy", "cuda_native_cublas")
     if not args.backends or len(args.backends) != len(set(args.backends)) or any(b not in allowed_backends for b in args.backends):
-        parser.error("--backends must be a unique comma-separated subset of numpy,cupy,cuda_c,cuda_im2col,cuda_native_cublas,cuda_im2col_gemm")
+        parser.error("--backends must be a unique comma-separated subset of numpy,cupy,cuda_native_cublas")
     if min(args.measure, args.repeats, args.case_timeout, args.suite_timeout) <= 0 or args.warmup < 0:
         parser.error("budgets must be positive, warmup must be nonnegative")
     with RunArtifacts(args.out_dir, vars(args)) as run:

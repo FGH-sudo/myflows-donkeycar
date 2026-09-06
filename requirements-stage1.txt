@@ -1,7 +1,7 @@
 # Stage-one runtime and framework regression checks (Python 3.11).
-# The ctk extra installs CUDA user-space libraries without requiring PyTorch.
+# CUDA runtime, headers and cuBLAS come from the system CUDA Toolkit.
 numpy==2.2.6
-cupy-cuda12x[ctk]==14.0.1
+cupy-cuda12x==14.0.1
 Pillow==12.1.1
 scikit-learn==1.8.0
 onnx==1.21.0

@@ -37,7 +37,7 @@ class Stage1ArtifactsTest(unittest.TestCase):
     def test_required_gpu_failure_is_recorded_not_skipped(self):
         with tempfile.TemporaryDirectory() as temp:
             path = Path(temp) / "run"
-            args = argparse.Namespace(suite="correctness", seed=0, case="T0", backends=["cuda_c"])
+            args = argparse.Namespace(suite="correctness", seed=0, case="T0", backends=["cuda_native_cublas"])
             with patch("benchmark.stage1_common.environment", return_value={}), patch("benchmark.stage1_common.source_state", return_value={}):
                 with self.assertRaisesRegex(RuntimeError, "CUDA unavailable"):
                     with RunArtifacts(path, {}) as run:

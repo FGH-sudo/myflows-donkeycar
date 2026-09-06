@@ -4,9 +4,9 @@
 
 ## 实现路径
 
-`cuda_native_cublas` 的 Python 层只负责 CuPy 数组的校验、分配和设备指针传递。原生 DLL 由 CMake/MinGW 构建，使用 CUDA Driver API 加载 NVRTC 生成的 im2col、col2im 和 bias 归约 kernel，并在同一 CUDA stream 上调用 cuBLAS `Sgemm`。该路径不执行 CuPy `@`、`RawKernel` 或 Python 侧 kernel launch。
+`cuda_native_cublas` 的 Python 层只负责 CuPy 数组的校验、分配和设备指针传递。原生 DLL 由 CMake/MSVC 配合完整 CUDA Toolkit 构建，使用 CUDA Driver API 加载 NVRTC 生成的 im2col、col2im 和 bias 归约 kernel，并在同一 CUDA stream 上调用 cuBLAS `Sgemm`。该路径不执行 CuPy `@`、`RawKernel` 或 Python 侧 kernel launch。
 
-本机没有管理员安装的完整 CUDA Toolkit，但 Python 环境已有 NVIDIA CUDA 运行库和 cuBLAS DLL；原生调度 DLL通过动态加载这些库完成实验。CMake 已安装到 `C:\Program Files\CMake`，构建入口为 `tools/build_native_cuda.py`。
+原生 DLL 的编译使用 CUDA Toolkit 13.3、MSVC 2022 和 CMake；运行时通过隔离 `.venv` 中固定版本的 CUDA 12.6 cuBLAS/NVRTC 运行库加载与 CuPy 兼容的 DLL。构建入口为 `tools/build_native_cuda.py`。
 
 ## 实验条件
 
@@ -32,6 +32,6 @@
 
 这不是“自写 GEMM 胜过 cuBLAS”的结果。矩阵乘法仍由 cuBLAS 执行，性能收益主要来自自写 im2col、原生 stream 调度和较少的 Python 封装开销。自写 `cuda_im2col_gemm` 仍作为独立失败尝试保留，不应与本实验的官方 GEMM 路径混为一谈。
 
-本实验使用了用户态 CUDA 运行库和 NVRTC，不代表完整 CUDA Toolkit 已安装；后续若安装 `nvcc` 和 MSVC，可把同一 C++ 调度层切换到常规 CUDA 构建流程。当前结果足以证明课程要求的区分：两条路径都使用 GPU，但一条由 CuPy 封装调度，另一条由项目自己的 C/C++ 层调度官方 CUDA 库。
+本实验的 C/C++ 调度 DLL 已使用完整 CUDA Toolkit 和 MSVC 构建；运行时仍固定使用隔离环境中的 CUDA 12.6 用户态库，以保持 CuPy 12x 和 PyTorch wheel 的 ABI 一致。池化的同类实现和结果见 [native_pool_report.md](native_pool_report.md)。当前结果足以证明课程要求的区分：两条路径都使用 GPU，但一条由 CuPy 封装调度，另一条由项目自己的 C/C++ 层调度官方 CUDA 库。
 
 原始证据：`performance-native-P0-final-001`、`performance-native-P1-final-001`、`performance-native-P2-final-001` 下的 `results.json`、`timings.csv`、fixture 和输出快照。

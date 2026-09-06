@@ -11,6 +11,8 @@
 
 本阶段先将现有卷积和池化计算接入自写 CUDA C/C++，建立正确性与性能证据；同时用小模型完成单机多进程 PS 模拟，用 Nsight 分析实际执行。Agent 的需求细化、架构设计和实现均暂缓。
 
+当前代码收缩为 `cuda_native_cublas`：卷积和池化均由原生 C/C++ 层调度自写 CUDA kernel，卷积矩阵乘调用 cuBLAS；直接卷积、CUDA im2col 和自写 GEMM 仅保留历史失败报告。
+
 | 目标 | 对应课程内容 | 本阶段交付 |
 | --- | --- | --- |
 | G-CUDA | 第 3 页卷积/池化 CUDA C/C++；第 4 页新增算子测试 | 自写 Conv2D 与 MaxPool2D 的前向、反向；接入原计算图的小 CNN |
@@ -72,9 +74,9 @@ C0 的测试与 seed 修复属于当前阶段工作，完成后再进入 C1 的�
 | --- | --- | --- |
 | cpu / numpy | 原 NumPy 实现 | 数值参考、CPU 性能、PS |
 | cuda / cupy | 原 CuPy im2col + GEMM | GPU 对照 |
-| cuda / cuda_c | 自写 .cu，由 RawKernel/NVRTC 编译调用 | CUDA 实现与性能分析 |
+| cuda / cuda_native_cublas | 自写 CUDA kernel，由原生 C/C++ 调度并调用 cuBLAS | CUDA 实现与性能分析 |
 
-Conv2D、MaxPool2d 及对应 Op 已增加末尾可选参数 backend，默认 auto 保持旧行为：CPU 走 numpy，GPU 走 cupy。只有显式 cuda_c 才启用新实现；它在 CPU、非 FP32 或不支持配置上报错，禁止静默回退。
+Conv2D、MaxPool2d 及对应 Op 已增加末尾可选参数 backend，默认 auto 保持旧行为：CPU 走 numpy，GPU 走 cupy。只有显式 cuda_native_cublas 才启用原生实现；它在 CPU、非 FP32 或不支持配置上报错，禁止静默回退。
 
 编译和显存管理继续使用 CuPy。kernel 从 .cu 文件读取，按源码 hash、编译选项、设备等记录缓存信息；首次编译与稳态运行分别测量。自写路径的卷积/池化计算不能委托现有卷积库完成，允许复用显存分配、连续化与结果梯度合并。
 
@@ -98,7 +100,7 @@ Pool padding=1、完整 ImageNet stem 兼容放在后续总体模型兼容任务
 
 ### 3.3 已实现底层 API
 
-以下是接口记法，实现位于 MyFlows/ops/cuda/kernels.py。每个函数还接受可选 block_size=256；Op/Layer 接口使用固定默认值。
+以下是接口记法，当前实现位于 `MyFlows/ops/cuda_native/`；Op/Layer 接口使用固定默认值。
 
 ~~~text
 conv2d_forward(x, weight, bias=None, *, stride=(1, 1), padding=(0, 0)) -> y
@@ -252,15 +254,15 @@ Queue.put 返回时间不等于接收端完成接收，所以用“提交”和�
 | 顺序 | 任务与建议位置 | 依赖 | 可独立审核的结果 |
 | --- | --- | --- | --- |
 | C0 | 统一测试收集、已有 seed/偶发测试修复；环境/双仓库清单、FP32 fixture、工具探测及基线入口 | 无 | 第 2.1 节基线门槛通过；NumPy/CuPy 同输入结果；RawKernel 小样例与工具能力记录 |
-| C1 | MyFlows/ops/cuda/conv2d.cu、kernels.py、loader.py；直接前向 | C0 | T0-T4 前向正确，能识别实际 kernel |
+| C1 | MyFlows/ops/cuda_native/native_cublas.cpp/native.py；卷积前向 | C0 | T0-T4 前向正确，能识别实际 kernel |
 | C2 | 同目录 Conv dX/dW/db | C1 | 同一 dy 下三类梯度通过参考检查 |
-| C3 | MyFlows/ops/cuda/maxpool2d.cu；Pool 前反向/context | C0；优先在 C2 后推进 | tie、负值、重叠回传正确 |
+| C3 | MyFlows/ops/cuda_native/native_cublas.cpp/native.py；Pool 前反向/context | C0；优先在 C2 后推进 | tie、负值、重叠回传正确 |
 | C4 | ops/convolution.py、layers/layer.py 透传 backend；小模型 seed/dtype | C1-C3 | 原图小 CNN 训练、共享梯度与旧后端回归通过 |
 | C5 | benchmark/cuda_ops.py 完整矩阵；Nsight 分析和优化记录 | C1 起可初测；完整验收依赖 C2-C4 | 三后端误差/耗时、两种规模 profile、优化尝试 |
 | C6 | MyFlows/distributed/ 的 protocol.py/ps.py/worker.py/launcher.py；benchmark/ps_demo.py | CPU 环境和固定初值就绪；独立于 C1-C5 | 1/2 worker 等价、计时、故障清理 |
 | C7 | docs/experiments/semester_2026_fall/stage1/ 的实验包与报告 | 已有结果逐步归档 | 第 4 次课可展示材料；完整阶段验收清单 |
 
-测试位于 MyFlows/tests/test_cuda_convolution.py、test_cuda_pooling.py、test_cuda_graph_integration.py、test_ps_training.py；benchmark 产物/错误状态与源码恢复测试由根仓库 tests/test_stage1_artifacts.py 承担。tools/run_tests.py 统一收集 unittest 和函数式测试。
+测试位于 MyFlows/tests/test_cuda_native_cublas.py、test_cuda_graph_integration.py、test_ps_training.py；benchmark 产物/错误状态与源码恢复测试由根仓库 tests/test_stage1_artifacts.py 承担。tools/run_tests.py 统一收集 unittest 和函数式测试。
 
 单人执行建议：C0 → C1 → C2 → C3 → C4，C5 从 C1 开始随结果推进；C6 在第 4 次课前单独安排，不能一直等 GPU 优化结束。多人可将 C6 独立分工，但本 Spec 不假设具体组员人数。
 
@@ -269,8 +271,8 @@ Queue.put 返回时间不等于接收端完成接收，所以用“提交”和�
 以下命令已实现，必须使用新的输出目录。隔离环境安装、Nsight 完整命令与源码恢复流程见阶段报告。
 
 ~~~powershell
-.\.venv\Scripts\python.exe -m benchmark.cuda_ops --suite correctness --backends numpy,cupy,cuda_c --seed 0 --out-dir docs/experiments/semester_2026_fall/stage1/run-001
-.\.venv\Scripts\python.exe -m benchmark.cuda_ops --suite performance --backends numpy,cupy,cuda_c --seed 0 --out-dir docs/experiments/semester_2026_fall/stage1/run-002
+.\.venv\Scripts\python.exe -m benchmark.cuda_ops --suite correctness --backends numpy,cupy,cuda_native_cublas --seed 0 --out-dir docs/experiments/semester_2026_fall/stage1/run-001
+.\.venv\Scripts\python.exe -m benchmark.cuda_ops --suite performance --backends numpy,cupy,cuda_native_cublas --seed 0 --out-dir docs/experiments/semester_2026_fall/stage1/run-002
 .\.venv\Scripts\python.exe -m benchmark.ps_demo --workers 2 --global-batch 32 --steps 20 --seed 0 --out-dir docs/experiments/semester_2026_fall/stage1/ps-002
 ~~~
 

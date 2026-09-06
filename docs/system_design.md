@@ -62,12 +62,12 @@ flowchart LR
 
 ## 6. 第一阶段新增能力
 
-- `Conv2D` / `MaxPool2d` 和对应 Op 接收 `backend=auto/numpy/cupy/cuda_c/cuda_im2col/cuda_im2col_gemm`；默认保留 NumPy/CuPy，显式 CUDA C 路径严格验证 FP32、设备和配置。后两条是阶段二实验后端。
-- 自写 CUDA 前反向使用 CuPy RawModule/NVRTC 编译，支持 NCHW、OIHW、groups=1、dilation=1；Pool 为 padding=0。底层返回局部梯度，Op 用 += 合并。
-- `cuda_c` 保留阶段一直接卷积基线；`cuda_im2col` 将 im2col/col2im 搬到 CUDA C，矩阵乘仍复用 CuPy GEMM；`cuda_im2col_gemm` 再将三种 GEMM 改为自写 CUDA kernel。两条阶段二路径用于拆分数据重排和矩阵乘的差异。
+- `Conv2D` / `MaxPool2d` 和对应 Op 接收 `backend=auto/numpy/cupy/cuda_native_cublas`；默认保留 NumPy/CuPy，显式原生 CUDA 路径严格验证 FP32、设备和配置。
+- `cuda_native_cublas` 由 C/C++ DLL 在当前 stream 上调度自写 im2col/col2im、max-pool kernel，并调用 cuBLAS 完成卷积 GEMM；底层返回局部梯度，Op 用 `+=` 合并。
+- 直接卷积、CUDA im2col 和自写 GEMM 仅作为历史失败基线保留在实验报告中，不再作为当前代码后端。
 - FP32 小 CNN 完成同初值 CuPy/CUDA C 训练对照；完整 ResNet 的精度和 ImageNet stem 兼容仍在后续范围。
 - CPU PS 使用 Windows spawn、一个 server、1/2/4 个 worker；稳定参数名、版本/hash 校验、样本加权均值、server 单次更新和有界超时清理。
-- `benchmark/cuda_ops.py`、`ps_demo.py`、`profile_cuda.py` 分别记录三后端实验、PS 和真实 Nsight 报告；GPU Events、端到端 wall time、profile 计时分开。
+- `benchmark/cuda_ops.py`、`ps_demo.py`、`profile_cuda.py` 分别记录 CuPy/原生 CUDA 实验、PS 和真实 Nsight 报告；GPU Events、端到端 wall time、profile 计时分开。
 - 统一测试入口补齐函数式测试，训练 smoke 显式传 seed；DataLoader 预先分批并按序返回，避免 worker 调度改变尾批数量。
 
 ## 7. 当前限制

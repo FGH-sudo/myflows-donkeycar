@@ -2,6 +2,8 @@
 
 日期：2026-09-06。对应 [第二阶段 Spec](../../../stage2_cuda_optimized_spec.md)。第一阶段的直接卷积失败基线仍以 [第一阶段报告](README.md) 和 `performance-final-004` 为准；本页同时记录空闲 GPU 下的阶段二复测结论。
 
+本页是阶段二失败路径的历史记录。直接卷积、CUDA im2col 和自写 GEMM 的实现代码已删除；当前保留的原生卷积/池化实现及成功对照分别见 [native_cublas_report.md](native_cublas_report.md) 和 [native_pool_report.md](native_pool_report.md)。
+
 ## 当前实现
 
 阶段二现在保留三条可切换路径：

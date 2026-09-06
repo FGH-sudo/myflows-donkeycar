@@ -12,7 +12,7 @@
 | 门槛 | 实现与验证范围 | 主证据 |
 | --- | --- | --- |
 | G-BASE | 统一收集原有 78 项框架检查和 21 项应用检查；新增后共 127 项，完整回归三个独立 Python 进程均通过且无 skip | [regression-final-003](regression-final-003/report.md)，三份 tests-N.log、results.json；[基线](c0-baseline-001/report.md) |
-| G-CUDA / 数值 | Conv Y/dX/dW/db、Pool Y/dX，T0-T5 三后端；T6/T7 特殊值、view、非法配置；独立 FP64 参考和方向数值梯度 | [correctness-final-002](correctness-final-002/report.md)；MyFlows/tests/test_cuda_convolution.py、test_cuda_pooling.py；完整回归日志 |
+| G-CUDA / 数值 | Conv Y/dX/dW/db、Pool Y/dX，CuPy 与原生 C/C++ 两条当前路径；历史失败后端的完整结果另存于基线报告 | [correctness-final-002](correctness-final-002/report.md)；[native_cublas_report.md](native_cublas_report.md)；完整回归日志 |
 | G-CUDA / 集成 | 原计算图 100 步小 CNN、相同初值/早期梯度/参数更新、FP32 状态；共享参数/双分支、context 更新、设备变更错误、融合后端保留 | [restored-cnn-001](restored-cnn-001/report.md)；MyFlows/tests/test_cuda_graph_integration.py |
 | G-BENCH | P0/P1/P2 Conv、P3 六种 Pool 案例；三后端、四种计时阶段、每组 150 样本；独立冷编译 | [performance-final-004](performance-final-004/report.md)，16,200 条 timings.csv；[compile-cold-001](compile-cold-001/report.md) |
 | G-PROFILE | Systems：P0/P1 的 CuPy 与 CUDA C；Compute：P0/P1 的自写 dX；dX 优化与普通计时对照 | 第 5 节原始 .nsys-rep/.ncu-rep、CSV、SQLite；[优化前](performance-001/report.md) / [优化后](performance-dx-window-002/report.md) |
@@ -27,10 +27,9 @@
 
 | 代码位置（相对项目根目录） | 实际变化 |
 | --- | --- |
-| MyFlows/ops/cuda/conv2d.cu | 自写直接卷积前向、输入梯度、权重梯度、bias 梯度；一个输出/输入/权重/通道由一个线程负责 |
-| MyFlows/ops/cuda/maxpool2d.cu | 自写最大池化前向与反向；并列最大值取行优先首个索引；重叠窗口按输入收集并累加 |
-| MyFlows/ops/cuda/kernels.py、loader.py | 严格数组/设备/shape/dtype 校验、view 连续化、当前 stream 发射；RawModule/NVRTC 编译与源码缓存元信息 |
-| MyFlows/ops/convolution.py、layers/layer.py | 显式 backend=auto/numpy/cupy/cuda_c；forward 记录实际后端，backward 保持路径并用 += 合并梯度；原接口默认不变 |
+| MyFlows/ops/cuda_native/native_cublas.cpp | 原生 C/C++ 调度自写 im2col/col2im/max-pool kernel，并调用 cuBLAS 完成卷积 GEMM |
+| MyFlows/ops/cuda_native/native.py | 严格数组/设备/shape/dtype 校验、view 连续化、当前 stream 传递和卷积/池化上下文管理 |
+| MyFlows/ops/convolution.py、layers/layer.py | 显式 backend=auto/numpy/cupy/cuda_native_cublas；forward 记录实际后端，backward 保持路径并用 += 合并梯度；原接口默认不变 |
 | MyFlows/core/graph.py、ops/loss.py、train/opt.py | 小 CNN 梯度种子、交叉熵标签计算和 Adam 状态的 FP32 传播；融合激活继续保留后端/dtype |
 | MyFlows/examples/stage1_cnn.py | 固定 seed=0、32 个 8x8 条纹样本；Conv(1→4,k3,p1) → ReLU → Pool(k2,s2) → Flatten → Dense(16) → ReLU → Dense(2) |
 | MyFlows/distributed/ | CPU 同步 PS、worker、launcher、协议校验、事件监控、故障注入与有界清理 |
@@ -38,7 +37,7 @@
 | MyFlows/data/pipeline.py | 修复多 worker 各自组尾批造成批数不稳定的问题；完整 batch 派发、batch_id 重排、加载错误传播与资源清理 |
 | benchmark/ 与 tools/restore_stage1_source.py | 正确性/性能/训练/PS/Nsight/冷编译/回归 CLI，失败退出与证据归档，逐文件哈希验证的源码恢复 |
 
-这批 CUDA kernel 的算术计算没有委托 CuPy 卷积或 cuDNN。CuPy 仍负责设备数组、分配、连续化、调用、局部梯度合并和小模型中其他原有算子。`backend=auto` 在 GPU 上仍使用原 CuPy 路径，必须显式指定 `cuda_c` 才启用自写算子。
+原生路径的算术计算没有委托 CuPy 卷积或 cuDNN。CuPy 仍负责设备数组、分配、连续化和 Python 图层；C/C++ DLL 负责自写卷积/池化 kernel 的 launch，以及卷积中的 cuBLAS 调用。`backend=auto` 在 GPU 上仍使用原 CuPy 路径，必须显式指定 `cuda_native_cublas` 才启用原生算子。
 
 支持范围为 FP32、NCHW 输入、OIHW 权重、groups=1、dilation=1、对称非负 padding、正整数 stride 和非方形卷积核。Pool 为 padding=0、ceil_mode=False。合法非连续 view 会复制成连续数组。有限数值是调用方前提，入口不为检测 NaN 逐次同步扫描。索引为 int32，数组元素数受 int32 上限约束；默认 block=256。FP64、错误设备和不支持配置明确报错。
 
@@ -186,8 +185,7 @@ Windows、Python 3.11.7；RTX 4060 Laptop GPU 8188 MiB、驱动 591.74、compute
 # 完整回归；隔离环境可用 --scope framework，旧可选 Torch 日志测试会 skip。
 .\.venv\Scripts\python.exe -X utf8 -m tools.run_tests --scope all
 .\.venv\Scripts\python.exe -X utf8 -m benchmark.stage1_regression --scope all --out-dir docs/experiments/semester_2026_fall/stage1/my-regression-001
-.\.venv\Scripts\python.exe -X utf8 -m benchmark.cuda_ops --suite performance --backends numpy,cupy,cuda_c --seed 0 --out-dir docs/experiments/semester_2026_fall/stage1/my-performance-001
-.\.venv\Scripts\python.exe -X utf8 -m benchmark.cuda_compile_probe --out-dir docs/experiments/semester_2026_fall/stage1/my-cold-001
+.\.venv\Scripts\python.exe -X utf8 -m benchmark.cuda_ops --suite performance --backends numpy,cupy,cuda_native_cublas --seed 0 --out-dir docs/experiments/semester_2026_fall/stage1/my-performance-001
 .\.venv\Scripts\python.exe -X utf8 -m benchmark.ps_demo --workers 2 --shard-sizes 20,12 --steps 20 --out-dir docs/experiments/semester_2026_fall/stage1/my-uneven-001
 # 此故障演示应非零退出，并生成 failed 结果和清理记录。
 .\.venv\Scripts\python.exe -X utf8 -m benchmark.ps_demo --workers 2 --steps 2 --fault crash --out-dir docs/experiments/semester_2026_fall/stage1/my-fault-001
@@ -196,7 +194,7 @@ Windows、Python 3.11.7；RTX 4060 Laptop GPU 8188 MiB、驱动 591.74、compute
 Nsight 命令使用本机已验证路径；其他机器须替换 `--tool-path`。将 `--case P1` 改为 P0 可采小规模；Systems 的 `--backend cupy` 可采旧实现。
 
 ```powershell
-.\.venv\Scripts\python.exe -X utf8 -m benchmark.profile_cuda --tool nsys --tool-path 'D:/ns1s/ProgramFiles64Folder/NVIDIA Corporation/Nsight Systems 2026.4.1/target-windows-x64/nsys.exe' --case P1 --backend cuda_c --out-dir docs/experiments/semester_2026_fall/stage1/my-nsys-001
+.\.venv\Scripts\python.exe -X utf8 -m benchmark.profile_cuda --tool nsys --tool-path 'D:/ns1s/ProgramFiles64Folder/NVIDIA Corporation/Nsight Systems 2026.4.1/target-windows-x64/nsys.exe' --case P1 --backend cuda_native_cublas --out-dir docs/experiments/semester_2026_fall/stage1/my-nsys-001
 .\.venv\Scripts\python.exe -X utf8 -m benchmark.profile_cuda --tool ncu --tool-path 'D:/ns1c/ProgramFiles64Folder/NVIDIA Corporation/Nsight Compute 2026.2.1/target/windows-desktop-win7-x64/ncu.exe' --case P1 --out-dir docs/experiments/semester_2026_fall/stage1/my-ncu-001
 # 重建本文固定 run 的图表，不改写原始数据。
 .\.venv\Scripts\python.exe -X utf8 docs/experiments/semester_2026_fall/stage1/analysis/generate_evidence.py --runs-dir docs/experiments/semester_2026_fall/stage1 --out-dir docs/experiments/semester_2026_fall/stage1/my-analysis-001
