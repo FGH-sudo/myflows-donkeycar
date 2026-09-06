@@ -3,7 +3,7 @@
 - 日期：2026-09-05；对应 [第一阶段 Spec v0.2](../../../stage1_cuda_ps_spec.md)。
 - 范围：C0-C7，第四次课的 GPU 编程、分布式计算和 Nsight；[总体 Spec](../../../semester_spec.md) 继续跟踪后续学期任务。
 - 结果：六个自写 CUDA kernel、原图小 CNN、三后端实验、两类 Nsight 和 CPU PS 均有实际运行证据。完整回归连续三次通过，源码在隔离环境和无 Git 的独立目录复现；本地只保留报告、图表和最终 Nsight 原始报告。
-- 逐条核对：[acceptance.md](acceptance.md)；派生数值与图表的重建脚本：[analysis/](analysis/tables.md)。
+- 逐条核对：[acceptance.md](acceptance.md)；已交付的中文数值表和图表在 [analysis/](analysis/tables.md)；历史重建脚本 `analysis/generate_evidence.py` 只有在另行提供原始 run 目录时才能重新计算全部数据。
 - 后续优化首轮：[CUDA im2col 路径记录](stage2_im2col_report.md)；它新增独立 backend，不修改本报告的第一阶段结论。
 - 历史：源码版本由根仓库和 `MyFlows` 子仓库的 Git 提交记录；实验目录只保留第一阶段正式失败基线、必要的 Nsight 证据和本阶段最终报告，不再生成项目压缩包。
 
@@ -196,7 +196,7 @@ Nsight 命令使用本机已验证路径；其他机器须替换 `--tool-path`�
 ```powershell
 .\.venv\Scripts\python.exe -X utf8 -m benchmark.profile_cuda --tool nsys --tool-path 'D:/ns1s/ProgramFiles64Folder/NVIDIA Corporation/Nsight Systems 2026.4.1/target-windows-x64/nsys.exe' --case P1 --backend cuda_native_cublas --out-dir docs/experiments/semester_2026_fall/stage1/my-nsys-001
 .\.venv\Scripts\python.exe -X utf8 -m benchmark.profile_cuda --tool ncu --tool-path 'D:/ns1c/ProgramFiles64Folder/NVIDIA Corporation/Nsight Compute 2026.2.1/target/windows-desktop-win7-x64/ncu.exe' --case P1 --out-dir docs/experiments/semester_2026_fall/stage1/my-ncu-001
-# 重建本文固定 run 的图表，不改写原始数据。
+# 若另行准备完整原始 run 目录，可重建图表；当前精简交付已直接保留中文图表。
 .\.venv\Scripts\python.exe -X utf8 docs/experiments/semester_2026_fall/stage1/analysis/generate_evidence.py --runs-dir docs/experiments/semester_2026_fall/stage1 --out-dir docs/experiments/semester_2026_fall/stage1/my-analysis-001
 ```
 
