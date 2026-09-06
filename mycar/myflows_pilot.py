@@ -78,7 +78,7 @@ class MyFlowsResNet18Pilot:
         )
         self.model = ms.ResNet18(
             in_channels=3,
-            num_classes=2,
+            output_dim=2,
             stem="cifar",
             base_width=64,
             name="resnet18_donkey",

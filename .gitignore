@@ -52,6 +52,15 @@ docs/experiments/**/*.jpg
 docs/experiments/**/*.jpeg
 docs/experiments/**/*.json
 docs/experiments/**/*.csv
+docs/experiments/**/*.jsonl
+docs/experiments/**/*.nsys-rep
+docs/experiments/**/*.ncu-rep
+docs/experiments/**/*.sqlite
+docs/experiments/**/*.zip
+docs/experiments/**/*.bundle
+# Stage run directories are local evidence stores. Markdown reports and
+# explicitly tracked analysis scripts can be force-added when needed.
+docs/experiments/semester_2026_fall/stage1/*/
 
 # TensorBoard and profiling artifacts
 events.out.tfevents*

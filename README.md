@@ -1,270 +1,119 @@
-# DonkeyCar 自动驾驶课程项目
+# MyFlows 深度学习框架与自动驾驶项目
 
-本项目用于 DonkeyCar 环境下的自动驾驶实验与课程验收。根仓库负责 DonkeyCar 应用层、训练/评估/部署入口、实验脚本、课程文档和展示流程；`MyFlows/` 保留为独立 Git 子模块/嵌套仓库结构，作为自研深度学习框架依赖，不在根仓库中摊平成普通源码目录。
+本仓库包含两部分：
 
-本项目在上学期 MyFlows 框架基础上，补齐训练可视化、数据增强、模型保存、ONNX/INT8 推理、gRPC 服务化部署、指标评价、卷积池化验证、DonkeyCar VGG 回归、跨框架 benchmark、Docker 部署与架构设计文档。
+- MyFlows/：自研深度学习框架，负责计算图、算子、模型、优化器和 GPU 运行。
+- 根仓库：负责 DonkeyCar 数据、训练、评估、模拟器驾驶、服务和课程实验。
 
-## 任务书对应能力矩阵
+本学期以 [课程目标 PDF](<docs/深度学习框架-16 综合项目III.pdf>) 为依据，开发重点是：
 
-| 任务书要求 | 本项目实现/入口 | 展示重点 |
-| --- | --- | --- |
-| 训练过程可视化 | `MyFlows/utils/training_dashboard.py`、`MyFlows/utils/observers/`、训练脚本 TensorBoard 参数 | loss、标签分布、梯度、参数、激活、增强图、checkpoint 事件 |
-| 数据处理、划分与增强 | `apps/common/`、`apps/common/splits.py`、`MyFlows/utils/transforms.py` | DonkeyCar 数据索引、可选 train/val/test split、NCHW 预处理、RandomCrop、Rotation、ColorJitter、MixUp、CutMix |
-| 验证、诊断与早停 | `apps/train/common/validation.py`、`apps/train/common/training_control.py`、`MyFlows/utils/model_inspector.py` | 验证集 loss、best checkpoint、early stopping、model summary、shape/content 检查 |
-| 正则化、Dropout 与初始化 | `MyFlows/train/regularization.py`、`MyFlows/ops/dropout.py`、`MyFlows/utils/initializers.py` | L1/L2/Elastic Net、Dropout train/eval、Xavier/Kaiming/Normal/Constant |
-| 模型保存与导出 | `MyFlows/utils/checkpoint.py`、`MyFlows/utils/onnx_exporter.py` | JSON+NPZ checkpoint、ONNX 导出 |
-| 推理与 INT8 量化 | `apps/eval/`、`tools/quantize_onnx.py`、`scripts/run_quantize_eval.py` | FP32/INT8 MSE、符号准确率、延迟、模型大小 |
-| gRPC 服务化部署 | `proto/infer.proto`、`generated/grpc/`、`apps/serve/serve_grpc.py` | RPC 单图推理、结构化日志、压测结果 |
-| 指标评价模块 | `MyFlows/utils/metrics_core/`、`apps/eval/` | 回归 MSE/MAE/符号准确率；通用分类指标作为框架能力保留 |
-| 卷积和池化验证 | `MyFlows/tests/test_convolution.py` | im2col + GEMM、Conv2D/MaxPool 前反向与 naive 结果对比 |
-| DonkeyCar VGG 回归 | `apps/train/train_vgg_donkey_regression.py`、`apps/eval/eval_vgg_donkey_regression.py` | VGG11 输出 `[angle, throttle]`、回归指标 |
-| 跨框架对比 | `benchmark/compare_frameworks.py`、`benchmark/plot_compare.py` | DonkeyCar 回归子集上的 MyFlows / PyTorch / PaddlePaddle 训练耗时、内存 |
-| 总体/模块/算法/详细设计 | `docs/system_design.md`、`docs/module_design.md`、`docs/algorithm_design.md`、`docs/detailed_design.md` | 架构与设计说明 |
+1. MyFlows AutoPilot Agent 自动安排和调优训练。
+2. 使用 CUDA C/C++ 实现卷积和池化算子。
+3. 实现单机多进程 Parameter Server，并进一步实现 All-Reduce。
+4. 增加 GPU 资源监控和训练性能分析。
+5. 建立至少三种 CNN 的预训练模型和迁移训练能力。
+6. 继续优化 DonkeyCar，并用统一条件比较训练时间、资源占用和驾驶效果。
+7. 完成相应的系统测试、设计文档和实验报告。
 
-## 项目架构
+具体范围、排期和验收标准见 [本学期开发 Spec](docs/semester_spec.md)。后续学期规划与已验证的阶段成果分别记录。
 
-```mermaid
-flowchart TB
-  data[DonkeyCar 数据 mycar/data] --> common[apps/common 数据索引与图像预处理]
-  common --> train[apps/train ResNet 回归 / VGG 回归]
-  common --> eval[apps/eval 离线评估]
-  common --> quant[scripts/tools 量化与解释]
-  train --> ckpt[JSON+NPZ / ONNX 模型]
-  ckpt --> eval
-  ckpt --> serve[apps/serve gRPC / FastAPI]
-  serve --> bench[benchmark 压测]
-  MyFlows[MyFlows 子模块: 自研深度学习框架] --> train
-  MyFlows --> eval
-```
+已按 [第一阶段 Spec](docs/stage1_cuda_ps_spec.md) 实现 CUDA Conv/Pool 前反向、FP32 小 CNN、CPU PS 和 Nsight 入口；运行结果与阶段验收状态见 [第一阶段实验报告](docs/experiments/semester_2026_fall/stage1/README.md)。Agent 的进一步设计与实现安排到后续阶段。
 
-| 路径 | 职责 |
+## 当前基础
+
+仓库目前已经具备：
+
+- NumPy/CuPy 动态计算图和自动求导。
+- Conv2D、MaxPool2D、BatchNorm、Dropout 等基础算子。
+- 显式 FP32 CUDA C Conv/Pool 后端、三后端实验与 Systems/Compute 采集。
+- CPU 同步 Parameter Server，小 MLP 的 1/2/4 worker 更新等价和故障清理。
+- ResNet18 图像回归模型。
+- DonkeyCar 数据读取、训练、验证和 ONNX 评估入口。
+- TensorBoard 训练可视化、checkpoint、Grad-CAM、INT8 和推理服务基础。
+- DonkeyCar Windows 模拟器、本地数据和模型运行环境。
+
+以下内容仍是本学期的待开发项：
+
+- 完整 ResNet 的 CUDA C 精度/训练接入，以及更多模型的 PS 集成。
+- All-Reduce 训练。
+- AutoPilot Agent。
+- 完整 GPU 监控。
+- 三种 CNN 的预训练参数导入、冻结和迁移训练。
+- 自动化 DonkeyCar 闭环评估。
+
+本学期不再把 VGG 作为训练、评估或模型对比方向。相关源码暂时保留，避免在文档整理阶段同时引入代码兼容性风险。
+
+## 目录
+
+| 路径 | 用途 |
 | --- | --- |
-| `MyFlows/` | 自研深度学习框架子模块，包含计算图、算子、层、优化器、Dropout、正则化、初始化、数据流水线、可视化、指标和测试 |
-| `apps/common/` | DonkeyCar catalog/文件名解析、图像读取、resize、NCHW 转换、固定 batch padding、确定性 split |
-| `apps/train/` | ResNet-18 与 VGG-11 转向/油门回归训练；公共验证、best selection、early stopping 放在 `apps/train/common/` |
-| `apps/eval/` | MyFlows checkpoint、ONNX、VGG 回归的离线评估入口；可复用 split 文件按 train/val/test/all 评估 |
-| `apps/serve/` | ONNX predictor、gRPC/FastAPI 服务端、客户端 SDK、结构化日志和运行指标 |
-| `tools/` | 数据转换、ONNX 量化、Grad-CAM 解释、设备运行时工具 |
-| `scripts/` | FP32/INT8 量化评估报告等实验闭环脚本 |
-| `benchmark/` | 跨框架训练对比、DataLoader 吞吐、在线服务压测 |
-| `proto/`、`generated/grpc/` | gRPC 协议定义与生成代码 |
-| `deploy/` | Docker Compose 部署配置 |
-| `docs/` | 架构与设计文档、实验结果说明 |
-| `mycar/` | DonkeyCar 工程目录；数据、模型、日志属于本地运行资产 |
-| `DonkeySimWin/` | DonkeyCar Windows 仿真器资产，按外部大文件处理 |
+| MyFlows/ | 自研框架源码和框架测试 |
+| apps/common/ | DonkeyCar 数据读取和图像预处理 |
+| apps/train/ | 当前 ResNet18 训练入口 |
+| apps/eval/ | MyFlows 与 ONNX 评估入口 |
+| apps/serve/ | gRPC、FastAPI 和 ONNX 推理 |
+| benchmark/ | 性能测试脚本；本学期将按 Spec 重构 |
+| mycar/ | DonkeyCar 工程和驾驶入口 |
+| tools/ | 数据分析、模型导出、量化等工具 |
+| docs/ | 当前文档、课程目标和本学期 Spec |
 
-## 功能模块
+## 当前运行环境
 
-### 数据与训练
+项目使用仓库内的 Python 3.11 虚拟环境。不要直接使用系统默认的 python，因为当前系统默认 Python 3.14 没有项目依赖。
 
-DonkeyCar 图像和标签默认来自：
+PowerShell 中使用：
 
-```text
-mycar/data/images/*.jpg
-mycar/data/catalog_generated.catalog
-```
+~~~powershell
+.\.venv\Scripts\python.exe --version
+~~~
 
-从 `generated-road-data` 重建 tub 数据：
+检查应用层测试：
 
-```bash
-python -m tools.convert_generated_road_to_tub_v2 --src mycar/generated-road-data --dst mycar/data --clear-dst
-```
+~~~powershell
+.\.venv\Scripts\python.exe -m unittest discover -s tests -v
+~~~
 
-ResNet-18 回归训练：
+检查框架层测试：
 
-```bash
-python -m apps.train.train_myflows_donkey --max-samples 500 --epochs 2 --augment --graph-opt --export-onnx --device auto
-```
+~~~powershell
+.\.venv\Scripts\python.exe -m unittest discover -s MyFlows\tests -v
+~~~
 
-带验证集、正则化、Dropout、初始化和诊断的可选训练；未传这些参数时保持旧流程：
+当前框架测试中有一个图像分类用例存在偶发失败。在它修复前，不能把当前测试状态视为稳定基线。
 
-```bash
-python -m apps.train.train_myflows_donkey --max-samples 500 --epochs 2 --val-size 100 --test-size 100 --split-out mycar/logs/resnet_split.json --weight-decay 1e-5 --dropout 0.1 --early-stopping --summary-once --check-shape --device auto
-```
+## 当前有效入口
 
-VGG-11 转向/油门回归训练：
+检查 DonkeyCar 数据：
 
-```bash
-python -m apps.train.train_vgg_donkey_regression --max-samples 500 --epochs 2 --augment --mixup --cutmix --device auto
-```
+~~~powershell
+.\.venv\Scripts\python.exe -m tools.analyze_donkey_data --data mycar\data
+~~~
 
-VGG 同样支持比例 split 和可选初始化：
+运行 ResNet18 小规模训练：
 
-```bash
-python -m apps.train.train_vgg_donkey_regression --max-samples 500 --epochs 2 --val-ratio 0.2 --dropout 0.2 --initializer xavier_uniform --device auto
-```
+~~~powershell
+.\.venv\Scripts\python.exe -m apps.train.train_myflows_donkey --max-samples 200 --epochs 1 --device auto
+~~~
 
-### 可视化与解释
+评估现有 ONNX 模型：
 
-训练脚本可写入 TensorBoard 标量、图像、histogram、参数/梯度/激活统计和增强图对比：
+~~~powershell
+.\.venv\Scripts\python.exe -m apps.eval.eval_myflows_donkey_onnx --checkpoint mycar/models/myflow_resnet18_best.onnx --split-file mycar/logs/resnet18_split.json --split test --max-samples 200 --fixed-throttle 0.2 --force-fixed-throttle --device cuda
+~~~
 
-```bash
-tensorboard --logdir mycar/logs/tensorboard
-```
+启动 DonkeyCar 模拟驾驶：
 
-Grad-CAM 解释：
+~~~powershell
+Set-Location mycar
+..\.venv\Scripts\python.exe manage.py drive --model=models/myflow_resnet18_best.onnx --type=myflows
+~~~
 
-```bash
-python -m tools.explain_donkey_gradcam --model-type resnet --checkpoint mycar/models/myflow_resnet18_best --data mycar/data --split-file mycar/logs/resnet18_split.json --split test --max-samples 8 --fixed-throttle 0.2 --force-fixed-throttle --target-output angle --device cuda
-```
+## 文档
 
-Grad-CAM 会为每次运行生成独立输出目录，例如 `docs/experiments/explainability/gradcam_resnet_<时间戳>/`；报告中的 `score` 是 `target-output` 对应的模型原始预测值，不是准确率或置信度。
+- [本学期开发 Spec](docs/semester_spec.md)：本学期范围、排期和验收标准，当前待审核。
+- [第一阶段开发 Spec](docs/stage1_cuda_ps_spec.md)：当前 CUDA/PS/Nsight 的接口、任务拆分、验证矩阵与汇报目标。
+- [当前系统设计](docs/system_design.md)：只说明当前真实存在的系统。
+- [当前模块说明](docs/module_design.md)：当前有效代码入口及职责。
+- [课程目标 PDF](<docs/深度学习框架-16 综合项目III.pdf>)：教师提供的原始目标。
 
-### 评估、量化与指标
-
-ONNX 回归评估：
-
-```bash
-python -m apps.eval.eval_myflows_donkey_onnx --checkpoint mycar/models/myflow_resnet18_best.onnx --split-file mycar/logs/resnet18_split.json --split test --max-samples 200 --fixed-throttle 0.2 --force-fixed-throttle --device cuda
-```
-
-复用训练 split 的测试集评估：
-
-```bash
-python -m apps.eval.eval_myflows_donkey_onnx --checkpoint mycar/models/myflow_resnet18_best.onnx --split-file mycar/logs/resnet18_split.json --split test --max-samples 0 --fixed-throttle 0.2 --force-fixed-throttle --device cuda
-```
-
-VGG 回归评估作为辅助对比保留；评价模块演示和截图建议优先使用 ResNet test split 指标：
-
-```bash
-python -m apps.eval.eval_vgg_donkey_regression --checkpoint mycar/models/vgg11_regression_best --split-file mycar/logs/resnet18_split.json --split test --max-samples 0 --fixed-throttle 0.2 --force-fixed-throttle --device cuda
-```
-
-FP32/INT8 对比报告：
-
-```bash
-python scripts/run_quantize_eval.py --fp32 mycar/models/myflow_resnet18_best.onnx --data mycar/data --split-file mycar/logs/resnet18_split.json --split test --max-samples 0 --fixed-throttle 0.2 --force-fixed-throttle --device cuda --out-json docs/experiments/int8_metrics.json --out-md docs/experiments/int8_report.md --out-png docs/experiments/int8_report.png
-```
-
-本次正式量化评测使用 test split 1000 张图片，ONNX Runtime 实际启用 CUDAExecutionProvider。结果见 `docs/experiments/int8_report.md`、`docs/experiments/int8_report.png` 和 `docs/experiments/int8_metrics.json`。INT8 将模型体积从约 42.68 MB 压缩到约 10.77 MB，但当前 CUDA 部署推荐 FP32 ONNX。
-
-### 服务化部署
-
-ONNX 产物由训练脚本的 `--export-onnx` 在训练完成或安全中断后生成；ResNet/VGG 训练脚本都会委托 `tools/export_resnet_onnx.py` 生成固定 batch 的部署图。也可以单独调用该工具：
-
-```bash
-python -m tools.export_resnet_onnx --model vgg11 --checkpoint mycar/models/vgg11_regression_best --output mycar/models/vgg11_regression_best.onnx --batch-size 1
-```
-
-启动 DonkeyCar 仿真自动驾驶。无需提前手动打开模拟器；`mycar/myconfig.py` 已配置 `DONKEY_GYM=True` 和 `DonkeySimWin/donkey_sim.exe`，`drive` 命令会拉起模拟器、加载 MyFlows ONNX pilot，并启动 Web 控制台。
-
-```bash
-cd mycar
-python manage.py drive --model=models/myflow_resnet18_best.onnx --type=myflows
-```
-
-打开控制台：
-
-```text
-http://127.0.0.1:8887
-```
-
-通用写法如下，替换为本次训练导出的 ONNX 文件名即可：
-
-```bash
-cd mycar
-python manage.py drive --model=models/<your_resnet_best>.onnx --type=myflows
-```
-
-启动 gRPC 服务并发送单图请求：
-
-```bash
-python -m apps.serve.serve_grpc --model mycar/models/myflow_resnet18_best.onnx --port 50051 --device auto
-python -m apps.serve.grpc_client --image mycar/data/images/1042_0.0000.jpg --host 127.0.0.1 --port 50051
-```
-
-启动 FastAPI 服务并发送单图请求：
-
-```bash
-python -m apps.serve.serve_fastapi --model mycar/models/myflow_resnet18_best.onnx --port 8000 --device auto
-python -m apps.serve.fastapi_client --image mycar/data/images/1042_0.0000.jpg --url http://127.0.0.1:8000 --show-model-info
-```
-
-服务压测：
-
-```bash
-python benchmark/serve_bench.py --mode local --model mycar/models/myflow_resnet18_best.onnx --out-json docs/experiments/serve_bench_local.json --out-md docs/experiments/serve_bench_local.md
-```
-
-### Benchmark 与部署
-
-跨框架 benchmark：
-
-```bash
-python benchmark/compare_frameworks.py --data mycar/data --epochs 2 --samples 64 --device cuda
-python benchmark/plot_compare.py
-```
-
-DataLoader 吞吐测试：
-
-```bash
-python benchmark/dataloader_bench.py --data mycar/data --batch 8 --batches 500
-```
-
-Docker Compose：
-
-```bash
-docker compose -f deploy/docker/docker-compose.yml up --build
-```
-
-Compose 会同时启动 gRPC `50051` 和 FastAPI `8000`，两者都直接加载容器内 `/models/myflow_resnet18_best.onnx`。部署镜像安装 `onnxruntime-gpu[cuda,cudnn]`，服务默认 `DEVICE=cuda`，并通过 `gpus: all` 申请 Docker GPU。验收截图建议包含 `docker compose ps`、FastAPI `/model_info` 中的 `CUDAExecutionProvider`，以及容器内 `nvidia-smi`。
-
-## 展示流程
-
-### 课堂快速演示
-
-1. 展示目录结构和任务矩阵，说明 `MyFlows/` 是子模块/嵌套仓库，根仓库负责 DonkeyCar 应用和展示。
-2. 检查 DonkeyCar 数据：
-
-   ```bash
-   python -m tools.analyze_donkey_data --data mycar/data
-   ```
-
-3. 验证卷积和池化：
-
-   ```bash
-   python MyFlows/tests/test_convolution.py
-   ```
-
-4. 快速训练 DonkeyCar ResNet：
-
-   ```bash
-   python -m apps.train.train_myflows_donkey --max-samples 200 --epochs 1 --device auto
-   ```
-
-5. 评估 ONNX 模型：
-
-   ```bash
-   python -m apps.eval.eval_myflows_donkey_onnx --checkpoint mycar/models/myflow_resnet18_best.onnx --split-file mycar/logs/resnet18_split.json --split test --max-samples 200 --fixed-throttle 0.2 --force-fixed-throttle --device cuda
-   ```
-
-6. 启动 gRPC 或 FastAPI，使用客户端 SDK 发送单图推理请求。
-7. 展示 TensorBoard、训练曲线、Grad-CAM 或 `docs/experiments/` 中的实验材料。
-
-### 正式验收补实验
-
-```bash
-python -m apps.train.train_myflows_donkey --max-samples 0 --epochs 20 --batch 2 --augment --graph-opt --val-size 1000 --test-size 1000 --split-out mycar/logs/resnet_split.json --weight-decay 1e-5 --dropout 0.1 --early-stopping --summary-once --checkpoint-every 500 --export-onnx --device auto
-python -m apps.eval.eval_myflows_donkey_onnx --checkpoint mycar/models/myflow_resnet18_best.onnx --split-file mycar/logs/resnet18_split.json --split test --max-samples 0 --fixed-throttle 0.2 --force-fixed-throttle --device cuda
-python -m apps.train.train_vgg_donkey_regression --max-samples 0 --epochs 10 --augment --val-ratio 0.1 --test-ratio 0.1 --split-out mycar/logs/vgg_split.json --dropout 0.2 --initializer xavier_uniform --device auto --export-onnx
-python -m apps.eval.eval_vgg_donkey_regression --checkpoint mycar/models/vgg11_regression_best --split-file mycar/logs/vgg_split.json --split test --max-samples 0 --device auto
-python scripts/run_quantize_eval.py --fp32 mycar/models/myflow_resnet18_best.onnx --data mycar/data --split-file mycar/logs/resnet18_split.json --split test --max-samples 0 --fixed-throttle 0.2 --force-fixed-throttle --device cuda --out-json docs/experiments/int8_metrics.json --out-md docs/experiments/int8_report.md --out-png docs/experiments/int8_report.png
-python benchmark/compare_frameworks.py --data mycar/data --epochs 2 --samples 64 --device cuda
-python benchmark/plot_compare.py
-python benchmark/dataloader_bench.py --data mycar/data --batch 8 --batches 500
-python benchmark/serve_bench.py --mode local --model mycar/models/myflow_resnet18_best.onnx --out-json docs/experiments/serve_bench_local.json --out-md docs/experiments/serve_bench_local.md
-```
-
-## Git 初始化说明
-
-根目录 `.gitignore` 已排除数据集、仿真器、模型、日志、TensorBoard、缓存和本地 IDE/Codex 状态，避免 `git init` 后出现几万张图片和大文件。
-
-`MyFlows/` 当前保留为独立 Git 子模块/嵌套仓库结构。根仓库初始化时不要删除 `MyFlows/.git`，也不要把 `MyFlows/` 展开成普通源码目录；后续如需标准子模块元数据，可单独补充 `.gitmodules` 和远程 URL。
-
-建议首次检查：
-
-```bash
-git status --short --untracked-files=normal
-```
-
-期望看到应用源码、文档、部署配置、`generated/grpc/`、`proto/`、`README.md`、`.gitignore`，而不是 `DonkeySimWin/`、`mycar/data/`、`mycar/generated-road-data/`、`mycar/logs/`、`mycar/models/` 等运行资产。
+旧实验截图、模型、数据和日志属于本地运行资产，不作为本学期功能已完成的证明。本学期的新结果必须由新代码重新运行并记录完整命令和环境。

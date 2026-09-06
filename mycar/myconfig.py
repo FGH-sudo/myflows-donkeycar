@@ -9,7 +9,9 @@ REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 # Windows + DonkeySimWin. Use "remote" if the simulator is already running.
 DONKEY_GYM = True
 DONKEY_SIM_PATH = os.path.join(REPO_ROOT, "DonkeySimWin", "donkey_sim.exe")
-DONKEY_GYM_ENV_NAME = "donkey-generated-track-v0"
+# gym-donkeycar: donkey-generated-roads-v0 -> generated_road（与 generated-road 训练数据一致）
+# donkey-generated-track-v0 -> generated_track（环形赛道，训练数据未覆盖）
+DONKEY_GYM_ENV_NAME = "donkey-generated-roads-v0"
 SIM_HOST = "127.0.0.1"
 
 # Web control defaults for data collection in the simulator.

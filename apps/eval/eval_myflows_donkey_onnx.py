@@ -134,6 +134,7 @@ def main() -> None:
             bi = index[sl : sl + B]
             if not bi:
                 break
+            real_count = len(bi)
             if len(bi) < B:
                 bi = bi + [bi[-1]] * (B - len(bi))
 
@@ -147,14 +148,14 @@ def main() -> None:
                 y[r, 1] = t_true
 
             out = sess.run(None, {input_name: x_batch})[0]
-            out = np.asarray(out).reshape(-1, 2)
+            out = np.asarray(out).reshape(-1, 2)[:real_count]
             a_pred = out[:, 0]
             t_pred = out[:, 1]
-            a_true = y[:, 0]
-            t_true = y[:, 1]
+            a_true = y[:real_count, 0]
+            t_true = y[:real_count, 1]
 
-            angle_se += float(np.mean((a_pred - a_true) ** 2))
-            throttle_se += float(np.mean((t_pred - t_true) ** 2))
+            angle_se += float(np.sum((a_pred - a_true) ** 2))
+            throttle_se += float(np.sum((t_pred - t_true) ** 2))
 
             for ai_pred, ai_true in zip(a_pred, a_true):
                 sign_total += 1
@@ -169,19 +170,20 @@ def main() -> None:
                 if sign_true == sign_pred:
                     sign_correct += 1
 
-            pred_abs_sum += float(np.mean(np.abs(a_pred)))
-            true_abs_sum += float(np.mean(np.abs(a_true)))
+            pred_abs_sum += float(np.sum(np.abs(a_pred)))
+            true_abs_sum += float(np.sum(np.abs(a_true)))
 
         runtime = time.time() - t0
+        n_eval = max(1, n)
         return {
             "label": label,
             "path": str(model_path),
-            "angle_mse": angle_se / max(1, steps),
-            "throttle_mse": throttle_se / max(1, steps),
+            "angle_mse": angle_se / n_eval,
+            "throttle_mse": throttle_se / n_eval,
             "angle_sign_accuracy": sign_correct / max(1, sign_total),
             "near_zero_accuracy": near_zero_true_correct / max(1, near_zero_true_total),
-            "mean_abs_angle_pred": pred_abs_sum / max(1, steps),
-            "mean_abs_angle_true": true_abs_sum / max(1, steps),
+            "mean_abs_angle_pred": pred_abs_sum / n_eval,
+            "mean_abs_angle_true": true_abs_sum / n_eval,
             "runtime_s": runtime,
             "samples": n,
             "batch": B,

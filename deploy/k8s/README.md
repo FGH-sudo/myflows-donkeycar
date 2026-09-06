@@ -33,4 +33,4 @@ minikube service myflows-infer --url
 
 ## Kubeflow Pipeline
 
-见 `kubeflow_pipeline.py`（需安装 `kfp`）。本地无集群时可仅交付本 README + YAML 作为拓展(5) 演示材料。
+见 `kubeflow_pipeline.py`（需安装 `kfp`）。这条部署路径目前只保留作参考，本学期不继续扩展；没有可用集群时不运行。
