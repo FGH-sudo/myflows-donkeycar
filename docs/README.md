@@ -1,75 +1,24 @@
-# MyFlows 项目文档索引
+# 项目文档
 
-| 文档 | 说明 |
-|------|------|
-| [system_design.md](system_design.md) | 总体架构 |
-| [module_design.md](module_design.md) | 模块划分 |
-| [algorithm_design.md](algorithm_design.md) | 核心算法 |
-| [detailed_design.md](detailed_design.md) | 接口与类设计 |
-| [project_structure.md](project_structure.md) | 目录结构与运行入口 |
-| [experiments/int8_report.md](experiments/int8_report.md) | FP32/INT8 对比 |
-| [experiments/explainability/README.md](experiments/explainability/README.md) | Grad-CAM 可解释性输出 |
+本目录只保留当前仍需维护的文档。
 
-## 常用命令
+| 文档 | 作用 | 状态 |
+| --- | --- | --- |
+| [semester_spec.md](semester_spec.md) | 本学期范围、任务依赖与进度；后续计划继续审核 | v0.4 进度更新 |
+| [stage1_cuda_ps_spec.md](stage1_cuda_ps_spec.md) | CUDA 卷积/池化、PS、Nsight 的实现约定与验收 | v0.2 实施记录 |
+| [第一阶段报告](experiments/semester_2026_fall/stage1/README.md) | 实测结果、限制、第四次课演示、复现命令和实验包 | 当前阶段成果 |
+| [第二阶段 CUDA im2col Spec](stage2_cuda_optimized_spec.md) | 同算法路径迁移与 CuPy/CUDA 控制变量对照 | v0.1 实施前方案 |
+| [第二阶段首轮记录](experiments/semester_2026_fall/stage1/stage2_im2col_report.md) | CUDA im2col/col2im 首轮实现与组件计时 | 2026-09-06 首轮 |
+| [semester_spec_review.md](semester_spec_review.md) | 对照 PDF 与代码的审核发现、实测证据 | 2026-09-05 历史审核，对应 v0.2 |
+| [system_design.md](system_design.md) | 当前系统结构，不包含尚未实现的能力 | 当前有效 |
+| [module_design.md](module_design.md) | 当前有效模块和运行入口 | 当前有效 |
+| [深度学习框架-16 综合项目III.pdf](<深度学习框架-16 综合项目III.pdf>) | 教师提供的本学期目标 | 原始资料 |
 
-```bash
-# GPU 依赖（当前 Python 环境）
-# pip install cupy-cuda12x onnxruntime-gpu
+## 使用原则
 
-# 数据重建
-python -m tools.convert_generated_road_to_tub_v2 --src mycar/generated-road-data --dst mycar/data --clear-dst
-
-# 结构分层自检
-python -m py_compile apps/common/donkey_data.py apps/common/image_preprocess.py
-python -m py_compile MyFlows/utils/training_dashboard.py MyFlows/utils/checkpoint.py MyFlows/utils/onnx_exporter.py
-
-# ResNet 回归从头训练（--max-samples 0 = 全量）
-python -m apps.train.train_myflows_donkey --max-samples 0 --epochs 20 --batch 2 \
-  --augment --device auto --checkpoint-every 500 --export-onnx
-tensorboard --logdir mycar/logs/tensorboard
-
-# 离线评估（先用 2000 条抽查）
-python -m apps.eval.eval_myflows_donkey_onnx --checkpoint mycar/models/myflow_resnet18_best.onnx \
-  --max-samples 2000 --device auto
-
-# 仿真部署
-cd mycar && python manage.py drive --model=models/myflow_resnet18_best.onnx --type=myflows
-
-# VGG 回归
-python -m apps.train.train_vgg_donkey_regression --max-samples 0 --epochs 10 --device auto
-
-# ONNX INT8
-python -m tools.quantize_onnx --input mycar/models/myflow_resnet18_best.onnx
-python -m apps.eval.eval_myflows_donkey_onnx --checkpoint mycar/models/myflow_resnet18_best.onnx \
-  --int8-model mycar/models/myflow_resnet18_best_int8.onnx \
-  --split-file mycar/logs/resnet18_split.json --split test \
-  --max-samples 200 --fixed-throttle 0.2 --force-fixed-throttle --device cuda
-
-# gRPC / FastAPI
-python -m apps.serve.serve_grpc --model mycar/models/myflow_resnet18_best.onnx --device auto
-python -m apps.serve.grpc_client --image mycar/data/images/1042_0.0000.jpg --host 127.0.0.1 --port 50051
-python -m apps.serve.serve_fastapi --model mycar/models/myflow_resnet18_best.onnx --port 8000
-python -m apps.serve.fastapi_client --image mycar/data/images/1042_0.0000.jpg --url http://127.0.0.1:8000
-
-# INT8 对比报告
-python scripts/run_quantize_eval.py --fp32 mycar/models/myflow_resnet18_best.onnx \
-  --data mycar/data --split-file mycar/logs/resnet18_split.json --split test \
-  --max-samples 0 --fixed-throttle 0.2 --force-fixed-throttle --device cuda \
-  --out-json docs/experiments/int8_metrics.json \
-  --out-md docs/experiments/int8_report.md \
-  --out-png docs/experiments/int8_report.png
-
-# Grad-CAM 解释可视化
-python -m tools.explain_donkey_gradcam --model-type resnet --checkpoint mycar/models/myflow_resnet18_best --data mycar/data --split-file mycar/logs/resnet18_split.json --split test --max-samples 8 --fixed-throttle 0.2 --force-fixed-throttle --target-output angle --device cuda
-
-# 跨框架 benchmark + 出图
-python benchmark/compare_frameworks.py --data mycar/data --epochs 2 --samples 64 --device cuda
-python benchmark/plot_compare.py
-
-# 部署压测 / DataLoader 吞吐
-python benchmark/serve_bench.py --mode local --model mycar/models/myflow_resnet18_best.onnx --out-json docs/experiments/serve_bench_local.json --out-md docs/experiments/serve_bench_local.md
-python benchmark/dataloader_bench.py
-
-# Docker
-docker compose -f deploy/docker/docker-compose.yml up --build
-```
+- PDF 说明课程希望完成什么。
+- semester_spec.md 说明本组准备怎么做，审核通过后再作为开发依据。
+- stage1_cuda_ps_spec.md 规定当前阶段的具体任务与验收；Agent 后续设计暂缓，阶段产物不代表学期全部目标完成。
+- system_design.md 和 module_design.md 只记录当前代码事实，不能提前写成“已经实现”。
+- 按用户确认，之前学期目标已完成；缺失的往期交付材料不列为本学期待办。本学期新增功能与改进结论使用对应代码重新验证。
+- 新实验报告统一放到 docs/experiments/semester_2026_fall/，并记录代码版本、命令、环境、输入数据和原始结果。
