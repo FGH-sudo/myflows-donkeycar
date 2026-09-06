@@ -178,8 +178,8 @@ def run_matrix(args, run):
                 match = next((m for m in measurements if (m["case"], m["phase"], m["backend"]) == (row["case"], row["phase"], ref)), None)
                 if match:
                     row[f"{ref}_speedup"] = match["mean_ms"] / row["mean_ms"]
-    run.notes.append("All operands are identical FP32 fixtures; errors use independent FP64 loop references. Max relative error uses denominator max(abs(reference), 1e-6).")
-    run.notes.append("GPU event intervals cover the whole operator call and may include GPU idle time while Python submits work. These are not kernel-only measurements. Profiler timings are excluded.")
+    run.notes.append("所有输入、权重和偏置均来自相同的 FP32 fixture；误差使用独立的 FP64 循环参考实现计算，相对误差分母为 max(abs(reference), 1e-6)。")
+    run.notes.append("GPU Event 区间覆盖完整算子调用，可能包含 Python 提交任务期间的 GPU 空闲时间；该计时不是 kernel-only，且不包含 profiler 计时。")
 
 
 def run_training(args, run):

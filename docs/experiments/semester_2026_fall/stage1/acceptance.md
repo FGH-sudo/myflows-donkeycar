@@ -17,10 +17,10 @@
 | forward context 刷新、固定实际后端 | 多次改变 batch/空间 shape；Pool context 形状与梯度检查；显式后端与融合路径测试 | 通过 |
 | C4：包含真实 Pool 的 CNN、100 步、同初值 | restored-cnn-001 与集成测试；两个 GPU 后端都达到 100% 小样本训练准确率，初始/早期梯度/更新对照 | 通过 |
 | 原 NumPy/CuPy 与高级卷积无回归 | 最终完整三轮，包括原 test_convolution、ResNet/BN/graph_opt/序列化/应用测试 | 通过（限本次回归范围） |
-| C5：P0/P1/P2 与 P3 六项全部三后端 | performance-final-004 的 27 项正确性和 108 组测量；原始 16,200 行 | 通过，无案例缩减/超时 |
+| C5：P0/P1/P2 与 P3 六项全部三后端 | performance-final-004 的 27 项正确性和 108 组测量；原始数据已清理，结论保留在报告和汇总表 | 通过，无案例缩减/超时 |
 | 10 warmup、50 次 × 3 组、预算与失败码 | 实际 config；cuda_ops 中估测/期限检查；每组原始计数；交付工具错误/覆盖测试 | 通过 |
 | CPU/GPU/传输/编译计时口径 | CPU perf_counter；当前 stream Events+stop 同步；单独 transfer-inclusive 与 transfer_ms；compile-cold-001 空缓存/新进程 | 通过；kernel-only 按 Spec 允许标记未测 |
-| 输出全部误差、均值/中位数/P95/N/加速比 | results.json、timings.csv、analysis/tables.md；最终分母 1e-6，allclose 容差未改 | 通过 |
+| 输出全部误差、均值/中位数/P95/N/加速比 | 已生成 results.json、timings.csv 和 analysis/tables.md；当前交付保留 analysis/tables.md，最终分母 1e-6，allclose 容差未改 | 通过 |
 | 两种规模 Systems，含 CuPy 对照 | 四份最终 capture.nsys-rep、SQLite、kernel/API/NVTX CSV；期望 kernel 名称核验 | 通过 |
 | 两种规模 Compute，实际计数器报告 | ncu-P0/P1-dx-window-002：退出码 0、非空 .ncu-rep、完整 metrics.csv、自写 dX 名称 | 通过，用户已解除计数器权限限制 |
 | 有依据优化与前后普通计时 | P1 原 dX 最耗时；优化有效输出窗口；performance-001 / performance-dx-window-002 实际源码与固定输入；最终正确性回归 | 通过，不将 profile 时间当普通耗时 |
@@ -30,8 +30,8 @@
 | 无重复平均、复制数组发送 | SmallMLP.update 拒绝累积缓存/acc_no 非空；clone 快照；按 n_i/global_batch 聚合 | 通过 |
 | 重复/陈旧/错误形状或精度/非有限/空 shard | protocol 单元检查和最终单 worker 重复消息专项；失败非零退出 | 通过 |
 | 默认 10 秒超时、5 秒内清理、无残留 | 四个 ps-fault run 默认 timeout=10；所有 cleanup<0.064 秒、alive_pids=[]、非零子进程/CLI 状态 | 通过，故障 run 保持 failed |
-| worker/server 时间、数组字节、不伪造网络流量 | events.jsonl/timings.csv 的提交/确认/等待/compute/聚合/update/广播；payload=464 bytes | 通过，网络协议开销未测 |
-| C7：配置、环境、实际双仓库源码/输入哈希 | 每个 run 的 config/manifest/results/timings/stdout/report；manifest 保存 Git 状态和源码 hash；fixture/输出 NPZ | 通过 |
+| worker/server 时间、数组字节、不伪造网络流量 | 运行时 events.jsonl/timings.csv 记录提交/确认/等待/compute/聚合/update/广播；当前仅保留报告摘要；payload=464 bytes | 通过，网络协议开销未测 |
+| C7：配置、环境、实际双仓库源码/输入哈希 | 每个 run 曾生成 config/manifest/results/timings/stdout/report；manifest 保存 Git 状态和源码 hash；当前清理 fixture/输出快照，仅保留报告和最终 Nsight 原始证据 | 通过 |
 | 交付不是 HEAD 或仅 Markdown | 当前源码、Git 历史、每次运行原始材料和逐文件校验信息 | 通过；不保存整项目压缩包 |
 | 新环境与导出源码复现 | 隔离虚拟环境 include-system-site-packages=false、无 torch；三轮框架回归；独立无 Git 目录的正确性/CNN/1/2/4/非均匀 PS | 通过；旧可选 TensorBoard 测试单独记 skip |
 | 第四次课可展示与后续边界 | 报告中的两张实际图、六步演示提纲、全部 CLI、原始 Nsight 文件；更新总体/阶段/系统/模块文档 | 通过 |

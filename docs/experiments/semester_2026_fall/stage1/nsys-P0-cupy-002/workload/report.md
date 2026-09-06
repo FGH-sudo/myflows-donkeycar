@@ -1,7 +1,7 @@
 # workload
 
-Status: passed
+状态：通过
 
 Short NVTX-labelled profiling workload. No profiler-derived durations are regular benchmark evidence.
 
-See config.json, results.json and timings.csv for raw evidence.
+原始证据：config.json、results.json、timings.csv。

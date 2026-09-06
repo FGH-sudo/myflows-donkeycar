@@ -1,7 +1,7 @@
 # ps-fault-schema-001
 
-Status: failed
+状态：失败
 
 
 
-See config.json, results.json and timings.csv for raw evidence.
+本目录仅保留摘要报告；实验原始文件已按交付清理策略删除。

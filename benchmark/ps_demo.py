@@ -77,8 +77,8 @@ def main():
         run.manifest["fixture_sha256"] = array_hash(x, y)
         run.manifest["initial_parameters_sha256"] = payload_hash(reference["history"][0])
         run.results["equivalence_max_abs"] = max_abs
-        run.notes.append(f"Verified every update against single-process FP64 MBGD, including step 1 and step {args.steps}. Maximum parameter absolute difference: {max_abs:.6g}.")
-        run.notes.append("Workers never update weights; server weights local mean gradients by actual shard sample counts. Launcher cleanup and individual exit codes are in results.json.")
+        run.notes.append(f"已将每次更新与单进程 FP64 MBGD 对照，包含第 1 步和第 {args.steps} 步；参数最大绝对差为 {max_abs:.6g}。")
+        run.notes.append("Worker 不直接更新权重；server 按各 shard 的实际样本数对梯度加权平均。Launcher 清理结果和各进程退出码记录在 results.json。")
         print(f"workers={args.workers} steps={args.steps} max_abs={max_abs:.6g} cleanup_s={result['cleanup_s']:.4f}")
 
 

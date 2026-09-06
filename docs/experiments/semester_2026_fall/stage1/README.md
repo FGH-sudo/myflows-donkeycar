@@ -2,7 +2,7 @@
 
 - 日期：2026-09-05；对应 [第一阶段 Spec v0.2](../../../stage1_cuda_ps_spec.md)。
 - 范围：C0-C7，第四次课的 GPU 编程、分布式计算和 Nsight；[总体 Spec](../../../semester_spec.md) 继续跟踪后续学期任务。
-- 结果：六个自写 CUDA kernel、原图小 CNN、三后端实验、两类 Nsight 和 CPU PS 均有实际运行证据。完整回归连续三次通过，源码在隔离环境和无 Git 的独立目录复现。
+- 结果：六个自写 CUDA kernel、原图小 CNN、三后端实验、两类 Nsight 和 CPU PS 均有实际运行证据。完整回归连续三次通过，源码在隔离环境和无 Git 的独立目录复现；本地只保留报告、图表和最终 Nsight 原始报告。
 - 逐条核对：[acceptance.md](acceptance.md)；派生数值与图表的重建脚本：[analysis/](analysis/tables.md)。
 - 后续优化首轮：[CUDA im2col 路径记录](stage2_im2col_report.md)；它新增独立 backend，不修改本报告的第一阶段结论。
 - 历史：源码版本由根仓库和 `MyFlows` 子仓库的 Git 提交记录；实验目录只保留第一阶段正式失败基线、必要的 Nsight 证据和本阶段最终报告，不再生成项目压缩包。
@@ -14,10 +14,10 @@
 | G-BASE | 统一收集原有 78 项框架检查和 21 项应用检查；新增后共 127 项，完整回归三个独立 Python 进程均通过且无 skip | [regression-final-003](regression-final-003/report.md)，三份 tests-N.log、results.json；[基线](c0-baseline-001/report.md) |
 | G-CUDA / 数值 | Conv Y/dX/dW/db、Pool Y/dX，CuPy 与原生 C/C++ 两条当前路径；历史失败后端的完整结果另存于基线报告 | [correctness-final-002](correctness-final-002/report.md)；[native_cublas_report.md](native_cublas_report.md)；完整回归日志 |
 | G-CUDA / 集成 | 原计算图 100 步小 CNN、相同初值/早期梯度/参数更新、FP32 状态；共享参数/双分支、context 更新、设备变更错误、融合后端保留 | [restored-cnn-001](restored-cnn-001/report.md)；MyFlows/tests/test_cuda_graph_integration.py |
-| G-BENCH | P0/P1/P2 Conv、P3 六种 Pool 案例；三后端、四种计时阶段、每组 150 样本；独立冷编译 | [performance-final-004](performance-final-004/report.md)，16,200 条 timings.csv；[compile-cold-001](compile-cold-001/report.md) |
+| G-BENCH | P0/P1/P2 Conv、P3 六种 Pool 案例；三后端、四种计时阶段、每组 150 样本；独立冷编译 | [performance-final-004](performance-final-004/report.md) 的汇总结论；[compile-cold-001](compile-cold-001/report.md) |
 | G-PROFILE | Systems：P0/P1 的 CuPy 与 CUDA C；Compute：P0/P1 的自写 dX；dX 优化与普通计时对照 | 第 5 节原始 .nsys-rep/.ncu-rep、CSV、SQLite；[优化前](performance-001/report.md) / [优化后](performance-dx-window-002/report.md) |
 | G-PS | CPU MLP：1/2/4 worker、16+16 / 20+12；每一步参数/样本数/版本检查；提交、确认、等待、计算、更新计时；四类故障清理 | [1 worker](restored-ps-1-001/report.md)、[2 workers](restored-ps-2-001/report.md)、[4 workers](restored-ps-4-001/report.md)、[20+12](restored-ps-uneven-001/report.md)；第 6 节故障记录 |
-| G-REPORT | 每次正式实验有配置、双仓库状态/实际源码哈希、环境、输入指纹、原始输出与计时；独立环境、复现命令、图表与汇报提纲 | [隔离回归](isolated-regression-final-002/report.md)、[导出源码正确性](restored-correctness-001/report.md)、本报告 |
+| G-REPORT | 正式实验曾记录配置、双仓库状态/实际源码哈希、环境、输入指纹、原始输出与计时；当前交付保留摘要报告、图表、复现命令和汇报提纲 | [隔离回归](isolated-regression-final-002/report.md)、[导出源码正确性](restored-correctness-001/report.md)、本报告 |
 
 测试计数为框架 103 项、应用/交付工具 24 项，总计 127 项。原有旧后端、groups/dilation、ResNet/BN/序列化与应用测试继续执行。连续三次通过是本轮回归证据，不等于所有后续模型或生产场景已经验证。
 
@@ -87,9 +87,9 @@ CPU 使用 perf_counter；GPU 算子调用使用当前 stream CUDA Events 并等
 | Systems / CuPy | [capture.nsys-rep](nsys-P0-cupy-002/capture.nsys-rep) | [capture.nsys-rep](nsys-P1-cupy-002/capture.nsys-rep) |
 | Systems / CUDA C 优化后 | [capture.nsys-rep](nsys-P0-dx-window-003/capture.nsys-rep) | [capture.nsys-rep](nsys-P1-dx-window-003/capture.nsys-rep) |
 | Compute / CUDA C dX | [capture.ncu-rep](ncu-P0-dx-window-002/capture.ncu-rep) | [capture.ncu-rep](ncu-P1-dx-window-002/capture.ncu-rep) |
-| Systems / 优化前 dX | 小规模首次探索记录保留在工作区 | [capture.nsys-rep](nsys-P1-cuda-002/capture.nsys-rep) |
+| Systems / 优化前 dX | 优化前的 P1 指标已整理进本报告；原始探索目录已清理 | 本报告第 5.3 节 |
 
-每个正式采集目录还包含版本、完整 profiler 命令/日志、提取的 CSV、子 workload 的结果/输入，以及 Systems SQLite。采集器检查工具退出码、实际非空报告和期望 kernel 名称；子 workload 通过不能覆盖 profiler 失败。
+六个最终采集目录保留版本、完整 profiler 命令/日志、提取的 CSV、子 workload 的结果/输入、Systems SQLite 以及 `.nsys-rep`/`.ncu-rep`；其他实验的原始日志和快照已清理。采集器检查工具退出码、实际非空报告和期望 kernel 名称；子 workload 通过不能覆盖 profiler 失败。
 
 Systems 捕获三个前反向组合：P0 的 CuPy/CUDA C 分别有 72/21 次 kernel 调用，GPU kernel 总时长 131.616/108.608 us，但 CPU NVTX 总时长分别为 3260.347/4161.105 us。较少 kernel 并没有带来更短的完整调用；结合时间线和 wrapper 源码，可判断主机提交/封装及空闲开销不可忽略。该判断不是把 NVTX 与 kernel 时长之差全部当作 Python 计算。
 
@@ -152,7 +152,7 @@ Compute 首次采集出现 `ERR_NVGPUCTRPERM`。用户在 NVIDIA 控制面板允
 
 PS 时间包含进程启动、IPC 与清理；单进程包含模型/数据构造和更新历史。它们是单轮演示计时，未进行扩展性能统计。当前小计算量下 PS 明显较慢，不能报告训练加速。每个参数/梯度快照的数组 payload 为 464 bytes；协议头、序列化和底层通信流量未测，不能据此计算网络带宽。
 
-events.jsonl 与 timings.csv 分别记录 worker compute、Queue 提交、上传确认等待、参数等待/接收，以及 server 收集、聚合、更新、广播提交、完整 step。每条事件有单调时间、关联 ID 和版本；[汇总表](analysis/tables.md) 提供均值/P95/数量。提交和确认等待不等同于纯传输。每步样本数与参数版本、初始及全部 20 次更新均与单进程校验。
+运行时的 events.jsonl 与 timings.csv 分别记录 worker compute、Queue 提交、上传确认等待、参数等待/接收，以及 server 收集、聚合、更新、广播提交、完整 step；当前本地已清理这些原始文件，数值摘要保留在本报告和[汇总表](analysis/tables.md)。提交和确认等待不等同于纯传输。每步样本数与参数版本、初始及全部 20 次更新均与单进程校验。
 
 | 故障 | 真实运行结果 | 清理时间 | 存活子进程 |
 | --- | --- | --- | --- |

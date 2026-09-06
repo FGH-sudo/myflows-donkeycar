@@ -165,8 +165,8 @@ class RunArtifacts:
                 writer.writeheader()
                 writer.writerows(self.timings)
             (self.path / "report.md").write_text(
-                f"# {self.path.name}\n\nStatus: {self.results['status']}\n\n" +
-                "\n\n".join(self.notes) + "\n\nSee config.json, results.json and timings.csv for raw evidence.\n",
+                f"# {self.path.name}\n\n状态：{'通过' if self.results['status'] == 'passed' else '失败'}\n\n" +
+                "\n\n".join(self.notes) + "\n\n原始证据：config.json、results.json、timings.csv。\n",
                 encoding="utf-8")
             print(f"status={self.results['status']}", flush=True)
         finally:

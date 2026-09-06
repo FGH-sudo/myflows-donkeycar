@@ -61,7 +61,7 @@ def main():
             if args.kernel not in (run.path / "metrics.csv").read_text(encoding="utf-8"):
                 raise RuntimeError("Compute report does not contain the requested kernel")
         run.results["profile_report"] = report.name
-        run.notes.append("Validated the actual profiler report and extracted kernel data. Ordinary performance runs are recorded separately.")
+        run.notes.append("已验证实际 profiler 报告并提取 kernel 数据；普通性能实验单独记录。")
         print(f"{args.tool} {args.case} {args.backend}: {report.name}", flush=True)
 
 

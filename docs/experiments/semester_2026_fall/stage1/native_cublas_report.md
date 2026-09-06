@@ -34,4 +34,4 @@
 
 本实验的 C/C++ 调度 DLL 已使用完整 CUDA Toolkit 和 MSVC 构建；运行时仍固定使用隔离环境中的 CUDA 12.6 用户态库，以保持 CuPy 12x 和 PyTorch wheel 的 ABI 一致。池化的同类实现和结果见 [native_pool_report.md](native_pool_report.md)。当前结果足以证明课程要求的区分：两条路径都使用 GPU，但一条由 CuPy 封装调度，另一条由项目自己的 C/C++ 层调度官方 CUDA 库。
 
-原始证据：`performance-native-P0-final-001`、`performance-native-P1-final-001`、`performance-native-P2-final-001` 下的 `results.json`、`timings.csv`、fixture 和输出快照。
+原始实验目录已按交付清理策略删除；关键均值、P95、正确性和环境信息已整理在本报告中，代码版本由 Git 提交保存。

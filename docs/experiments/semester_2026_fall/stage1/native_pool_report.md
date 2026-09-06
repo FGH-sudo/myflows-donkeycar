@@ -40,4 +40,4 @@
 
 在本次六个固定池化场景中，原生 C/C++ 调度路径的组合计时和传输包含计时均优于 CuPy。收益来自减少 Python/CuPy 算子封装和中间数组管理，并不代表所有输入规模都具有相同加速比。当前 kernel 使用 FP32、NCHW、无 padding、正整数 stride，最大值相等时选择窗口中首次出现的位置。
 
-原始证据保存在 `performance-native-pool-final-001`：`config.json`、`manifest.json`、`results.json`、`timings.csv`、fixture 和输出快照均保留。历史 CUDA C 池化结果仍在第一阶段失败/对照报告中，但当前代码只保留原生 C/C++ 调度实现。
+原始实验目录 `performance-native-pool-final-001` 已按交付清理策略删除；关键均值、P95、正确性和环境信息已整理在本报告中，代码版本由 Git 提交保存。历史 CUDA C 池化结果只在第一阶段失败/对照报告中保留摘要，当前代码只保留原生 C/C++ 调度实现。
