@@ -147,7 +147,7 @@ def run_matrix(args, run):
         expected = oracle(case)
         for backend in args.backends:
             op = Operator(case, backend)
-            if backend in ("cuda_c", "cuda_im2col", "cuda_im2col_gemm") and "cuda_compilation" not in run.manifest:
+            if backend in ("cuda_c", "cuda_im2col", "cuda_native_cublas", "cuda_im2col_gemm") and "cuda_compilation" not in run.manifest:
                 compile_cuda(run)
             actual = op.outputs()
             metrics = {key: error_metrics(actual[key], reference) for key, reference in expected.items()}
@@ -288,9 +288,9 @@ def main():
     parser.add_argument("--suite-timeout", type=float, default=1800)
     args = parser.parse_args()
     args.backends = args.backends.split(",")
-    allowed_backends = ("numpy", "cupy", "cuda_c", "cuda_im2col", "cuda_im2col_gemm")
+    allowed_backends = ("numpy", "cupy", "cuda_c", "cuda_im2col", "cuda_native_cublas", "cuda_im2col_gemm")
     if not args.backends or len(args.backends) != len(set(args.backends)) or any(b not in allowed_backends for b in args.backends):
-        parser.error("--backends must be a unique comma-separated subset of numpy,cupy,cuda_c,cuda_im2col,cuda_im2col_gemm")
+        parser.error("--backends must be a unique comma-separated subset of numpy,cupy,cuda_c,cuda_im2col,cuda_native_cublas,cuda_im2col_gemm")
     if min(args.measure, args.repeats, args.case_timeout, args.suite_timeout) <= 0 or args.warmup < 0:
         parser.error("budgets must be positive, warmup must be nonnegative")
     with RunArtifacts(args.out_dir, vars(args)) as run:
