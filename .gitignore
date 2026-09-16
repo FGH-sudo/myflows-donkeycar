@@ -78,6 +78,9 @@ dist/
 .worktrees/
 worktrees/
 
+# Course/reference PDFs stay local and are not committed
+*.pdf
+
 # Word/Office lock files and doc render scratch
 ~$*
 docs/.format_fix_tmp/
