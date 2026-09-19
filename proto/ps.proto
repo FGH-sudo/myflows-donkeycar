@@ -1,0 +1,61 @@
+syntax = "proto3";
+
+package myflows.distributed;
+
+import "common.proto";
+
+service ParameterService {
+  rpc VariableWeightsInit(PsRequest) returns (PsResponse);
+  rpc Push(PsRequest) returns (PsResponse);
+  rpc Pull(PsRequest) returns (PsResponse);
+  rpc Heartbeat(PsRequest) returns (PsResponse);
+  rpc InitialStateApplied(PsRequest) returns (PsResponse);
+  rpc UpdateApplied(PsRequest) returns (PsResponse);
+  rpc Stop(PsRequest) returns (PsResponse);
+}
+
+message PsRequest {
+  string protocol_version = 1;
+  string run_id = 2;
+  int32 worker_id = 3;
+  string request_id = 4;
+  string type = 5;
+  int32 epoch = 6;
+  int32 global_step = 7;
+  string batch_id = 8;
+  int32 parameter_version = 9;
+  string schema_hash = 10;
+  int32 n_samples = 11;
+  float loss = 12;
+  string payload_hash = 13;
+  string update_id = 14;
+  int32 optimizer_step = 15;
+  string digest = 16;
+  string parameter_hash = 17;
+  repeated TensorBlob tensors = 18;
+}
+
+message PsResponse {
+  string protocol_version = 1;
+  string run_id = 2;
+  string request_id = 3;
+  string status = 4;
+  string error = 5;
+  repeated TensorBlob tensors = 6;
+  string payload_hash = 7;
+  string update_id = 8;
+  int32 base_parameter_version = 9;
+  int32 target_parameter_version = 10;
+  int32 parameter_version = 11;
+  int32 n_samples = 12;
+  float loss = 13;
+  bool round_ready = 14;
+  bool ready = 15;
+  bool accepted = 16;
+  string schema_hash = 17;
+  string parameter_hash = 18;
+  string fingerprint = 19;
+  OptimizerMeta optimizer = 20;
+  repeated TensorBlob parameters = 21;
+  int32 global_step = 22;
+}

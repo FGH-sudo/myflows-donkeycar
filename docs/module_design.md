@@ -9,7 +9,7 @@
 | MyFlows/core/ | 计算图、节点、Tensor 和 CPU/CUDA 设备切换 |
 | MyFlows/ops/ | 当前 NumPy/CuPy 算子，包括卷积、池化、损失和激活函数 |
 | MyFlows/ops/cuda_native/ | 原生 C/C++ 调度自写 FP32 Conv/Pool kernel、cuBLAS GEMM、严格数组 wrapper 和运行时 DLL 管理 |
-| MyFlows/distributed/ | CPU 同步 PS 的模型映射、消息校验、server/worker/launcher 和事件监控 |
+| MyFlows/distributed/ | 单机回环同步 PS（Socket JSON / gRPC）与 Ring AllReduce；Worker 本地优化器更新，PS 只聚合梯度 |
 | MyFlows/examples/stage1_cnn.py | 同 seed、全链路 FP32 的 32 样本 CNN 训练 fixture |
 | MyFlows/layers/resnet.py | 当前主模型 ResNet18 |
 | MyFlows/train/ | SGD、Momentum、AdaGrad、RMSProp、Adam 和正则化 |
@@ -34,7 +34,9 @@
 | tools/analyze_donkey_data.py | 数据数量和标签分布检查 |
 | tools/export_resnet_onnx.py | 当前 ResNet18 ONNX 导出入口 |
 | benchmark/cuda_ops.py | CUDA/NumPy/CuPy 正确性、性能、CNN 训练和短 profile 工作负载 |
-| benchmark/ps_demo.py | CPU PS 单/多进程更新对照及故障注入 |
+| benchmark/ps_demo.py | 同步 PS 数值对照及故障注入（转发新训练入口） |
+| benchmark/distributed_train.py | 单进程 / PS / Ring 统一训练入口 |
+| benchmark/distributed_compare.py | 第 12.2 节配置矩阵的对比入口 |
 | benchmark/profile_cuda.py | Nsight 采集、报告存在性和真实 kernel 内容验证 |
 | benchmark/stage1_common.py | 配置、环境、双仓库源码快照、错误状态与产物校验和 |
 | benchmark/stage1_regression.py | 三个独立进程的完整回归与日志归档 |
@@ -48,7 +50,6 @@
 
 | 建议路径 | 计划内容 |
 | --- | --- |
-| MyFlows/distributed/ 的后续扩展 | All-Reduce、更多模型与训练状态接入 |
 | MyFlows/monitoring/ | GPU、CPU 和训练阶段耗时监控 |
 | MyFlows/layers/ | 补充 MobileNetV2、AlexNet，并继续使用现有 ResNet18 |
 | MyFlows/utils/pretrained.py | 导入预训练参数、检查匹配情况、冻结和解冻参数 |

@@ -1,5 +1,7 @@
 # 第一阶段分布式训练 Spec：单机 GPU PS、Ring AllReduce 与对比评测
 
+> 2026-09-17 执行补充：用户已授权实际完成测试、记录数据和修复问题；中断恢复后又明确加入现有 ResNet18 的 DonkeyCar 道路实验，并要求 PS/Ring 对比统一 gRPC/protobuf。该请求覆盖下文首版“排除完整 ResNet/BN”和小型 CNN 的范围约定。实际选型、BN 处理、冻结配置与实测结果以 [本轮实验协议](experiments/semester_2026_fall/distributed_gpu/20260917/EXPERIMENT_PROTOCOL.md) 和同目录报告为准。下方“仅调整 Spec”是原 v0.3 文档编制范围，不是本次执行限制。
+
 - 版本：v0.3，待审核；保留同步 PS、Ring AllReduce 与双传输评测范围，按用户确认统一为 Worker GPU 更新参数，并保留现有 Adam 更新规则。
 - 更新日期：2026-09-16；初稿日期：2026-09-09。
 - 本次交付：仅调整本 Spec；不修改实现、其他文档、测试、数据或历史实验。

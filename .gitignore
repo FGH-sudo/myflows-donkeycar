@@ -86,5 +86,15 @@ worktrees/
 docs/.format_fix_tmp/
 docs/_word_page_images_*/
 
+# Local scratch and transient exports
+*.tmp
+*.temp
+*.bak
+*.pid
+*.err
+docs/experiments/**/tmp/
+docs/experiments/**/scratch/
+docs/experiments/**/.render/
+
 # Keep MyFlows/ visible to Git as its existing nested repository/submodule entry.
 # Do not add a broad MyFlows/ ignore rule here.

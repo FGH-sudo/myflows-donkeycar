@@ -1,0 +1,26 @@
+syntax = "proto3";
+
+package myflows.distributed;
+
+message TensorBlob {
+  string name = 1;
+  repeated int32 shape = 2;
+  string dtype = 3;
+  bytes data = 4;
+}
+
+message Status {
+  string code = 1;
+  string message = 2;
+  string request_id = 3;
+}
+
+message OptimizerMeta {
+  string impl = 1;
+  string impl_path = 2;
+  double learning_rate = 3;
+  int32 t = 4;
+  double beta_1 = 5;
+  double beta_2 = 6;
+  double eps = 7;
+}

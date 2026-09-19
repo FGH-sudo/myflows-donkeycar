@@ -1,0 +1,99 @@
+{
+  "generated_at_utc": "2026-09-18T22:06:48.593640+00:00",
+  "baseline_root": "docs/experiments/semester_2026_fall/distributed_gpu/20260917",
+  "optimized_root": "docs/experiments/semester_2026_fall/distributed_gpu/20260919_optimized",
+  "comparison_csv": "optimization_comparison.csv",
+  "formal_archives": {
+    "total": 56,
+    "convergence": 14,
+    "performance": 42,
+    "expected_total": 56,
+    "expected_performance": 42
+  },
+  "quality": {
+    "total": 14,
+    "passed": 14
+  },
+  "checks": {
+    "numeric_checks.json": {
+      "total": 36,
+      "passed": 36
+    },
+    "state_checks.json": {
+      "total": 9,
+      "passed": 9
+    },
+    "fault_checks.json": {
+      "total": 17,
+      "passed": 17
+    },
+    "ring_chunk_flow.json": {
+      "total": 12,
+      "passed": 12
+    },
+    "volume_checks.json": {
+      "total": 36,
+      "passed": 36
+    },
+    "monitor_overhead.json": {
+      "total": 4,
+      "recorded": 4,
+      "passed": null,
+      "criterion": "开关各 3 次独立进程均已记录；relative_overhead 作为观测值，不设置布尔通过字段。"
+    },
+    "nsys_checks.json": {
+      "total": 2,
+      "passed": 2
+    },
+    "ncu_checks.json": {
+      "total": 2,
+      "passed": 2
+    }
+  },
+  "final_regression": {
+    "passed": true,
+    "tests": 204,
+    "elapsed_s": 53.919,
+    "log": "suite_logs/run_tests-final-optimized-20260919.log"
+  },
+  "decision": {
+    "status": "optimized_primary_with_baseline_retained",
+    "rule": "在相同输入、配置和测量口径下，gRPC/protobuf 的 PS+Ring 分布式 8 行均不能变慢、整体中位耗时下降至少 10%，且 14/14 训练质量与全量回归通过时，以优化版作为主结果；原基线永久保留作历史对照。",
+    "grpc_distributed_rows": 8,
+    "grpc_distributed_all_faster": true,
+    "grpc_distributed_median_reduction_pct": 42.3569,
+    "ps_grpc": {
+      "rows": 4,
+      "significant_rows": 4,
+      "median_reduction_pct": 81.2239
+    },
+    "ring_grpc": {
+      "rows": 4,
+      "significant_rows": 2,
+      "median_reduction_pct": 8.7916,
+      "caveat": "Ring 的 ResNet18 2 Worker 下降不足 1%，4 Worker 约 6.5%，未达到 10% 显著门槛；MNIST Ring 2/2 达到门槛。"
+    },
+    "quality_and_regression_gate": true
+  },
+  "limitations": [
+    "所有 Worker 仍共享单张 RTX 4060 Laptop GPU；优化版没有超过单进程基线，不能推断多卡或多机扩展。",
+    "ResNet18 原独立整批轨迹与分片轨迹的逐步梯度等价门槛仍未通过；归约、CPU/GPU 更新和完整训练质量检查分别记录。",
+    "Socket/JSON 行也随运行环境变化而变快，但本轮优化结论只把 gRPC/protobuf PS/Ring 作为主要归因，不能把 JSON 的变化全部归因于协议代码。"
+  ],
+  "sha256": {
+    "comparison.csv": "60f25f81348efaaec90e0ce88002f735ba9c0a5f7e29c350de8d3f66c29a197e",
+    "optimization_comparison.csv": "41fbb0170c7000499673c7c8fb1bf4406b7368e1afccbab84c4db67c8699c580",
+    "optimization_comparison.json": "368912f00c38ae2074b0a66a31cfe72bc3cd3113be6564ff9d47c6fbdce40cb5",
+    "quality_checks.json": "61aff4ddef6c4f752a5c085d5f3513578867e929e73bf89522c9e232ccac72d2",
+    "numeric_checks.json": "acf507cca20021d73df8084ef4e43495a4e7865f3903ecebc623fbe75dd39b43",
+    "state_checks.json": "8ce26b287f373c7d79710639eecc2a305838c1de066dec6f173e2b45ef0e6e49",
+    "fault_checks.json": "148415057e74144669eccf086f6a2990c6a6040d727a55dd3893a2c48b371a12",
+    "ring_chunk_flow.json": "783443769cba62557c098e35294736dfde8d75f7a654e19e0ad130513770666e",
+    "volume_checks.json": "0863f1085f062f4bd24f80e700e78d69f6d436b7a7388523955729eeb9dda460",
+    "monitor_overhead.json": "2106909fba78bb3d3e59ba27dcea8c8ec1da0e8ea159fc493366382acb1ca2c3",
+    "nsys_checks.json": "b261b1b5fe57da7b100e87b799a69b4aeeb9b0f8ebc4f75c6926a74b08efeca5",
+    "ncu_checks.json": "2f78a7f7c6615eb1f9d26ac7a4fac689dccad1810e05f8351804891526a3f44a",
+    "suite_logs/run_tests-final-optimized-20260919.log": "02f37c4133568394f3275f7f6f8436f5e6e02b7ad842ea3ecdba2dff0c3ec3a2",
+    "README.md": "8f4fbfb60e7a4d2c6a6a80b9e54b6477cbb6a2f597dfacbc74bf1eaed6ba78ed"
+  }
+}

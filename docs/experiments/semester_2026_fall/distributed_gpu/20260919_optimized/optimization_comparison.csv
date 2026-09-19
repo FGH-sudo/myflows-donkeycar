@@ -1,0 +1,15 @@
+task,config_id,workers,topology,protocol,baseline_epoch_s,optimized_epoch_s,absolute_reduction_s,reduction_pct,baseline_speedup,optimized_speedup,baseline_efficiency,optimized_efficiency,quality_metric,quality_direction,baseline_quality,optimized_quality,quality_delta_optimized_minus_baseline,quality_passed,significant_improvement
+donkey_resnet18,ps-grpc-2,2,PS,gRPC/protobuf,110.170712,14.073025,96.097687,87.2262,0.082785,0.643246,0.041393,0.321623,val_angle_mae,lower_is_better,0.0376362,0.0376362,0.0,True,True
+donkey_resnet18,ps-grpc-4,4,PS,gRPC/protobuf,210.15705,16.9358,193.221251,91.9414,0.043399,0.534513,0.01085,0.133628,val_angle_mae,lower_is_better,0.03739656,0.03739656,0.0,True,True
+donkey_resnet18,ps-json-2,2,PS,Socket/JSON,369.696239,273.57861,96.117628,25.9991,0.02467,0.033089,0.012335,0.016544,val_angle_mae,lower_is_better,0.0376362,0.0376362,0.0,True,True
+donkey_resnet18,ps-json-4,4,PS,Socket/JSON,643.07654,462.667253,180.409287,28.0541,0.014183,0.019566,0.003546,0.004891,val_angle_mae,lower_is_better,0.03739656,0.03739656,0.0,True,True
+donkey_resnet18,ring-grpc-2,2,Ring AllReduce,gRPC/protobuf,13.27578,13.187262,0.088518,0.6668,0.687006,0.686451,0.343503,0.343226,val_angle_mae,lower_is_better,0.0376362,0.0376362,0.0,True,False
+donkey_resnet18,ring-grpc-4,4,Ring AllReduce,gRPC/protobuf,16.487656,15.422326,1.065331,6.4614,0.553173,0.586968,0.138293,0.146742,val_angle_mae,lower_is_better,0.03737933,0.03737933,0.0,True,False
+donkey_resnet18,single-1,1,single,local,9.120534,9.052413,0.068121,0.7469,1.0,1.0,1.0,1.0,val_angle_mae,lower_is_better,0.03760296,0.03760296,0.0,True,False
+mnist_mlp,ps-grpc-2,2,PS,gRPC/protobuf,34.329135,12.20666,22.122475,64.4423,0.041319,0.113471,0.020659,0.056736,val_accuracy,higher_is_better,0.9656,0.9656,0.0,True,True
+mnist_mlp,ps-grpc-4,4,PS,gRPC/protobuf,62.14525,15.398597,46.746653,75.2216,0.022825,0.08995,0.005706,0.022488,val_accuracy,higher_is_better,0.9652,0.9652,0.0,True,True
+mnist_mlp,ps-json-2,2,PS,Socket/JSON,61.969421,33.216815,28.752606,46.3981,0.022889,0.041699,0.011445,0.020849,val_accuracy,higher_is_better,0.9656,0.9656,0.0,True,True
+mnist_mlp,ps-json-4,4,PS,Socket/JSON,103.495077,52.963633,50.531445,48.825,0.013705,0.026152,0.003426,0.006538,val_accuracy,higher_is_better,0.9652,0.9652,0.0,True,True
+mnist_mlp,ring-grpc-2,2,Ring AllReduce,gRPC/protobuf,4.226105,3.369405,0.8567,20.2716,0.335637,0.411083,0.167818,0.205541,val_accuracy,higher_is_better,0.9656,0.9656,0.0,True,True
+mnist_mlp,ring-grpc-4,4,Ring AllReduce,gRPC/protobuf,6.395572,5.684272,0.7113,11.1218,0.221784,0.243673,0.055446,0.060918,val_accuracy,higher_is_better,0.9657,0.9657,0.0,True,True
+mnist_mlp,single-1,1,single,local,1.418436,1.385104,0.033331,2.3499,1.0,1.0,1.0,1.0,val_accuracy,higher_is_better,0.9657,0.9657,0.0,True,False

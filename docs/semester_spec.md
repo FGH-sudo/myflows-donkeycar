@@ -264,7 +264,7 @@ All-Reduce 在 Parameter Server 正确后实现。
 - worker 之间完成梯度求和或平均。
 - 每个 worker 使用相同的平均梯度更新参数。
 
-优先实现环形 All-Reduce，用进程间队列或共享内存传递分块梯度。
+优先实现环形 All-Reduce。本仓库已按 [stage1_distributed_gpu_spec.md](stage1_distributed_gpu_spec.md) 提供单机回环 gRPC Ring：两阶段 ScatterReduce/AllGather、按样本加权、各 rank 独立 GPU/CPU 优化器更新；不用现成 AllReduce 库替代两阶段实现。CPU/回环结果称为模拟性能，不与 NCCL 多 GPU 性能混同。
 
 复用 PS 的 ModelState、批次和监控协议；验证 reduce-scatter + all-gather，分块不能整除时 padding 后裁剪。无中央梯度聚合者，各 worker 独立持有一致的优化器状态；同样按样本数加权，避免平均次数错误。CPU IPC 结果称为模拟性能，不与 NCCL 多 GPU 性能混同。
 

@@ -1,0 +1,53 @@
+syntax = "proto3";
+
+package myflows.distributed;
+
+import "common.proto";
+
+service RingAllReduceService {
+  rpc VariableWeightsInit(RingInitRequest) returns (RingInitResponse);
+  rpc Receive(RingReceiveRequest) returns (RingReceiveResponse);
+}
+
+message RingInitRequest {
+  string protocol_version = 1;
+  string run_id = 2;
+  int32 sender_rank = 3;
+  string request_id = 4;
+  string schema_hash = 5;
+  string parameter_hash = 6;
+  int32 parameter_version = 7;
+  repeated TensorBlob parameters = 8;
+  OptimizerMeta optimizer = 9;
+}
+
+message RingInitResponse {
+  string status = 1;
+  string error = 2;
+  string request_id = 3;
+}
+
+message RingReceiveRequest {
+  string protocol_version = 1;
+  string run_id = 2;
+  string collective_id = 3;
+  int32 global_step = 4;
+  int32 parameter_version = 5;
+  int32 sender_rank = 6;
+  int32 receiver_rank = 7;
+  string stage = 8;
+  int32 round = 9;
+  int32 chunk_id = 10;
+  int32 valid_length = 11;
+  string schema_hash = 12;
+  string payload_hash = 13;
+  bytes data = 14;
+  string request_id = 15;
+}
+
+message RingReceiveResponse {
+  string status = 1;
+  string error = 2;
+  string request_id = 3;
+  bool duplicate = 4;
+}

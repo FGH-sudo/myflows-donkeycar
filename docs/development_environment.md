@@ -12,16 +12,18 @@
 
 ## Python 依赖
 
-根目录的 `pyproject.toml` 和 `uv.lock` 是阶段一 Python 依赖的声明与锁定文件。当前使用 `cupy-cuda12x==14.0.1`，因为 CUDA 13.3 Toolkit 提供的是 cuBLAS 12 ABI，而 `cupy-cuda13x` 轮子要求 `cublas64_13.dll`。系统 Toolkit 仍用于原生 C++/CUDA 调度 DLL；CuPy 的 CUDA 12.6 运行库由 `.venv` 中固定版本的 `nvidia-cublas-cu12`、`nvidia-cuda-nvrtc-cu12` 和 `nvidia-cuda-runtime-cu12` 提供。
+根目录的 `pyproject.toml` 和 `uv.lock` 是阶段一 Python 依赖的声明与锁定文件。当前使用 `cupy-cuda12x==14.0.1`，对应 CUDA 12 系列；`.venv` 内固定安装 `nvidia-cublas-cu12`、`nvidia-cuda-nvrtc-cu12` 和 `nvidia-cuda-runtime-cu12`。框架也会加载 PyTorch 自带的 CUDA DLL，因此实际 NVRTC 版本受导入顺序影响，应在同一运行进程记录，不能只根据包版本推断。
 
 同步阶段一依赖时使用：
 
 ```powershell
-uv sync
+uv sync --locked --inexact
 uv pip check --python .venv\Scripts\python.exe
 ```
 
-`.venv` 使用 `include-system-site-packages = false`，不会读取全局 Python 的第三方包。PyTorch 使用项目外的本地 wheel 安装，原因是该 wheel 体积较大，不适合提交到仓库；重建时执行：
+默认 `dev` 依赖组包括统一测试入口需要的 FastAPI、httpx 和 python-multipart，并限定 `setuptools<82`，与当前 PyTorch wheel 的依赖约束一致。`--inexact` 保留本地 wheel 安装的 PyTorch 及其额外依赖；普通的精确 `uv sync` 会移除未声明在锁文件中的包。
+
+`.venv` 使用 `include-system-site-packages = false`，不会读取全局 Python 的第三方包。PyTorch 使用项目外的本地 wheel 安装，原因是该 wheel 体积较大，不适合提交到仓库；重建时先同步锁文件，再执行：
 
 ```powershell
 uv pip install --python .venv\Scripts\python.exe `
@@ -32,20 +34,27 @@ uv pip install --python .venv\Scripts\python.exe `
 
 ## CUDA 测试环境
 
-为了让 CuPy 使用现有 PyTorch 的 CUDA 12 运行库，运行 Python 测试前在当前 PowerShell 设置：
+`MyFlows/core/device.py` 在初始化 CUDA、导入 CuPy 前，优先将当前进程的 `CUDA_PATH` 指向 Python 环境内的 `nvidia/cuda_runtime`。这使 CUDA 12 NVRTC 使用 CUDA 12 头文件，避免系统 `CUDA_PATH=v13.3` 引入不兼容头文件。没有此 runtime wheel 时沿用原来的系统路径。此选择不修改 Windows 用户或系统环境变量。
+
+正常框架入口无需手动设置环境变量。使用统一测试入口同时收集 unittest 类和函数式测试：
 
 ```powershell
-$runtime = "$PWD\.venv\Lib\site-packages\nvidia\cuda_runtime"
-$nvrtc = "$PWD\.venv\Lib\site-packages\nvidia\cuda_nvrtc"
-$cublas = "$PWD\.venv\Lib\site-packages\nvidia\cublas"
-$torchLib = "$PWD\.venv\Lib\site-packages\torch\lib"
-$env:CUDA_PATH = $runtime
-$env:CUPY_CUDA_PATH = $runtime
-$env:PATH = "$cublas\bin;$nvrtc\bin;$runtime\bin;$torchLib;$env:PATH"
-uv run --no-sync python -m unittest discover -s MyFlows/tests -p 'test_*.py'
+.\.venv\Scripts\python.exe -X utf8 -m tools.run_tests --scope all
 ```
 
-原生 DLL 使用完整 Toolkit 和 MSVC 构建，不依赖上面临时设置的 `CUDA_PATH`：
+如果运行独立 CuPy 脚本（不经过框架的 CUDA 初始化，或先导入 CuPy），应在新进程启动前指定 CUDA 12 头文件；CuPy 会缓存已检测到的路径：
+
+```powershell
+$savedCudaPath = $env:CUDA_PATH
+try {
+    $env:CUDA_PATH = "$PWD\.venv\Lib\site-packages\nvidia\cuda_runtime"
+    .\.venv\Scripts\python.exe -X utf8 -c "import cupy; cupy.show_config()"
+} finally {
+    $env:CUDA_PATH = $savedCudaPath
+}
+```
+
+原生 DLL 构建仍使用现有 CMake/MSVC 入口：
 
 ```powershell
 uv run --no-sync python tools\build_native_cuda.py

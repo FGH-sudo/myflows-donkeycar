@@ -13,7 +13,9 @@ dependencies = [
     "psutil==7.2.2",
     "matplotlib==3.10.8",
     "opencv-python==4.13.0.92",
-    # CuPy 12.x needs CUDA 12 headers/runtime for NVRTC; keep this separate
+    "grpcio==1.83.1",
+    "grpcio-tools==1.83.1",
+    # cupy-cuda12x needs CUDA 12 headers/runtime for NVRTC; keep this separate
     # from the system CUDA Toolkit used to build the native DLL.
     "nvidia-cublas-cu12==12.6.4.1",
     "nvidia-cuda-nvrtc-cu12==12.6.77",
@@ -22,7 +24,12 @@ dependencies = [
 
 [dependency-groups]
 dev = [
+    "fastapi>=0.110.0",
+    "httpx>=0.27.0",
+    "python-multipart>=0.0.9",
     "ruff>=0.13.0",
+    # Match the separately installed torch 2.11.0+cu128 wheel's constraint.
+    "setuptools<82",
 ]
 
 [tool.uv]

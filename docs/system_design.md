@@ -2,7 +2,7 @@
 
 更新时间：2026-09-05。
 
-本文只说明仓库当前已经存在的系统。第一阶段已实现 CUDA C/C++ Conv/Pool、CPU 同步 PS 和 Nsight 实验入口；阶段证据见 [第一阶段报告](experiments/semester_2026_fall/stage1/README.md)。AutoPilot Agent、All-Reduce、完整 GPU 监控和预训练模型库继续按 [semester_spec.md](semester_spec.md) 推进。
+本文只说明仓库当前已经存在的系统。第一阶段已实现 CUDA C/C++ Conv/Pool、同步 PS、Nsight 实验入口；同步 PS 的 Socket/gRPC 与 Ring AllReduce 按 [stage1_distributed_gpu_spec.md](stage1_distributed_gpu_spec.md) 接入。AutoPilot Agent、完整 GPU 监控和预训练模型库继续按 [semester_spec.md](semester_spec.md) 推进。
 
 ## 1. 项目边界
 
@@ -73,7 +73,7 @@ flowchart LR
 ## 7. 当前限制
 
 - CUDA C 暂不支持 FP64、分组/空洞卷积和带 padding 的 Pool；这些高级卷积功能继续走原后端。阶段二两条 CUDA 路径当前同样限定 groups=1、dilation=1。
-- PS 当前是小型 FP64 MLP 的 CPU 进程模拟，没有 GPU PS、All-Reduce 或 NCCL 多 GPU 实验。
+- 同步 PS 与 Ring AllReduce 已在单机回环上实现（Socket JSON / gRPC）；正式 GPU 七配置矩阵与道路 CNN 长训仍按 stage1 distributed GPU spec 归档，不能把 CPU 冒烟当作 GPU 验收。没有 NCCL 多 GPU 实验。
 - 没有训练调优 AutoPilot Agent。
 - 没有完整 GPU 监控。
 - 没有预训练参数导入和冻结训练功能。
