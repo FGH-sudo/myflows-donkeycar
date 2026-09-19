@@ -2,7 +2,7 @@
 
 根据用户恢复任务后的要求，正式比较覆盖 MNIST MLP 与现有 ResNet18 的 DonkeyCar 道路回归。PS 协议表包含 Socket/JSON 与 gRPC/protobuf；PS/Ring 架构表及加速比图统一使用 gRPC/protobuf。
 
-汇报材料：[第四周汇报 PPT](第四周汇报_PS_Ring_分布式训练.pptx)，生成脚本：[tools/create_week4_report_ppt.mjs](../../../../../tools/create_week4_report_ppt.mjs)。
+汇报材料：[第四周汇报 PPT（本地文件，不纳入 Git）](第四周汇报_PS_Ring_分布式训练.pptx)。仓库保留本报告、关键汇总数据和实验复现脚本。
 
 本报告使用当前自研框架，在单机回环网络中运行独立 Worker，所有训练 Worker 共享一张 RTX 4060 Laptop GPU。
 PS 使用独立 CPU 聚合进程，Worker 在 GPU 更新参数；Ring 使用真实相邻 gRPC 传递，完成 ScatterReduce 与 AllGather。

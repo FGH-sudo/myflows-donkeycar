@@ -81,6 +81,12 @@ worktrees/
 # Course/reference PDFs stay local and are not committed
 *.pdf
 
+# Presentation deliverables stay local.
+*.pptx
+.chart-data-*/
+# Superseded local presentation generator.
+/tools/create_week4_report_ppt.mjs
+
 # Word/Office lock files and doc render scratch
 ~$*
 docs/.format_fix_tmp/
