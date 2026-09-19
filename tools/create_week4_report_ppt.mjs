@@ -1,14 +1,17 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { createRequire } from 'node:module';
 
 const require = createRequire(import.meta.url);
 const pptxgen = require('pptxgenjs');
+const JSZip = require('jszip');
 
 const repo = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const reportRoot = path.join(repo, 'docs', 'experiments', 'semester_2026_fall', 'distributed_gpu', '20260919_optimized');
-const outPath = path.join(reportRoot, '第四周汇报_PS_Ring_分布式训练.pptx');
+const outPath = process.argv[2]
+  ? path.resolve(process.argv[2])
+  : path.join(reportRoot, '第四周汇报_PS_Ring_分布式训练.pptx');
 
 function readJson(name) {
   return JSON.parse(fs.readFileSync(path.join(reportRoot, name), 'utf8'));
@@ -115,7 +118,13 @@ function table(slide, data, opts = {}) {
 }
 
 function arrow(slide, x1, y1, x2, y2, color = C.blue) {
-  slide.addShape(S.line, { x: x1, y: y1, w: x2 - x1, h: y2 - y1, line: { color, pt: 1.6, endArrowType: 'triangle' } });
+  // DrawingML extents must be non-negative, including for reverse arrows.
+  slide.addShape(S.line, {
+    x: Math.min(x1, x2), y: Math.min(y1, y2),
+    w: Math.abs(x2 - x1), h: Math.abs(y2 - y1),
+    flipH: x2 < x1, flipV: y2 < y1,
+    line: { color, pt: 1.6, endArrowType: 'triangle' },
+  });
 }
 
 function node(slide, x, y, w, h, text, fill, color = C.ink) {
@@ -141,7 +150,11 @@ function node(slide, x, y, w, h, text, fill, color = C.ink) {
   for (const [x, y, text] of coverNodes) {
     slide.addShape(S.ellipse, { x, y, w: 1.05, h: 1.05, fill: { color: '284B63' }, line: { color: '5BC5BE', pt: 1.1 } });
     addText(slide, text, { x, y: y + 0.37, w: 1.05, h: 0.18, fontSize: 12, bold: true, color: C.white, align: 'center' });
-    arrow(slide, 9.9, 3.25, x + 0.52, y + 0.52, '5BC5BE');
+    const dx = x + 0.525 - 10.22;
+    const dy = y + 0.525 - 3.25;
+    const distance = Math.hypot(dx, dy);
+    arrow(slide, 10.22 + 0.84 * dx / distance, 3.25 + 0.84 * dy / distance,
+      x + 0.525 - 0.57 * dx / distance, y + 0.525 - 0.57 * dy / distance, '5BC5BE');
   }
   addNotes(slide, '本页为汇报封面。课程依据：深度学习框架-16 综合项目III.pdf 第 4 次课主题为分布式计算、GPU 编程实现以及 CUDA Nsight 工具。');
 }
@@ -178,11 +191,7 @@ function node(slide, x, y, w, h, text, fill, color = C.ink) {
   const psWorkers = [[0.85, 2.12, 'Worker 0'], [4.75, 2.12, 'Worker 1'], [0.85, 4.65, 'Worker 2'], [4.75, 4.65, 'Worker 3']];
   for (const [x, y, t] of psWorkers) {
     node(slide, x, y, 1.35, 0.55, t, C.white);
-    if (y > 3) {
-      slide.addShape(S.line, { x: x < 2 ? 2.2 : 4.2, y: 3.42, w: 0, h: 1.51, line: { color: C.blue, pt: 1.6, beginArrowType: 'triangle' } });
-    } else {
-      arrow(slide, x + (x < 2 ? 1.35 : 0), y + 0.28, x < 2 ? 2.2 : 4.2, 3.42, C.blue);
-    }
+    arrow(slide, x + (x < 2 ? 1.35 : 0), y + 0.28, x < 2 ? 2.2 : 4.2, 3.42, C.blue);
   }
   addText(slide, 'Push 梯度 → PS 同步聚合 → Worker GPU 更新 / Pull 参数', { x: 0.86, y: 5.55, w: 5.7, h: 0.3, fontSize: 11.2, color: C.muted, align: 'center' });
 
@@ -320,13 +329,14 @@ function node(slide, x, y, w, h, text, fill, color = C.ink) {
   ], {
     x: 7.05, y: 1.46, w: 5.55, h: 3.15, chartColors: ['9AA5B1', C.cyan, C.blue],
     showLegend: true, legendPos: 'b', fontFace: FONT, catAxisLabelFontFace: FONT, valAxisLabelFontFace: FONT,
+    legendFontFace: FONT, dataLabelFontFace: FONT,
     catAxisLabelFontSize: 10, valAxisLabelFontSize: 10, valAxisMinVal: 0, valAxisMaxVal: 4.2, valAxisMajorUnit: 1,
     valGridLine: { color: C.grid, size: 0.7 }, catGridLine: { style: 'none' }, lineSize: 2.2, lineDataSymbol: 'circle',
     chartArea: { fill: { color: C.white }, border: { color: C.grid, pt: 0.8 } },
     showTitle: true, title: '实测加速比与理想线性参考', titleFontFace: FONT, titleFontSize: 14,
   });
   slide.addShape(S.roundRect, { x: 0.9, y: 4.55, w: 5.65, h: 1.25, rectRadius: 0.05, fill: { color: C.paleCyan }, line: { color: C.cyan } });
-  addText(slide, 'Ring 的工程优势', { x: 1.18, y: 4.82, w: 1.55, h: 0.2, fontSize: 15, bold: true, color: C.cyan });
+  addText(slide, 'Ring 的工程优势', { x: 1.18, y: 4.82, w: 1.55, h: 0.24, fontSize: 12.5, bold: true, color: C.cyan });
   addText(slide, '没有 PS 中心带宽热点；每个 rank 只和相邻节点交换分块，满足 Split → ScatterReduce → AllGather。', { x: 2.82, y: 4.68, w: 3.25, h: 0.48, fontSize: 11.4, color: C.ink, breakLine: true });
   slide.addShape(S.roundRect, { x: 7.05, y: 4.95, w: 5.55, h: 0.85, rectRadius: 0.05, fill: { color: C.paleOrange }, line: { color: C.orange } });
   addText(slide, '瓶颈判断：多进程共享同一 GPU，通信更均匀但计算资源没有增加；进程调度与同步开销仍高于单进程。', { x: 7.32, y: 5.2, w: 5.0, h: 0.3, fontSize: 11.6, color: C.ink, align: 'center' });
@@ -350,6 +360,7 @@ function node(slide, x, y, w, h, text, fill, color = C.ink) {
     { name: '优化版', labels: configs.map(([label]) => label), values: optTimes },
   ], {
     x: 0.7, y: 1.5, w: 8.0, h: 4.55, barDir: 'col', catAxisLabelFontFace: FONT, valAxisLabelFontFace: FONT,
+    legendFontFace: FONT, dataLabelFontFace: FONT,
     catAxisLabelFontSize: 9, valAxisLabelFontSize: 10, chartColors: [C.orange, C.cyan], showLegend: true, legendPos: 'b',
     showValue: false, valAxisMinVal: 0, valGridLine: { color: C.grid, size: 0.7 }, catGridLine: { style: 'none' },
     chartArea: { fill: { color: C.white }, border: { color: C.grid, pt: 0.8 } },
@@ -377,8 +388,8 @@ function node(slide, x, y, w, h, text, fill, color = C.ink) {
   checks.forEach(([label, status, color], i) => {
     const y = 1.55 + i * 0.72;
     slide.addShape(S.roundRect, { x: 0.85, y, w: 5.35, h: 0.5, rectRadius: 0.04, fill: { color: i === 4 ? C.paleOrange : C.white }, line: { color: i === 4 ? C.orange : C.grid } });
-    addText(slide, label, { x: 1.08, y: y + 0.15, w: 3.8, h: 0.16, fontSize: 12.5, color: C.ink });
-    addText(slide, status, { x: 5.0, y: y + 0.15, w: 0.95, h: 0.16, fontSize: 11.5, bold: true, color, align: 'right' });
+    addText(slide, label, { x: 1.08, y: y + 0.15, w: 3.65, h: 0.16, fontSize: 12.5, color: C.ink });
+    addText(slide, status, { x: 4.8, y: y + 0.13, w: 1.15, h: 0.24, fontSize: 11.5, bold: true, color, align: 'right' });
   });
   slide.addShape(S.roundRect, { x: 6.85, y: 1.55, w: 5.6, h: 3.25, rectRadius: 0.06, fill: { color: C.navy }, line: { color: C.navy } });
   addText(slide, '汇报结论', { x: 7.2, y: 1.95, w: 1.4, h: 0.25, fontSize: 18, bold: true, color: '8DE0D9' });
@@ -388,5 +399,131 @@ function node(slide, x, y, w, h, text, fill, color = C.ink) {
   addNotes(slide, '结论依据：优化版 delivery_summary.json、README.md 的验收边界与限制章节。ResNet 逐步梯度等价失败保留为独立限制，归约与 CPU/GPU 更新检查分别通过。');
 }
 
-await pptx.writeFile({ fileName: outPath });
+const archive = await JSZip.loadAsync(await pptx.write({ outputType: 'nodebuffer' }));
+for (const part of Object.values(archive.files)) {
+  if (!part.name.endsWith('.xml')) continue;
+  let xml = await part.async('string');
+  if (/<a:ext\b[^>]*\bc[xy]="-/.test(xml)) {
+    throw new Error(`Invalid negative DrawingML extent in ${part.name}`);
+  }
+  if (/^ppt\/slides\/slide\d+\.xml$/.test(part.name)) {
+    // PptxGenJS tables can reuse another shape's ID. This deck has no
+    // ID-linked connectors/animations, so assign unique IDs in drawing order.
+    if (/<a:(?:stCxn|endCxn)\b|<p:timing\b/.test(xml)) {
+      throw new Error(`Shape-ID references need explicit remapping in ${part.name}`);
+    }
+    let shapeId = 0;
+    xml = xml.replace(/(<p:cNvPr\b[^>]*\bid=")[^"]+("[^>]*>)/g,
+      (_, before, after) => `${before}${++shapeId}${after}`);
+    archive.file(part.name, xml);
+  }
+  if (part.name === '[Content_Types].xml') {
+    // The generator declares one slide master per slide but emits one shared
+    // master. Drop only unused declarations; referenced parts are preserved.
+    xml = xml.replace(/<Override\s+PartName="([^"]+)"[^>]*\/>/g,
+      (entry, target) => archive.file(target.replace(/^\//, '')) ? entry : '');
+    archive.file(part.name, xml);
+  }
+  if (part.name === 'ppt/presentation.xml') {
+    // Notes masters precede the slide list in the PresentationML sequence.
+    xml = xml.replace(/(<p:sldIdLst>[\s\S]*?<\/p:sldIdLst>)(<p:notesMasterIdLst>[\s\S]*?<\/p:notesMasterIdLst>)/, '$2$1');
+    archive.file(part.name, xml);
+  }
+  if (part.name.startsWith('ppt/charts/')) {
+    // PptxGenJS 4.0.1 writes bar-only flags into line series and a third axis
+    // for 2D charts. Keep chart data/workbooks intact and normalize these tags.
+    xml = xml.replace(/<c:(line|bar)Chart>[\s\S]*?<\/c:\1Chart>/g, (chart, kind) => {
+      if (kind === 'line') {
+        if (!chart.includes('<c:grouping ')) {
+          chart = chart.replace('<c:lineChart>', '<c:lineChart><c:grouping val="standard"/>');
+        }
+        chart = chart.replace(/<c:invertIfNegative\b[^>]*\/>/g, '');
+        chart = chart.replace(/(<c:dLbls>[\s\S]*?<\/c:dLbls>)(<c:marker>[\s\S]*?<\/c:marker>)/g, '$2$1');
+      }
+      let axisCount = 0;
+      chart = chart.replace(/<c:axId\s+val="[^"]+"\s*\/>/g, axis => ++axisCount <= 2 ? axis : '');
+      if (axisCount < 2) throw new Error(`Missing 2D chart axes in ${part.name}`);
+      return chart;
+    });
+    // Specify an East Asian font for Chinese chart titles and labels as well.
+    xml = xml.replace(/(<a:latin\b[^>]*\/>)\s*(?!<a:ea\b)/g, `$1<a:ea typeface="${FONT}"/>`);
+    // These charts have a single category level. Use the standard flat cache
+    // without changing any workbook reference, category label or value.
+    xml = xml.replace(/<c:multiLvlStrRef>[\s\S]*?<\/c:multiLvlStrRef>/g, ref => {
+      if ((ref.match(/<c:lvl>/g) ?? []).length !== 1) return ref;
+      return ref.replaceAll('multiLvlStrRef', 'strRef').replaceAll('multiLvlStrCache', 'strCache')
+        .replace(/<\/?c:lvl>/g, '');
+    });
+    archive.file(part.name, xml);
+  }
+}
+// Re-export through the presentation runtime. The raw PptxGenJS package can
+// pass XML validation but still be rejected by Microsoft PowerPoint. Keep
+// intermediate files and the runtime's inspection sidecar outside the report.
+const { FileBlob, PresentationFile } = await import(
+  pathToFileURL(require.resolve('@oai/artifact-tool')).href
+);
+const buildRoot = path.join(repo, '.codex');
+fs.mkdirSync(buildRoot, { recursive: true });
+const buildDir = fs.mkdtempSync(path.join(buildRoot, 'week4-pptx-'));
+const intermediatePath = path.join(buildDir, 'normalized.pptx');
+const compatiblePath = path.join(buildDir, 'compatible.pptx');
+fs.writeFileSync(intermediatePath, await archive.generateAsync({ type: 'nodebuffer', compression: 'DEFLATE' }));
+const presentation = await PresentationFile.importPptx(await FileBlob.load(intermediatePath));
+await (await PresentationFile.exportPptx(presentation)).save(compatiblePath);
+// The runtime preserves chart formulas/caches but omits embedded workbooks.
+// Restore the original sheets so PowerPoint's Edit Data remains available.
+const compatible = await JSZip.loadAsync(fs.readFileSync(compatiblePath));
+const chartParts = Object.values(compatible.files).filter(part =>
+  /\/charts\/chart\d+\.xml$/.test(part.name));
+if (chartParts.length !== 2) throw new Error('Expected both report charts');
+for (const part of chartParts) {
+  const sourcePath = `ppt/charts/${path.posix.basename(part.name)}`;
+  const sourceXml = await archive.file(sourcePath).async('string');
+  let chartXml = await part.async('string');
+  const formulas = xml => [...xml.matchAll(/<c:f>([\s\S]*?)<\/c:f>/g)].map(match => match[1]);
+  if (JSON.stringify(formulas(sourceXml)) !== JSON.stringify(formulas(chartXml))) {
+    throw new Error(`Chart formula mapping changed: ${part.name}`);
+  }
+  const sourceSeries = [...sourceXml.matchAll(/<c:ser>[\s\S]*?<\/c:ser>/g)].map(match => match[0]);
+  let seriesIndex = 0;
+  chartXml = chartXml.replace(/<c:ser>[\s\S]*?<\/c:ser>/g, series => {
+    const originalSeries = sourceSeries[seriesIndex++];
+    for (const tag of ['tx', 'cat', 'val']) {
+      const pattern = new RegExp(`<c:${tag}>[\\s\\S]*?<\\/c:${tag}>`);
+      const originalData = originalSeries?.match(pattern)?.[0];
+      if (!originalData || !pattern.test(series)) throw new Error(`Missing chart data: ${part.name}/${tag}`);
+      series = series.replace(pattern, () => originalData);
+    }
+    return series;
+  });
+  if (seriesIndex !== sourceSeries.length) throw new Error(`Chart series count changed: ${part.name}`);
+  const sourceRels = `ppt/charts/_rels/${path.posix.basename(part.name)}.rels`;
+  let rels = await archive.file(sourceRels).async('string');
+  const targets = [...rels.matchAll(/Target="([^"]+)"/g)];
+  if (targets.length !== 1 || !targets[0][1].endsWith('.xlsx')) {
+    throw new Error(`Unexpected chart workbook relationship: ${sourceRels}`);
+  }
+  const sourceTarget = targets[0][1];
+  const workbookPath = path.posix.normalize(path.posix.join(path.posix.dirname(sourcePath), sourceTarget));
+  compatible.file(workbookPath, await archive.file(workbookPath).async('nodebuffer'));
+  rels = rels.replace(`Target="${sourceTarget}"`,
+    `Target="${path.posix.relative(path.posix.dirname(part.name), workbookPath)}"`);
+  compatible.file(`${path.posix.dirname(part.name)}/_rels/${path.posix.basename(part.name)}.rels`, rels);
+  const externalData = sourceXml.match(/<c:externalData\b[\s\S]*?<\/c:externalData>/)?.[0];
+  if (!externalData || /<c:externalData\b/.test(chartXml)) {
+    throw new Error(`Unexpected embedded-data state: ${part.name}`);
+  }
+  chartXml = chartXml.replace('</c:chartSpace>', externalData.replace('<c:externalData ',
+    '<c:externalData xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" ') + '</c:chartSpace>');
+  compatible.file(part.name, chartXml);
+}
+let contentTypes = await compatible.file('[Content_Types].xml').async('string');
+if (!/Extension="xlsx"/.test(contentTypes)) {
+  contentTypes = contentTypes.replace('</Types>',
+    '<Default Extension="xlsx" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"/></Types>');
+  compatible.file('[Content_Types].xml', contentTypes);
+}
+fs.mkdirSync(path.dirname(outPath), { recursive: true });
+fs.writeFileSync(outPath, await compatible.generateAsync({ type: 'nodebuffer', compression: 'DEFLATE' }));
 console.log(outPath);
