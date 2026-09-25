@@ -7,6 +7,7 @@
 | [semester_spec.md](semester_spec.md) | 本学期范围、任务依赖与进度；后续计划继续审核 | v0.5 同步至第四周进度 |
 | [stage1_cuda_ps_spec.md](stage1_cuda_ps_spec.md) | CUDA 卷积/池化、CPU PS、Nsight 的实现约定与验收 | v0.2 已交付（2026-09-05） |
 | [stage1_distributed_gpu_spec.md](stage1_distributed_gpu_spec.md) | 同步 PS、Ring AllReduce、GPU Worker 与同条件评测 | v0.3 已交付（2026-09-19），ResNet 严格轨迹项未通过 |
+| [双 Worker 性能研究](experiments/semester_2026_fall/distributed_gpu/20260926_two_workers/README.md) | 单进程 / PS 2 / Ring 2；PS 通知策略、60 次性能实验、状态一致性与单卡限制 | 2026-09-26：MNIST PS 明显改善，ResNet 有退化；notify 保持可选，双 Worker 均未超过单进程 |
 | [PS / Ring 双任务实测报告（优化版主结果）](experiments/semester_2026_fall/distributed_gpu/20260919_optimized/README.md) | MNIST、ResNet18 道路任务；PS/Ring gRPC/protobuf 优化对照、课件表、逐 epoch 数据、Nsight 与验收边界；第四周汇报 PPT 为本地文件，不纳入 Git | 2026-09-19：56 个正式档案、42 次性能重复、204 项回归；保留 ResNet 严格轨迹超差说明 |
 | [PS / Ring 双任务实测报告（原基线）](experiments/semester_2026_fall/distributed_gpu/20260917/README.md) | 优化前历史基线，供逐配置复核 | 2026-09-18：历史结果，保留 ResNet 严格轨迹超差说明 |
 | [分布式实验协议](experiments/semester_2026_fall/distributed_gpu/20260917/EXPERIMENT_PROTOCOL.md) | 分布式正式实验的冻结配置、重复次数与验收口径 | 2026-09-17 |
