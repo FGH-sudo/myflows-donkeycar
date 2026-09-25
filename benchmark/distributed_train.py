@@ -27,8 +27,6 @@ def parse_args(argv=None):
     parser.add_argument("--optimizer", choices=("mbgd", "adam"), default="mbgd")
     parser.add_argument("--learning-rate", type=float, default=0.01)
     parser.add_argument("--timeout", type=float, default=30)
-    parser.add_argument("--ps-wait-strategy", choices=("poll", "notify"), default="poll",
-                        help="PS server wait policy; notify is opt-in because shared-GPU gains depend on workload")
     parser.add_argument("--out-dir", required=True)
     parser.add_argument("--data-dir")
     return parser.parse_args(argv)
@@ -51,7 +49,6 @@ def main(argv=None):
             optimizer=args.optimizer,
             learning_rate=args.learning_rate,
             timeout=args.timeout,
-            ps_wait_strategy=args.ps_wait_strategy,
             run_id=run.path.name,
             data_dir=args.data_dir,
             collect_history=args.task == "synthetic",
