@@ -2,7 +2,7 @@
 
 根据用户恢复任务后的要求，正式比较覆盖 MNIST MLP 与现有 ResNet18 的 DonkeyCar 道路回归。PS 协议表包含 Socket/JSON 与 gRPC/protobuf；PS/Ring 架构表及加速比图统一使用 gRPC/protobuf。
 
-汇报材料：[第四周汇报 PPT（本地文件，不纳入 Git）](第四周汇报_PS_Ring_分布式训练.pptx)。仓库保留本报告、关键汇总数据和实验复现脚本。
+汇报材料：第四周汇报 PPT 与汇报稿作为本地文件保存，不纳入 Git。仓库保留本报告、关键汇总数据和实验复现脚本。
 
 本报告使用当前自研框架，在单机回环网络中运行独立 Worker，所有训练 Worker 共享一张 RTX 4060 Laptop GPU。
 PS 使用独立 CPU 聚合进程，Worker 在 GPU 更新参数；Ring 使用真实相邻 gRPC 传递，完成 ScatterReduce 与 AllGather。
@@ -77,7 +77,7 @@ Ring 每个 rank 单向发送/接收均为 2(N−1)M/N，集群有向发送总�
 
 ### ResNet 数值判定范围
 
-严格的“独立整批单进程轨迹 vs 分片轨迹，每一步梯度逐元素等价”在 ResNet 上出现超差，未将其标为通过。首个双 Worker MBGD 案例在第 4 步参数最大差约 4.3e-7，但梯度差约 1.4e-3；重算记录了 ReLU 掩码和 MaxPool argmax 的变化。某些相同权重下的不同 batch 形状也出现少量分支变化。详见 [保留诊断](resnet_gradient_diagnosis.json)。
+严格的“独立整批单进程轨迹 vs 分片轨迹，每一步梯度逐元素等价”在 ResNet 上出现超差，未将其标为通过。首个双 Worker MBGD 案例在第 4 步参数最大差约 4.3e-7，但梯度差约 1.4e-3；重算记录了 ReLU 掩码和 MaxPool argmax 的变化。某些相同权重下的不同 batch 形状也出现少量分支变化。详见原基线目录中的 [保留诊断](../20260917/resnet_gradient_diagnosis.json)。
 原 synthetic/MNIST/小型 CNN 保持原连续 20 步独立轨迹对照。新增 ResNet 检查分为：共同初始点的整批梯度对照；每一步实际局部 FP32 梯度的独立 FP64 加权求和；使用已经核验的传输均值，从同一初始状态执行现有 CPU 优化器，比较全部 rank 的 GPU 参数、Adam v/s、版本和 BN buffers。各项仍使用 atol=1e-4、rtol=1e-3；同时保留独立整批轨迹的逐步误差，未放宽容差后把原失败改写为成功。
 新增 ResNet 18 组逐步检查的归约最大绝对误差为 1.7e-07，CPU/GPU 参数更新最大绝对误差为 2.98e-08。每组原始局部/全局梯度、CPU 参考 checkpoint 及 resnet_step_audit.json 均留档。完整训练的质量差异另按固定验证门槛判断。
 

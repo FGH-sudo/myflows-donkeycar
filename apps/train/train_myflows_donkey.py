@@ -25,6 +25,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 import time
 from pathlib import Path
@@ -203,6 +204,12 @@ def main() -> None:
         default=None,
         help="历史 JSON/PNG 文件名前缀；默认与日志时间戳一致",
     )
+    ap.add_argument(
+        "--run-dir",
+        type=str,
+        default=None,
+        help="可选：在该目录写 config.json 与逐步 metrics.jsonl，供训练控制台实时读取",
+    )
     args = ap.parse_args()
 
     data_dir = (ROOT / args.data).resolve()
@@ -361,6 +368,19 @@ def main() -> None:
     if args.summary_once:
         print("[model-summary]")
         print(format_model_summary(model_summary(model)))
+    run_dir = (ROOT / args.run_dir).resolve() if args.run_dir else None
+    if run_dir is not None:
+        run_dir.mkdir(parents=True, exist_ok=True)
+        run_config = {
+            "kind": "single", "task": "donkey_resnet18_single", "run_id": run_id or run_stamp,
+            "args": vars(args), "device": str(device), "samples": n, "val_samples": len(val_index),
+            "input_h": h, "input_w": w, "steps_per_epoch": steps, "log_file": str(log_file),
+            "tensorboard_dir": str(tb_logdir), "checkpoint": str(out_base), "best": str(best_base),
+            "stop_file": str(stop_file), "started_unix_s": time.time(),
+        }
+        (run_dir / "config.json").write_text(json.dumps(run_config, ensure_ascii=False, indent=2, default=str),
+                                             encoding="utf-8")
+        print(f"控制台运行目录: {run_dir}")
     dashboard = TrainingDashboard(
         tb_logdir,
         enabled=not args.no_tensorboard,
@@ -371,6 +391,7 @@ def main() -> None:
         log_interval=args.tb_log_interval,
         max_hist_params=args.tb_max_hist_params,
         feature_channels=args.tb_feature_channels,
+        jsonl_path=run_dir / "metrics.jsonl" if run_dir is not None else None,
     )
     if dashboard.active:
         print(f"TensorBoard 日志: {tb_logdir}")
@@ -481,6 +502,7 @@ def main() -> None:
                 labels=y_batch,
                 task="regression",
                 force=s == steps - 1,
+                epoch=ep + 1,
             )
             dashboard.log_activations(global_step, getattr(model, "_last_feature_nodes", {}), preferred_last="layer4")
             if s % 10 == 0 or s == steps - 1:
@@ -602,6 +624,10 @@ def main() -> None:
         )
         print(f"已导出 ONNX: {onnx_path} (batch=1)")
 
+    if run_dir is not None:
+        result = {"status": "passed", "finished_unix_s": time.time(), "steps": global_step,
+                  "last_mean_loss": last_mean_loss, "best_loss": best_loss, "stopped_early": bool(should_stop)}
+        (run_dir / "results.json").write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
     tee.close()
 
 

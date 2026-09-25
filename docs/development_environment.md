@@ -21,7 +21,19 @@ uv sync --locked --inexact
 uv pip check --python .venv\Scripts\python.exe
 ```
 
-默认 `dev` 依赖组包括统一测试入口需要的 FastAPI、httpx 和 python-multipart，并限定 `setuptools<82`，与当前 PyTorch wheel 的依赖约束一致。`--inexact` 保留本地 wheel 安装的 PyTorch 及其额外依赖；普通的精确 `uv sync` 会移除未声明在锁文件中的包。
+默认 `dev` 依赖组包括统一测试入口需要的 FastAPI、httpx 和 python-multipart，并限定 `setuptools<82`，与当前 PyTorch wheel 的依赖约束一致。默认同时安装的 `console` 依赖组供训练控制台使用：FastAPI、uvicorn 和提供 `pynvml` 的 `nvidia-ml-py`（没有 NVML 时 GPU 采样退回 nvidia-smi）。`--inexact` 保留本地 wheel 安装的 PyTorch 及其额外依赖；普通的精确 `uv sync` 会移除未声明在锁文件中的包。
+
+## 训练控制台前端
+
+`apps/console/web` 是独立的 Node 工程，依赖由 `package-lock.json` 锁定，`node_modules/` 与构建产物 `dist/` 不纳入 Git。Vite 8 要求 Node.js 20.19+ 或 22.12+（当前机器为 Node 24.16）。
+
+```powershell
+Set-Location apps\console\web
+npm ci          # 按锁文件安装
+npm run build   # 类型检查并输出 dist/，由 python -m apps.console.server 托管
+npm run dev     # 开发模式，http://127.0.0.1:5173，/api 代理到 8790（可用 CONSOLE_BACKEND 改）
+npm run lint    # oxlint
+```
 
 `.venv` 使用 `include-system-site-packages = false`，不会读取全局 Python 的第三方包。PyTorch 使用项目外的本地 wheel 安装，原因是该 wheel 体积较大，不适合提交到仓库；重建时先同步锁文件，再执行：
 

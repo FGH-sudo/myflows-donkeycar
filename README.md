@@ -17,7 +17,9 @@
 
 具体范围、排期和验收标准见 [本学期开发 Spec](docs/semester_spec.md)。后续学期规划与已验证的阶段成果分别记录。
 
-已按 [第一阶段 Spec](docs/stage1_cuda_ps_spec.md) 实现 CUDA Conv/Pool 前反向、FP32 小 CNN、CPU PS 和 Nsight 入口；运行结果与阶段验收状态见 [第一阶段实验报告](docs/experiments/semester_2026_fall/stage1/README.md)。Agent 的进一步设计与实现安排到后续阶段。
+已按 [第一阶段 Spec](docs/stage1_cuda_ps_spec.md) 实现 CUDA Conv/Pool 前反向、FP32 小 CNN、CPU PS 和 Nsight 入口；运行结果与阶段验收状态见 [第一阶段实验报告](docs/experiments/semester_2026_fall/stage1/README.md)。
+
+已按 [分布式 GPU Spec](docs/stage1_distributed_gpu_spec.md) 实现单机同步 PS（Socket JSON / gRPC）与 Ring AllReduce（gRPC），Worker 在 GPU 上计算并本地更新，PS 只聚合梯度；MNIST MLP 与 DonkeyCar ResNet18 两个任务的 1/2/4 Worker 结果见 [PS / Ring 双任务实测报告](docs/experiments/semester_2026_fall/distributed_gpu/20260919_optimized/README.md)。Agent 的进一步设计与实现安排到后续阶段。
 
 ## 当前基础
 
@@ -25,8 +27,11 @@
 
 - NumPy/CuPy 动态计算图和自动求导。
 - Conv2D、MaxPool2D、BatchNorm、Dropout 等基础算子。
-- 显式 FP32 CUDA C Conv/Pool 后端、三后端实验与 Systems/Compute 采集。
-- CPU 同步 Parameter Server，小 MLP 的 1/2/4 worker 更新等价和故障清理。
+- 显式 FP32 原生 CUDA Conv/Pool 后端（C/C++ DLL 调度自写 kernel，卷积 GEMM 调用 cuBLAS）、三后端实验与 Nsight Systems/Compute 采集。
+- 单机同步 Parameter Server（Socket JSON / gRPC）与 Ring AllReduce（gRPC），1/2/4 个 GPU Worker 共享单卡；数值等价、状态恢复、故障注入与通信量检查。
+- 分布式实验中的资源采样（nvidia-smi + psutil，约 1 秒一次）和 CUDA Event 阶段计时。
+- MyFlows/monitoring：NVML 优先、nvidia-smi 兜底的整卡 GPU 采样与后台记录器（JSONL）。
+- 训练控制台 apps/console：浏览器中查看全部历史/实时运行的 loss、阶段耗时、GPU 占用和 PS/Ring 拓扑，并能发起、排队和停止分布式或单进程训练。
 - ResNet18 图像回归模型。
 - DonkeyCar 数据读取、训练、验证和 ONNX 评估入口。
 - TensorBoard 训练可视化、checkpoint、Grad-CAM、INT8 和推理服务基础。
@@ -34,10 +39,9 @@
 
 以下内容仍是本学期的待开发项：
 
-- 完整 ResNet 的 CUDA C 精度/训练接入，以及更多模型的 PS 集成。
-- All-Reduce 训练。
+- 主训练入口 apps/train 接入原生 CUDA 后端；ResNet 分片与整批的逐步梯度严格等价（当前仍超差）。
 - AutoPilot Agent。
-- 完整 GPU 监控。
+- 框架级 GPU 监控的剩余部分：TensorBoard 资源曲线、分布式实验内部监控切换到 NVML；Windows WDDM 下无法读取单进程显存，控制台只显示整卡显存和各 Worker 的 RSS。
 - 三种 CNN 的预训练参数导入、冻结和迁移训练。
 - 自动化 DonkeyCar 闭环评估。
 
@@ -52,9 +56,15 @@
 | apps/train/ | 当前 ResNet18 训练入口 |
 | apps/eval/ | MyFlows 与 ONNX 评估入口 |
 | apps/serve/ | gRPC、FastAPI 和 ONNX 推理 |
-| benchmark/ | 性能测试脚本；本学期将按 Spec 重构 |
+| apps/console/ | 训练控制台：FastAPI 后端 + React 前端（web/） |
+| runs/console/ | 控制台发起的任务目录（不纳入 Git） |
+| benchmark/ | CUDA 算子、PS/Ring 分布式实验、Nsight 与报告脚本 |
+| proto/ | 分布式训练与推理服务的 protobuf 定义 |
+| generated/grpc/ | 由 tools/generate_distributed_proto.py 生成的 gRPC 代码 |
 | mycar/ | DonkeyCar 工程和驾驶入口 |
-| tools/ | 数据分析、模型导出、量化等工具 |
+| tools/ | 数据分析、模型导出、量化、原生 CUDA 构建、统一测试等工具 |
+| scripts/ | 量化评估辅助脚本 |
+| deploy/ | 推理服务的 Docker / Kubernetes 配置 |
 | docs/ | 当前文档、课程目标和本学期 Spec |
 
 ## 当前运行环境
@@ -67,21 +77,24 @@ PowerShell 中使用：
 .\.venv\Scripts\python.exe --version
 ~~~
 
-检查应用层测试：
+运行全部测试（同时收集 unittest 和函数式测试；`--scope` 可取 all、framework、apps）：
 
 ~~~powershell
-.\.venv\Scripts\python.exe -m unittest discover -s tests -v
+.\.venv\Scripts\python.exe -m tools.run_tests --scope all
 ~~~
 
-检查框架层测试：
-
-~~~powershell
-.\.venv\Scripts\python.exe -m unittest discover -s MyFlows\tests -v
-~~~
-
-当前框架测试中有一个图像分类用例存在偶发失败。在它修复前，不能把当前测试状态视为稳定基线。
+第一阶段已修复原先偶发失败的图像分类用例；2026-09-19 分布式阶段交付时统一回归为 204 项通过，2026-09-23 加入训练控制台与 GPU 采样后为 229 项通过。
 
 ## 当前有效入口
+
+启动训练控制台（首次或前端改动后先构建，需要 Node.js 20.19+ 或 22.12+）：
+
+~~~powershell
+Set-Location apps\console\web; npm ci; npm run build; Set-Location ..\..\..
+.\.venv\Scripts\python.exe -m apps.console.server
+~~~
+
+然后访问 http://127.0.0.1:8790 。控制台默认只监听本机；任务按提交顺序串行执行（单 GPU），产物写入 runs/console/。开发前端时可在 apps/console/web 下执行 `npm run dev`，Vite 会把 /api 代理到 8790 端口。
 
 检查 DonkeyCar 数据：
 
@@ -110,10 +123,13 @@ Set-Location mycar
 
 ## 文档
 
-- [本学期开发 Spec](docs/semester_spec.md)：本学期范围、排期和验收标准，当前待审核。
-- [第一阶段开发 Spec](docs/stage1_cuda_ps_spec.md)：当前 CUDA/PS/Nsight 的接口、任务拆分、验证矩阵与汇报目标。
+- [本学期开发 Spec](docs/semester_spec.md)：本学期范围、排期、进度和验收标准。
+- [第一阶段开发 Spec](docs/stage1_cuda_ps_spec.md)：CUDA/CPU PS/Nsight 的接口、任务拆分与验证矩阵（已交付）。
+- [分布式 GPU Spec](docs/stage1_distributed_gpu_spec.md)：同步 PS、Ring AllReduce、GPU Worker 与同条件评测（已交付）。
+- [开发环境](docs/development_environment.md)：Python、CUDA、Nsight 与依赖锁定。
 - [当前系统设计](docs/system_design.md)：只说明当前真实存在的系统。
 - [当前模块说明](docs/module_design.md)：当前有效代码入口及职责。
+- [文档索引](docs/README.md)：全部实验报告与阶段文档。
 - [课程目标 PDF（本地课件）](<docs/深度学习框架-16 综合项目III.pdf>)：教师提供的原始目标，不纳入 Git。
 
 旧实验截图、模型、数据和日志属于本地运行资产，不作为本学期功能已完成的证明。本学期的新结果必须由新代码重新运行并记录完整命令和环境。

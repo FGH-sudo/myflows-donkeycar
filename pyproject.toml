@@ -23,6 +23,11 @@ dependencies = [
 ]
 
 [dependency-groups]
+console = [
+    "fastapi>=0.141.1",
+    "nvidia-ml-py>=13.610.43",
+    "uvicorn>=0.53.0",
+]
 dev = [
     "fastapi>=0.110.0",
     "httpx>=0.27.0",
@@ -35,4 +40,4 @@ dev = [
 [tool.uv]
 # 仓库包含多个独立的课程/仿真模块，不把根目录作为可安装 Python 包。
 package = false
-default-groups = ["dev"]
+default-groups = ["dev", "console"]

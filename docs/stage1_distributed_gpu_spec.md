@@ -2,11 +2,13 @@
 
 > 2026-09-17 执行补充：用户已授权实际完成测试、记录数据和修复问题；中断恢复后又明确加入现有 ResNet18 的 DonkeyCar 道路实验，并要求 PS/Ring 对比统一 gRPC/protobuf。该请求覆盖下文首版“排除完整 ResNet/BN”和小型 CNN 的范围约定。实际选型、BN 处理、冻结配置与实测结果以 [本轮实验协议](experiments/semester_2026_fall/distributed_gpu/20260917/EXPERIMENT_PROTOCOL.md) 和同目录报告为准。下方“仅调整 Spec”是原 v0.3 文档编制范围，不是本次执行限制。
 
-- 版本：v0.3，待审核；保留同步 PS、Ring AllReduce 与双传输评测范围，按用户确认统一为 Worker GPU 更新参数，并保留现有 Adam 更新规则。
-- 更新日期：2026-09-16；初稿日期：2026-09-09。
-- 本次交付：仅调整本 Spec；不修改实现、其他文档、测试、数据或历史实验。
+> 2026-09-19 实施结果：本 Spec 已按上述补充范围实施并交付。实现位于 `MyFlows/distributed/`（launcher、ps、engine、worker、ring、transport_socket、transport_grpc、gradient_layout、measurement、monitor、tasks/ 等），protobuf 定义位于仓库根目录 `proto/`，生成代码位于 `generated/grpc/`；正式结果见 [优化版实测报告](experiments/semester_2026_fall/distributed_gpu/20260919_optimized/README.md)：56 个正式档案，质量 14/14、数值 36/36、状态恢复 9/9、故障 17/17、Ring 分块 12/12、通信量 36/36，统一回归 204 项通过。ResNet18 独立整批与分片轨迹的逐步梯度等价未通过，单独保留。道路任务实际使用 ResNet18（base_width=16，BN 统计量冻结），而非下文首版的小 CNN。下文第 3 节“当前事实”与第 13 节“建议位置”记录的是实施前状态。
+
+- 版本：v0.3；已交付（2026-09-19）。保留同步 PS、Ring AllReduce 与双传输评测范围，按用户确认统一为 Worker GPU 更新参数，并保留现有 Adam 更新规则。
+- 更新日期：2026-09-16；初稿日期：2026-09-09；实施结果补记：2026-09-23。
+- 原 v0.3 编制范围：仅调整本 Spec；不修改实现、其他文档、测试、数据或历史实验。
 - 任务依据：[课件 I：概念与参数服务器](<深度学习框架-18 分布式训练-概念与参数服务器架构.pdf>)、[课件 II：Ring AllReduce 与评测](<深度学习框架-18-2 分布式训练II-Ring AllReduce与评测.pdf>)，以及用户关于单机模拟、GPU 原生算子和直接替换不适用实现的说明。下文页码分别标 I、II。
-- 实施状态：下文除“当前事实”外均为拟实施方案，不代表已经实现或验收通过。
+- 实施状态：已实施；验收结论以文首实施结果和第 14 节为准。
 
 ## 1. 已确定的范围
 
@@ -397,7 +399,7 @@ CPU 只需同入口冒烟和必要数值检查，不把完整 CPU 长训练与 C
 | S4：Ring GPU 与故障 | 同一任务适配器和 GPU 更新路径接入 Ring；实际后端追踪、更新去重、故障矩阵、两任务训练 | 2/4 Worker 收敛、各 rank 参数/状态一致、无死锁和零残留 |
 | S5：联合评测与交付 | 执行第 12 节矩阵、公式/流量核对、曲线与瓶颈分析 | B1–B9 验收、固定格式数据、复现命令及更新后的范围说明 |
 
-已有文件直接改造：[MyFlows/distributed](../MyFlows/distributed)、[benchmark/ps_demo.py](../benchmark/ps_demo.py)、[PS 测试](../MyFlows/tests/test_ps_training.py)。拟按职责增加 `transport_socket.py`、`transport_grpc.py`、`ring.py`、`gradient_layout.py`、`monitor.py`、任务适配及 `proto/common.proto`、`proto/ps.proto`、`proto/ring.proto`；Ring 算法及训练测试独立组织。这些是建议位置，当前未新增实现。
+已有文件直接改造：[MyFlows/distributed](../MyFlows/distributed)、[benchmark/ps_demo.py](../benchmark/ps_demo.py)、[PS 测试](../MyFlows/tests/test_ps_training.py)。拟按职责增加 `transport_socket.py`、`transport_grpc.py`、`ring.py`、`gradient_layout.py`、`monitor.py`、任务适配及 `proto/common.proto`、`proto/ps.proto`、`proto/ring.proto`；Ring 算法及训练测试独立组织。（2026-09-19 补记：上述文件均已实现，proto 实际放在仓库根目录 `proto/`。）
 
 正式入口拟为统一 `benchmark.distributed_train` 与 `benchmark.distributed_compare`，配置选择 `mode=single|ps|ring`、`transport=none|socket_json|grpc_proto`、task、train_workers、device、dtype、global_batch、seed、epochs、out_dir。合法组合为 single/none、ps/两种传输、ring/grpc_proto；Ring Socket 不在本次范围。旧 ps_demo 可迁移或保留轻量转发，不要求维护两套训练循环。
 
@@ -407,20 +409,22 @@ CPU 只需同入口冒烟和必要数值检查，不把完整 CPU 长训练与 C
 
 ## 14. 验收清单
 
-- [ ] G-SCOPE：两模式实际在单机回环运行；PS 为 N＋1 个训练相关进程，Ring 为 N 个 rank，无 PS；标注共享单 GPU。
-- [ ] G-PROTOCOL：PS Socket/JSON、PS gRPC/protobuf、Ring gRPC/protobuf 的实际消息、定界/状态、deadline 可验证；无 Queue 张量旁路。
-- [ ] G-PS-SYNC：两种 PS 传输同初值/优化器状态；PS 只聚合，Pull 返回全局平均梯度，各 Worker 每步只更新一次；Push/Pull 与 GPU 更新确认屏障完整，重复请求不重复贡献或更新。
-- [ ] G-RING：真实相邻收发；Split、N−1 轮 ScatterReduce、N−1 轮 AllGather 完整；N=1 退化、N=2/4/5 算法、padding、D<N、提前消息与去重通过；无中心梯度聚合。
-- [ ] G-NUMERIC：单进程与三种分布式实现的 N=1/2/4，按本项目现有优化器规则在单步和连续 20 步比较全局平均梯度、所有参数、优化器状态及步数；PS/Ring 检查每个 Worker，覆盖不等分片和非整除向量。
-- [ ] G-GPU：PS/Ring 的 GPU 1/2/4 Worker 实际执行；CNN Conv/Pool 均为原生路径，参数、平均梯度和优化器浮点状态在 GPU，具备设备/FP32 证据及各一次内核追踪；PS 不执行 optimizer update。
-- [ ] G-FAULT：共同故障及 Ring 阶段/邻居/中途掉线覆盖；重复平均梯度、更新确认和放行消息不导致二次更新，部分更新/状态不确定时整轮失败；中止后 5 秒内清理，无死锁、重复累加、成员悄悄缩减或失败步骤发布成功 checkpoint。
-- [ ] G-STATE：PS/Ring 全员参数及优化器状态/步数一致后，由指定 Worker 保存 checkpoint；受控加载包含完整参数、优化器状态与版本/步数，后续更新与未中断参考一致；不要求故障后自动恢复。
-- [ ] G-MNIST：第 12.2 节完整矩阵达到第 9 节 MNIST 门槛，包含验证和最终测试结果。
-- [ ] G-DONKEY：同一矩阵的原生 CNN 达到道路任务门槛；来源/划分限制和 angle/throttle 指标明确。
-- [ ] G-MONITOR：step/epoch/rank/stage/update_id 指标、tx/rx 字节与计时边界齐全；gradient_sync_s、梯度拷贝、GPU 更新、摘要/确认等待分开，正文与网络总流量、纯传输与同步等待可区分。
-- [ ] G-VOLUME：按第 6.4 节自洽推导通信量；N=2/4 payload 计数与实现一致，padding/控制/重发单列。
-- [ ] G-COMPARE：PS 双传输及 PS/Ring 同 gRPC 对照完成；重复统计、S/E、理想参考曲线和有证据的瓶颈判断齐全，不预设某架构必须获胜。
-- [ ] G-REPORT：B1–B9 对应源码/配置/数据/run；新合规 PS 基线及 Ring 原始结果固定格式留存；依赖、生成 protobuf 和复现步骤可读。
+2026-09-19 按 [优化版实测报告](experiments/semester_2026_fall/distributed_gpu/20260919_optimized/README.md) 与 `delivery_summary.json` 勾选；括号内为限定说明。
+
+- [x] G-SCOPE：两模式实际在单机回环运行；PS 为 N＋1 个训练相关进程，Ring 为 N 个 rank，无 PS；标注共享单 GPU。
+- [x] G-PROTOCOL：PS Socket/JSON、PS gRPC/protobuf、Ring gRPC/protobuf 的实际消息、定界/状态、deadline 可验证；无 Queue 张量旁路。
+- [x] G-PS-SYNC：两种 PS 传输同初值/优化器状态；PS 只聚合，Pull 返回全局平均梯度，各 Worker 每步只更新一次；Push/Pull 与 GPU 更新确认屏障完整，重复请求不重复贡献或更新。
+- [x] G-RING：真实相邻收发；Split、N−1 轮 ScatterReduce、N−1 轮 AllGather 完整；N=1 退化、N=2/4/5 算法、padding、D<N、提前消息与去重通过；无中心梯度聚合。
+- [x] G-NUMERIC：单进程与三种分布式实现的 N=1/2/4，按本项目现有优化器规则在单步和连续 20 步比较全局平均梯度、所有参数、优化器状态及步数；PS/Ring 检查每个 Worker，覆盖不等分片和非整除向量。（数值检查 36/36 通过；ResNet18 独立整批与分片的逐步梯度等价未通过，单列为未完成项。）
+- [x] G-GPU：PS/Ring 的 GPU 1/2/4 Worker 实际执行；CNN Conv/Pool 均为原生路径，参数、平均梯度和优化器浮点状态在 GPU，具备设备/FP32 证据及各一次内核追踪；PS 不执行 optimizer update。
+- [x] G-FAULT：共同故障及 Ring 阶段/邻居/中途掉线覆盖；重复平均梯度、更新确认和放行消息不导致二次更新，部分更新/状态不确定时整轮失败；中止后 5 秒内清理，无死锁、重复累加、成员悄悄缩减或失败步骤发布成功 checkpoint。（17/17）
+- [x] G-STATE：PS/Ring 全员参数及优化器状态/步数一致后，由指定 Worker 保存 checkpoint；受控加载包含完整参数、优化器状态与版本/步数，后续更新与未中断参考一致；不要求故障后自动恢复。（9/9）
+- [x] G-MNIST：第 12.2 节完整矩阵达到第 9 节 MNIST 门槛，包含验证和最终测试结果。
+- [x] G-DONKEY：同一矩阵的原生 CNN 达到道路任务门槛；来源/划分限制和 angle/throttle 指标明确。（实际模型为 ResNet18，base_width=16，BN 冻结。）
+- [x] G-MONITOR：step/epoch/rank/stage/update_id 指标、tx/rx 字节与计时边界齐全；gradient_sync_s、梯度拷贝、GPU 更新、摘要/确认等待分开，正文与网络总流量、纯传输与同步等待可区分。（GPU 资源为整卡 nvidia-smi 约 1 秒采样，不能区分单个 Worker。）
+- [x] G-VOLUME：按第 6.4 节自洽推导通信量；N=2/4 payload 计数与实现一致，padding/控制/重发单列。（36/36）
+- [x] G-COMPARE：PS 双传输及 PS/Ring 同 gRPC 对照完成；重复统计、S/E、理想参考曲线和有证据的瓶颈判断齐全，不预设某架构必须获胜。
+- [x] G-REPORT：B1–B9 对应源码/配置/数据/run；新合规 PS 基线及 Ring 原始结果固定格式留存；依赖、生成 protobuf 和复现步骤可读。（原始 JSON/CSV/JSONL 受 .gitignore 限制只保存在本地实验包。）
 
 数值检查分层：纯 CPU 聚合/分块算法的 FP64 小参考拟用 `atol=1e-8, rtol=1e-6`；实际首版 Socket/gRPC 传输及 GPU 训练均为 FP32，G-NUMERIC 端到端使用 `atol=1e-4, rtol=1e-3`。这不要求原生 Conv/Pool 或正式 wire schema 支持 FP64。逐元素联合容差判定，同时报告最大绝对差。正式训练质量另用第 9 节门槛，不要求长训练逐 bit 相同。PS 与 Ring 的加法顺序不同，微小舍入差可存在；若超差，应排查加权/重复归约、loss reduction、分块还原、样本清单和优化器状态，不能自动放宽容差。
 
@@ -440,4 +444,4 @@ v0.3 审核重点：
 4. 采用小 MLP/小 CNN 及拟定质量、容差和计时标准；每任务七个正式配置，N=1 的分布式路径另作功能检查。梯度同步与 GPU 更新分别计时，checkpoint 由全员确认后的指定 Worker 保存完整状态。
 5. 旧 Queue 演示可直接替换；新合规 PS 基线按课件 II 留存。通信量明确单节点/集群及发送/接收口径，理论参考不冒充单卡实测能力。
 
-本次按用户确认完成 v0.3 对应条款调整，本文其余待审核内容和拟实施状态保持明确；本轮仅修改本 Spec，未新增 Ring/PS 实现或训练结果。
+本次按用户确认完成 v0.3 对应条款调整，本文其余待审核内容和拟实施状态保持明确；本轮仅修改本 Spec，未新增 Ring/PS 实现或训练结果。（2026-09-19 已完成实施，见文首实施结果。）

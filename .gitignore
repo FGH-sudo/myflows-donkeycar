@@ -73,6 +73,8 @@ runs/
 build/
 dist/
 *.egg-info/
+node_modules/
+apps/console/web/dist/
 
 # Worktree scratch directories
 .worktrees/
@@ -83,6 +85,7 @@ worktrees/
 
 # Presentation deliverables stay local.
 *.pptx
+docs/presentations/
 .chart-data-*/
 # Superseded local presentation generator.
 /tools/create_week4_report_ppt.mjs

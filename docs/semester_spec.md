@@ -1,13 +1,13 @@
 # 本学期开发 Spec
 
-- 状态：v0.4 进度更新；第一阶段 CUDA/PS/Nsight 已实现并形成验收证据，后续学期方案继续审核
-- 日期：2026-09-05
+- 状态：v0.5 进度同步；第一阶段 CUDA/PS/Nsight 与分布式 GPU（同步 PS + Ring AllReduce）已实现并形成验收证据，后续学期方案继续审核
+- 日期：2026-09-23（v0.4：2026-09-05）
 - 依据：[深度学习框架-16 综合项目III.pdf](<深度学习框架-16 综合项目III.pdf>)
 - 当前应用：DonkeyCar 自动驾驶
 - 当前主模型：ResNet18
 - 审核证据：[semester_spec_review.md](semester_spec_review.md)
-- 当前阶段：[第一阶段 Spec：CUDA 算子、PS 模拟与 Nsight](stage1_cuda_ps_spec.md)
-- 阶段成果：[实验报告、完整复现命令与交付包](experiments/semester_2026_fall/stage1/README.md)
+- 已交付阶段：[第一阶段 Spec：CUDA 算子、PS 模拟与 Nsight](stage1_cuda_ps_spec.md)、[分布式 GPU Spec：同步 PS、Ring AllReduce 与评测](stage1_distributed_gpu_spec.md)
+- 阶段成果：[第一阶段实验报告](experiments/semester_2026_fall/stage1/README.md)、[PS / Ring 双任务实测报告](experiments/semester_2026_fall/distributed_gpu/20260919_optimized/README.md)
 - 规划边界：按用户说明，之前学期的进度目标已经完成；不因本地缺少往期交付材料重新列缺口。
 
 ## 1. 最终目标
@@ -23,7 +23,7 @@
 | B5 | 第 4 页 | Agent 自动调优、新算子可用性与效率、图像分类的系统测试 | 基础 |
 | B6 | 第 4、7 页 | 更新系统/Agent/可视化设计和报告；第 4、8、12 个汇报节点 | 基础 |
 | B7 | 第 10 页，关联第 5 页 | 完整 GPU/CPU/训练阶段监控，并完成一次有前后对照的瓶颈改进 | 纳入基础 |
-| E1 | 第 5 页 | All-Reduce 模式的单机多进程模拟 | 拓展 |
+| E1 | 第 5 页；分布式课件 II 第 4 页 | All-Reduce 模式的单机多进程模拟 | 拓展；课件 II 要求完整实现，已于 2026-09-19 随分布式阶段交付 |
 | E2 | 第 5 页 | 至少三种 ImageNet 预训练 CNN；参数导入、冻结/解冻、迁移训练 | 拓展 |
 | E3 | 第 5 页 | TPE 多超参搜索、实时异常检测和自动回滚 | 拓展 |
 
@@ -36,19 +36,19 @@
 PDF 把任务分成基础部分和拓展优化。本草案按下面的顺序推进：
 
 - 必须先完成：当前项目稳定运行、CUDA C/C++ 卷积和池化、Parameter Server、GPU 与训练耗时监控、AutoPilot Agent 基础版、同条件跨框架比较、DonkeyCar 优化、系统测试和报告。
-- 完成基础验收后继续：All-Reduce、三种 CNN 的预训练和迁移训练、TPE 多参数搜索、实时异常检测和自动回滚。恢复接口可以提前设计，拓展实现不占用基础任务验收时间。
+- 完成基础验收后继续：All-Reduce（已按分布式课件提前完成）、三种 CNN 的预训练和迁移训练、TPE 多参数搜索、实时异常检测和自动回滚。恢复接口可以提前设计，拓展实现不占用基础任务验收时间。
 - 本学期不安排：MCTS。
 
 拓展内容仍列入完整计划，但不能为了赶拓展功能而省略正确性测试、原始结果或基础部分。
 
 ### 当前执行阶段
 
-按 PDF 第 7 页的汇报节点推进：第四次课先关注 GPU 编程、分布式计算与 Nsight，第八次课再讨论 Agent。当前阶段执行细节以 [stage1_cuda_ps_spec.md](stage1_cuda_ps_spec.md) 为准；本文继续维护学期范围、后续依赖和最终验收。
+按 PDF 第 7 页的汇报节点推进：第四次课先关注 GPU 编程、分布式计算与 Nsight，第八次课再讨论 Agent。第一阶段细节见 [stage1_cuda_ps_spec.md](stage1_cuda_ps_spec.md)，分布式阶段细节见 [stage1_distributed_gpu_spec.md](stage1_distributed_gpu_spec.md)；本文继续维护学期范围、后续依赖和最终验收。
 
-- 已实现：测试收集/seed 修复、FP32 算子基线、自写 CUDA Conv/Pool 前反向、原图小 CNN、三后端性能与 Nsight、CPU 最小 PS。阶段结果与原始证据见报告。
-- Agent 的进一步设计与实现暂缓；本阶段只保留普通配置、运行结果与 run_id，不要求先完成通用 TrainRunner、TrialResult 或完整 ModelState。
+- 已实现：测试收集/seed 修复、FP32 算子基线、原生 C/C++ 调度的 CUDA Conv/Pool 前反向（卷积 GEMM 调用 cuBLAS）、原图小 CNN、三后端性能与 Nsight、CPU 最小 PS（第一阶段）；GPU Worker 的同步 PS（Socket JSON / gRPC）与 Ring AllReduce（gRPC），MNIST MLP 与 DonkeyCar ResNet18 两任务的 1/2/4 Worker 训练与对照（分布式阶段）。阶段结果与原始证据见报告。
+- Agent 的进一步设计与实现暂缓；当前只保留普通配置、运行结果与 run_id，不要求先完成通用 TrainRunner、TrialResult 或完整 ModelState。
 - 第四次课展示目标与阶段完成标准分开记录；前向演示不能代替反向/池化/集成验收。
-- PS 已验证小 MLP 的 1/2/4 worker 和 20+12 分片；后续接无 BN 小 CNN/分类任务。GPU PS 不属于当前基础要求。
+- 分布式阶段的 ResNet18 独立整批与分片逐步梯度等价未通过，作为已知缺口保留；主训练入口 apps/train 尚未接入原生 CUDA 后端和资源监控。
 - W0/W1 按实际依赖分步完成，独立 CUDA kernel 不等待整个框架重构。正式学期实验仍需完整的精度、状态和复现条件。
 
 ## 2. 开发起点与最新进展
@@ -83,7 +83,17 @@ PDF 把任务分成基础部分和拓展优化。本草案按下面的顺序推�
 - MyFlows/distributed/ 已提供 CPU 同步 PS/Worker/Launcher/事件监控，1/2/4 worker 的 20 步参数更新与单进程参考等价，四类故障均能失败退出并清理。
 - 三后端完整 P0-P3 矩阵、Systems/Compute 小中规模报告、dX 优化前后普通计时均已归档。性能有规模依赖，CUDA C 并未全面快于 CuPy。
 - requirements-stage1-lock.txt 锁定 Python 3.11 阶段依赖；不继承系统包、不安装 PyTorch 的环境通过框架回归和导出源码复现。每次实验保存两个仓库的实际源码快照、状态与哈希；仓库发布方式后续另行规范。
-- 完整 ResNet FP32/BN、统一 ModelState/TrainRunner、全程资源监控、正式 CIFAR-10/三框架/驾驶比较、Agent/All-Reduce/迁移训练仍未完成；本阶段未运行 DonkeyCar 长训练或闭环实验。
+- 完整 ResNet FP32/BN、统一 ModelState/TrainRunner、全程资源监控、正式 CIFAR-10/三框架/驾驶比较、Agent/All-Reduce/迁移训练仍未完成；本阶段未运行 DonkeyCar 长训练或闭环实验。（All-Reduce 已在第 2.3 节的分布式阶段完成。）
+
+### 2.3 分布式阶段实施结果（2026-09-19）
+
+- MyFlows/distributed/ 已改造为单机回环的同步 PS（Socket JSON 与 gRPC/protobuf 两种传输）和 Ring AllReduce（gRPC，Split + N−1 轮 ScatterReduce + N−1 轮 AllGather）。Worker 在 GPU 上前向、反向并用本地 Adam 更新；PS 只在 CPU 上按样本数加权聚合并返回平均梯度，不维护随训练推进的参数或优化器状态。所有 Worker 共享本机一张 GPU。
+- 协议定义在 proto/，生成代码在 generated/grpc/；心跳、限时等待、重复/陈旧消息拒绝与故障清理覆盖 17 类故障用例。
+- 任务：MNIST MLP 与 DonkeyCar ResNet18（base_width=16，ImageNet stem，BN 统计量冻结，Conv/Pool 使用 cuda_native_cublas）。每任务 7 个配置（single-1、ps-json-2/4、ps-grpc-2/4、ring-grpc-2/4），共 56 个正式档案（14 个收敛 + 42 个性能重复）。
+- 检查：质量 14/14、数值 36/36、状态恢复 9/9、故障 17/17、Ring 分块 12/12、通信量 36/36、Nsight Systems/Compute 各 2/2；统一回归 204 项通过。
+- gRPC/protobuf 优化后，分布式 8 行中位耗时下降 42.36%（PS 81.22%，Ring 8.79%）；所有分布式配置仍未超过单进程基线，不能推断多卡或多机扩展。
+- 资源采样由 benchmark/distributed_experiment.py 完成：nvidia-smi + psutil 约 1 秒一次，记录整卡 GPU 利用率、显存、温度、功耗和 CPU/内存；监控开关各 3 次的开销已记录。这是 B7 的部分实现，不是框架级监控模块。
+- 未完成：ResNet18 独立整批与分片轨迹的逐步梯度等价；异步 PS；多 GPU/多机。
 
 ## 3. 本学期不做什么
 
@@ -157,7 +167,7 @@ PDF 把任务分成基础部分和拓展优化。本草案按下面的顺序推�
 - CuPy：当前 GPU 实现。
 - CUDA C/C++：本学期新增实现。
 
-当前使用 CuPy RawModule/NVRTC 编译 .cu 并调用其中的自写 kernel，CuPy 管理数组和显存。若老师明确要求独立编译的 C++ 扩展，再增加编译版本。
+当前实现为 MyFlows/ops/cuda_native/ 中的原生 C/C++ DLL：通过 CUDA Driver API 加载 NVRTC 编译的自写 im2col/col2im/max-pool kernel，并在同一 stream 上调用 cuBLAS Sgemm 完成卷积 GEMM；CuPy 只负责数组、显存和设备指针。直接卷积、CUDA im2col 与自写 GEMM 路径的源码已删除，只在实验报告中保留失败基线。
 
 第一版支持 contiguous NCHW、FP32、OIHW 权重、bias、stride 和 padding，groups=1、dilation=1。Conv 需要覆盖 1x1、3x3、7x7；Pool 覆盖 2x2/s2 和 3x3/s2。分组/空洞算子保留现有后端，后续按需增加 CUDA C 支持。
 
@@ -183,7 +193,7 @@ PDF 把任务分成基础部分和拓展优化。本草案按下面的顺序推�
 
 ### 4.3 GPU 和训练耗时监控
 
-第一阶段只实现算子计时、PS 通信/等待记录及 Nsight 分析所需标注。以下完整训练监控模块安排在阶段后续，不作为 CUDA kernel 首版的前置条件；Nsight 报告也不替代长期 GPU 资源采样。
+第一阶段只实现算子计时、PS 通信/等待记录及 Nsight 分析所需标注。分布式阶段已在 benchmark/distributed_experiment.py 中加入约 1 秒一次的 nvidia-smi + psutil 整卡采样，以及 CUDA Event 的 forward/backward/optimizer 阶段计时（见第 2.3 节）；以下完整训练监控模块仍安排在后续，Nsight 报告也不替代长期 GPU 资源采样。
 
 需要采集 PDF 中要求的指标：
 
@@ -219,17 +229,17 @@ PDF 把任务分成基础部分和拓展优化。本草案按下面的顺序推�
 
 单机启动以下进程：
 
-- Parameter Server：保存全局参数，接收梯度，聚合后更新参数。
-- Worker：读取各自的数据，完成前向和反向，上传梯度，再取得新参数。
+- Parameter Server：分发初值，接收梯度，按样本数加权聚合后返回平均梯度。
+- Worker：读取各自的数据，在 GPU 上完成前向和反向，上传梯度，取得平均梯度后本地更新参数和优化器状态。
 - Launcher：启动和关闭所有进程。
 - Monitor：记录每个 worker 的状态和耗时。
 
-第一版采用同步训练：所有 worker 完成当前轮次后，Parameter Server 才更新参数。固定合成数据的小 MLP 已完成 1/2/4 worker 更新协议验证；下一步接无 BN/Dropout 的小 CNN 和图像分类任务，最后考虑较大模型。第一阶段细节见 [阶段 Spec](stage1_cuda_ps_spec.md)。
+采用同步训练：所有 worker 完成当前轮次后，PS 才返回本轮平均梯度。第一阶段的 CPU Queue 版本（PS 统一更新参数）已在分布式阶段被替换为当前实现，详见 [分布式 GPU Spec](stage1_distributed_gpu_spec.md) 与第 2.3 节。
 
 实现约定：
 
-- 第一版使用 Windows spawn、CPU worker 与 NumPy IPC，先实现真实的参数服务器流程。本机只有一张 GPU；多进程共享 GPU 是单独的可选实验，不等同于多 GPU 加速。
-- PS 是唯一更新参数和优化器状态的进程；worker 只计算梯度。复用 Optimizer.update(var_gradients=...)，加入稳定参数名到 Variable 的适配，并确认不会二次平均。
+- 使用 Windows spawn，所有连接绑定 127.0.0.1；PS 支持 Socket JSON 与 gRPC/protobuf。本机只有一张 GPU，多个 Worker 共享该 GPU，不等同于多 GPU 加速。
+- 按课件 I 第 36–37 页的“返回平均梯度、Worker 本地更新”路线：PS 不执行优化器更新，也不维护随训练推进的参数副本；每个 Worker 每步只更新一次，并通过更新确认屏障保持全员状态一致。
 - 协议携带 run_id、step_id、parameter_version、worker_id、n_samples、参数 schema/hash、梯度 dtype/shape；每步每 worker 恰好接受一次，拒绝重复、陈旧和不匹配消息。
 - 若 worker 的 loss 是本地样本均值，PS 使用 g = sum(n_i * g_i) / sum(n_i)。不得不加权平均不同大小的尾批；空 shard 显式报错或按协议跳过。
 - 比较时固定 global_batch 和批次清单；建议小模型 global_batch=32 对应 1/2/4 worker 的 32/16/8 样本，并另测 5+3 等非均匀划分。
@@ -255,7 +265,7 @@ PDF 把任务分成基础部分和拓展优化。本草案按下面的顺序推�
 
 ### 4.5 All-Reduce
 
-All-Reduce 在 Parameter Server 正确后实现。
+All-Reduce 在 Parameter Server 正确后实现；已于 2026-09-19 随分布式阶段交付（见第 2.3 节）。
 
 第一版在单机多进程中完成：
 
@@ -451,7 +461,7 @@ DonkeyCar 分两步处理。
 | 时间 | 主要工作 | 汇报时应展示 |
 | --- | --- | --- |
 | 当前至第 2 次课 | 第一阶段 C0/C1：修复测试收集与 seed/偶发测试，固定 FP32 fixture 和三次完整回归；建立 NumPy/CuPy 基线、探测工具、实现 Conv 前向 | 可信的修复基线及第一个自写 kernel 的正确性证据 |
-| 第 2～4 次课 | C2-C6：Conv 反向、Pool、原图小 CNN、三后端比较/Nsight；CPU PS 独立推进 | 第 4 次课：CUDA 实现及已有误差/耗时、真实 profile、PS 1/2 worker 演示；按阶段 Spec 区分展示目标与完整验收 |
+| 第 2～4 次课 | C2-C6：Conv 反向、Pool、原图小 CNN、三后端比较/Nsight；CPU PS 独立推进；按分布式课件补做 GPU PS 与 Ring AllReduce | 第 4 次课实际展示：GPU Worker 的 PS（Socket JSON / gRPC）与 Ring AllReduce 双任务对照、通信量与 gRPC 优化前后数据 |
 | 第 5～6 次课 | 复核第一阶段证据，W3 接小 CNN/分类；完成 W0/W1 剩余精度/状态/训练接口，启动 W4/W5/W6 | 可复用的训练/评估入口；完整监控、分类/比较和驾驶基线按依赖逐项落地 |
 | 第 7～8 次课 | W7：基于实际 CUDA/PS/监控能力开展 Agent 调研与设计，接口就绪后做小预算自动实验 | 第 8 次课以设计和已有原型为主；不要求 TPE/自动回滚 |
 | 第 9～12 次课 | W8：Agent 与 CUDA/PS/监控整合；分类、比较、驾驶评估第二轮；故障测试和优化对照 | 第 12 个汇报节点：基础 B1-B7 形成可演示的集成结果和缺口清单 |
@@ -488,12 +498,12 @@ PDF 第 7 页分别写第 4 次课、第 8 次课和第 12 次周；这里保留
 ### 必须完成
 
 - [x] 当前基础测试稳定通过；127 项统一回归连续三轮，见阶段报告。
-- [ ] 默认测试入口覆盖框架函数式测试，seed/dtype/稳定状态接口通过验证。
+- [ ] 默认测试入口覆盖框架函数式测试，seed/dtype/稳定状态接口通过验证。（前半项已完成，见第 2.2 节；dtype 全链路与稳定状态接口仍未完成。）
 - [x] CUDA C/C++ Conv2D 和 MaxPool2D 前向、反向正确（第一阶段 FP32 支持范围）。
 - [x] NumPy、CuPy、CUDA C 性能和误差报告完成（固定算子矩阵）。
 - [x] Nsight 分析完成（小/中规模与一次 dX 优化，不代替完整训练监控）。
-- [x] Parameter Server 支持 1、2、4 个 worker（CPU 小 MLP；小 CNN/分类集成继续）。
-- [ ] GPU、CPU 和训练阶段监控指标齐全。
+- [x] Parameter Server 支持 1、2、4 个 worker（GPU Worker，Socket JSON / gRPC；MNIST MLP 与 DonkeyCar ResNet18，见第 2.3 节）。
+- [ ] GPU、CPU 和训练阶段监控指标齐全。（分布式实验已有约 1 秒整卡采样与阶段计时；NVML、500 ms、TensorBoard 曲线和主训练入口接入仍未完成。）
 - [ ] AutoPilot Agent 基础版可以自动运行多次训练并生成报告。
 - [ ] Agent 包含六组件和专业任务适配器，能根据指标诊断、在预算内选配置，并恢复调度记录。
 - [ ] MyFlows、PyTorch、PaddlePaddle 同条件对比完成。
@@ -503,7 +513,7 @@ PDF 第 7 页分别写第 4 次课、第 8 次课和第 12 次周；这里保留
 
 ### 完成基础部分后继续
 
-- [ ] All-Reduce 支持 1、2、4 个 worker。
+- [x] All-Reduce 支持 1、2、4 个 worker。（Ring gRPC；数值检查覆盖 N=1/2/4，训练对照为 2/4。）
 - [ ] ResNet18、MobileNetV2、AlexNet 三种预训练模型可用。
 - [ ] 参数载入、冻结和迁移训练通过测试。
 - [ ] AutoPilot Agent 使用 TPE、处理训练异常并自动恢复。
@@ -515,8 +525,8 @@ PDF 第 7 页分别写第 4 次课、第 8 次课和第 12 次周；这里保留
 | 决策 | 本稿建议 | 需要进一步确认的部分 |
 | --- | --- | --- |
 | 当前顺序 | 已确定先做 CUDA/PS/Nsight，Agent 暂缓 | 阶段具体安排见 stage1_cuda_ps_spec.md |
-| 基础与拓展 | 按 PDF 保持 E1/E2/E3 为拓展；完整监控纳入基础 | 不再将 All-Reduce 是否属于基础留为悬而未决 |
-| CUDA 接入 | 自写 .cu 源码，通过 CuPy RawKernel/NVRTC 编译调用 | 第 4 次课前核对教师是否额外要求独立 C++ 扩展；本机编译与 Nsight 权限尚需实测 |
+| 基础与拓展 | 按 PDF 保持 E1/E2/E3 为拓展；完整监控纳入基础 | 分布式课件 II 要求完整实现 Ring AllReduce，E1 已随分布式阶段交付 |
+| CUDA 接入 | 原生 C/C++ DLL：Driver API 加载 NVRTC 编译的自写 kernel，卷积 GEMM 调用 cuBLAS | 已实施（2026-09-06）；本机 MSVC 编译与 Nsight 已实测 |
 | 分类 | CIFAR-10 为阶段任务，digits 为 smoke | 数据下载和完整训练预算 |
 | 驾驶 | 固定执行油门 0.2，主指标是转向和闭环 | 有额外需求再采变速数据，不阻塞当前规划 |
 | 预训练 | ResNet18 → MobileNetV2 → AlexNet 候选 | E2 启动前测内存/耗时；必要时单独审核第三模型替换 |
@@ -533,8 +543,8 @@ PDF 第 7 页分别写第 4 次课、第 8 次课和第 12 次周；这里保留
 | W0 / 框架 | 统一测试入口、seed/dtype、环境清单；先 fixture/小模型，后完整 ResNet 路径 | 无，按接入范围逐步完成 | 12-20 | 78 个现有框架检查被收集；21 个应用检查；同 seed 同权重；FP32 全链路 |
 | W1 / 框架+应用 | 先做 PS 小模型显式参数映射；阶段后统一 ModelState/runner/config/result，兼容旧 checkpoint | 最小映射可独立；完整接口依赖 W0 相关工作 | 16-24 | 两次构图相同 key；命名与 shape 错误拒绝；小任务返回规范结果 |
 | W2 / 框架 | MyFlows/ops/cuda_native/ 的 C/C++ 调度、CUDA kernel、cuBLAS；benchmark/cuda_ops.py；误差与 Nsight 证据 | 独立 fixture/环境；小模型集成依赖其 seed/dtype，不依赖完整 W1 | 32-48 | Conv/Pool fwd/bwd 与参考一致；不静默 fallback；CuPy/原生路径规模比较 |
-| W3 / 框架 | MyFlows/distributed/ 的 protocol/ps/worker/launcher；小模型 PS 入口 | 显式小模型参数映射、固定初值；不依赖 CUDA 或完整 W1 | 24-36 | 小 MLP 1/2/4 worker 与 20 步等价已实现；后续接分类；保留分片/重复消息/异常清理回归 |
-| W4 / 框架+实验 | MyFlows/monitoring/ 的 sampler/timer；训练/PS hooks；瓶颈对照 | 首阶段基本计时独立；完整监控与 W1/W2/W3 整合 | 16-24 | B7 指标、通信等待可追踪；量化开销；一项优化前后数据 |
+| W3 / 框架 | MyFlows/distributed/ 的 protocol/ps/worker/launcher；小模型 PS 入口 | 显式小模型参数映射、固定初值；不依赖 CUDA 或完整 W1 | 24-36 | 已完成：GPU PS（双传输）与 Ring，MNIST/ResNet18 1/2/4 worker；后续接分类；保留分片/重复消息/异常清理回归 |
+| W4 / 框架+实验 | MyFlows/monitoring/ 的 sampler/timer；训练/PS hooks；瓶颈对照（2026-09-23 已有 NVML sampler 与后台记录器，并由训练控制台 apps/console 接入分布式和单进程任务；分布式实验内部仍用 nvidia-smi，未写 TensorBoard） | 首阶段基本计时独立；完整监控与 W1/W2/W3 整合 | 16-24 | B7 指标、通信等待可追踪；量化开销；一项优化前后数据 |
 | W5 / 应用+实验 | CIFAR-10 数据与分类入口；benchmark/compare_frameworks.py 的 ResNet18 三框架协议 | W0/W1；监控依赖 W4 | 24-36 | 无测试集泄漏；单步对齐；独立进程基线、真实精度/峰值 |
 | W6 / 应用+实验 | apps/eval/ 的模拟器评估入口与 telemetry adapter；场景配置、配对运行清单 | W0，独立于 Agent | 20-32 | 固定油门；至少 5 次基线；CTE/越界/完成定义及原始数据 |
 | W7 / 应用 | apps/autopilot/ 六组件与专业任务适配器；持久 trial registry；小预算搜索 | W1/W4/W5；PS 适配依赖 W3 | 24-40 | 6 个以内候选自动执行；诊断/排序/预算/重启去重/故障测试 |
@@ -546,12 +556,12 @@ PDF 第 7 页分别写第 4 次课、第 8 次课和第 12 次周；这里保留
 
 | 拓展 | 新增工作 | 依赖 | 额外人时估算 |
 | --- | --- | --- | --- |
-| E1 | Ring All-Reduce、rank 一致性、通信对比 | 基础通过、W3 | 20-32 |
+| E1 | Ring All-Reduce、rank 一致性、通信对比（已完成） | 基础通过、W3 | 20-32 |
 | E2 | 三模型结构兼容、权重映射/冻结、迁移数据与训练 | 基础通过、W1/W5 | 44-72 |
 | E3 | TPE 条件搜索、完整 TrainingState、事务 checkpoint、异常回滚 | 基础通过、W7；冻结搜索依赖 E2 | 28-44 |
 
 拓展按可用容量单独选择；E1→E2→E3 是默认候选顺序，不要求同时开工。完整目标另需 92-148 人时，仍需预留返工。
 
-第一阶段 C0-C7 的实现、验收与交付见 [阶段报告](experiments/semester_2026_fall/stage1/README.md)。下一步先确定完整 ResNet FP32/BN 与状态接口的最小集成范围，再接 PS 小 CNN、完整监控和正式分类/跨框架/驾驶基线；Agent 设计仍按用户确定的后续阶段推进。
+第一阶段 C0-C7 的实现、验收与交付见 [阶段报告](experiments/semester_2026_fall/stage1/README.md)。分布式阶段的实现与交付见 [PS / Ring 双任务实测报告](experiments/semester_2026_fall/distributed_gpu/20260919_optimized/README.md)。下一步先确定完整 ResNet FP32/BN 与状态接口的最小集成范围，再做完整监控和正式分类/跨框架/驾驶基线；Agent 设计仍按用户确定的后续阶段推进。
 
 若容量不足，先削减超参候选/模型规模/拓展数量，保留 B1-B7 的可运行闭环、正确性和基本重复实验；不能以旧学期资产缺失为理由增加补材料任务。

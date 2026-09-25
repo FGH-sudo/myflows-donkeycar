@@ -6,6 +6,7 @@
 - 总体范围：[semester_spec.md](semester_spec.md)；现状证据：[semester_spec_review.md](semester_spec_review.md)。
 - 课程依据：[课程 PDF](<深度学习框架-16 综合项目III.pdf>) 第 3、4、7、8、9 页。
 - 实施结果：[阶段报告与复现入口](experiments/semester_2026_fall/stage1/README.md)。本文件保留验收约定，报告记录实际 run_id、结果与限制。
+- 后续变化（2026-09-23 补记）：本阶段的 CPU Queue PS 已在分布式阶段被 GPU Worker 的同步 PS（Socket JSON / gRPC）替换，并新增 Ring AllReduce，见 [分布式 GPU Spec](stage1_distributed_gpu_spec.md)。下文“当前不展开 All-Reduce、GPU PS”与“小 CNN/PS 集成继续”等描述只代表第一阶段范围。
 
 ## 1. 阶段目标与边界
 
@@ -78,7 +79,7 @@ C0 的测试与 seed 修复属于当前阶段工作，完成后再进入 C1 的�
 
 Conv2D、MaxPool2d 及对应 Op 已增加末尾可选参数 backend，默认 auto 保持旧行为：CPU 走 numpy，GPU 走 cupy。只有显式 cuda_native_cublas 才启用原生实现；它在 CPU、非 FP32 或不支持配置上报错，禁止静默回退。
 
-编译和显存管理继续使用 CuPy。kernel 从 .cu 文件读取，按源码 hash、编译选项、设备等记录缓存信息；首次编译与稳态运行分别测量。自写路径的卷积/池化计算不能委托现有卷积库完成，允许复用显存分配、连续化与结果梯度合并。
+编译和显存管理继续使用 CuPy。kernel 从 .cu 文件读取（首版约定；当前实现改为原生 DLL 通过 NVRTC 编译 kernel，显存仍由 CuPy 管理），按源码 hash、编译选项、设备等记录缓存信息；首次编译与稳态运行分别测量。自写路径的卷积/池化计算不能委托现有卷积库完成，允许复用显存分配、连续化与结果梯度合并。
 
 ### 3.2 第一版支持范围
 
