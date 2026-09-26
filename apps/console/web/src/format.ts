@@ -91,6 +91,10 @@ export function headlineMetric(run: RunSummary): { label: string; value: string 
   return null
 }
 
-export const RANK_COLORS = ['#1677ff', '#fa8c16', '#13c2c2', '#eb2f96', '#722ed1', '#52c41a', '#faad14', '#2f54eb']
+/** Muted data palette shared by every chart and rank marker. */
+export const RANK_COLORS = ['#3b6fd8', '#d4892a', '#2f9e7a', '#8866d6', '#cf5a80', '#3fa0b5', '#7a8394', '#b99a2a']
+
+/** "NVIDIA GeForce RTX 4060 Laptop GPU" -> "RTX 4060 Laptop GPU" */
+export const shortGpuName = (name: string) => name.replace(/^NVIDIA\s+(GeForce\s+)?/i, '')
 
 export const rankColor = (rank: number | string) => RANK_COLORS[Number(rank) % RANK_COLORS.length]

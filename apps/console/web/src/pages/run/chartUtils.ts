@@ -57,15 +57,52 @@ export function epochMarkAreas(rows: EpochRow[] | undefined, offset = 1) {
   return (rows ?? [])
     .filter((r) => r.t_start !== null && r.t_start !== undefined && r.t_end !== null && r.t_end !== undefined)
     .map((r, i) => [
-      { xAxis: r.t_start as number, name: `E${Number(r.epoch) + offset}`,
-        itemStyle: { color: i % 2 ? 'rgba(22,104,220,0.05)' : 'rgba(22,104,220,0.10)' } },
+      {
+        xAxis: r.t_start as number,
+        name: `E${Number(r.epoch) + offset}`,
+        itemStyle: { color: i % 2 ? 'rgba(24, 24, 27, 0.02)' : 'rgba(59, 111, 216, 0.05)' },
+      },
       { xAxis: r.t_end as number },
     ])
 }
 
-export const baseGrid = { left: 56, right: 56, top: 40, bottom: 56 }
+/** Legend sits top-left on its own row; titles live in the DOM (ChartPanel). */
+export const baseLegend = { top: 0, left: 4 }
+
+/** Grid for charts with the bottom zoom slider: leaves room for axis labels, axis name and slider. */
+export const baseGrid = { left: 56, right: 56, top: 40, bottom: 84 }
+
+/** Grid for charts without a zoom slider. */
+export const plainGrid = { left: 56, right: 56, top: 40, bottom: 44 }
+
+export const baseSplitLine = { lineStyle: { color: '#f0f0f3', type: 'solid' as const } }
+
+/** Bottom-centred axis name used by every time/step axis. */
+export const xAxisName = (name: string) => ({ name, nameLocation: 'middle' as const, nameGap: 28 })
+
+export const modernTooltip = {
+  trigger: 'axis' as const,
+}
 
 export const zoom = [
   { type: 'inside' as const, xAxisIndex: 0 },
-  { type: 'slider' as const, xAxisIndex: 0, height: 18, bottom: 8 },
+  {
+    type: 'slider' as const,
+    xAxisIndex: 0,
+    height: 14,
+    bottom: 10,
+    left: 56,
+    right: 56,
+    borderColor: 'transparent',
+    backgroundColor: '#f4f4f6',
+    fillerColor: 'rgba(24, 24, 27, 0.06)',
+    dataBackground: { lineStyle: { color: '#d4d4d8', width: 1 }, areaStyle: { color: '#ececf0' } },
+    selectedDataBackground: { lineStyle: { color: '#71717a', width: 1 }, areaStyle: { color: 'rgba(24, 24, 27, 0.08)' } },
+    handleIcon: 'path://M-4,-8 h8 a2,2 0 0 1 2,2 v12 a2,2 0 0 1 -2,2 h-8 a2,2 0 0 1 -2,-2 v-12 a2,2 0 0 1 2,-2 Z',
+    handleSize: '130%',
+    handleStyle: { color: '#ffffff', borderColor: '#d4d4d8', shadowBlur: 2, shadowColor: 'rgba(24, 24, 27, 0.1)' },
+    moveHandleSize: 0,
+    showDetail: false,
+    brushSelect: false,
+  },
 ]
