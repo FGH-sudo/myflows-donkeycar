@@ -72,4 +72,4 @@ try {
 uv run --no-sync python tools\build_native_cuda.py
 ```
 
-该脚本默认使用 `Visual Studio 17 2022` 的 x64 生成器，构建目录为 `.codex/native-cuda/build-msvc`。如果需要使用其他 CMake 生成器，可设置 `MF_NATIVE_CMAKE_GENERATOR`。
+该脚本默认使用 `Visual Studio 17 2022` 的 x64 生成器，构建目录为 `build/native-cuda/build-msvc`，产物 `build/native-cuda/native_cublas.dll` 由 `MyFlows/ops/cuda_native/native.py` 加载；`build/` 不纳入 Git，换机器或清理后重新执行上面的命令即可。如果需要使用其他 CMake 生成器，可设置 `MF_NATIVE_CMAKE_GENERATOR`。

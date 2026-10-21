@@ -5,7 +5,6 @@
 - 依据：[深度学习框架-16 综合项目III.pdf](<深度学习框架-16 综合项目III.pdf>)
 - 当前应用：DonkeyCar 自动驾驶
 - 当前主模型：ResNet18
-- 审核证据：[semester_spec_review.md](semester_spec_review.md)
 - 已交付阶段：[第一阶段 Spec：CUDA 算子、PS 模拟与 Nsight](stage1_cuda_ps_spec.md)、[分布式 GPU Spec：同步 PS、Ring AllReduce 与评测](stage1_distributed_gpu_spec.md)
 - 阶段成果：[第一阶段实验报告](experiments/semester_2026_fall/stage1/README.md)、[PS / Ring 双任务实测报告](experiments/semester_2026_fall/distributed_gpu/20260919_optimized/README.md)
 - 规划边界：按用户说明，之前学期的进度目标已经完成；不因本地缺少往期交付材料重新列缺口。

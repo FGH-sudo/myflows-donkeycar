@@ -10,8 +10,8 @@ import os
 ROOT = Path(__file__).resolve().parents[1]
 SOURCE = ROOT / "MyFlows" / "ops" / "cuda_native" / "native_cublas.cpp"
 PROJECT = SOURCE.parent
-OUTPUT = ROOT / ".codex" / "native-cuda" / "native_cublas.dll"
-BUILD = ROOT / ".codex" / "native-cuda" / "build-msvc"
+OUTPUT = ROOT / "build" / "native-cuda" / "native_cublas.dll"
+BUILD = ROOT / "build" / "native-cuda" / "build-msvc"
 
 
 def main():
