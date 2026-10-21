@@ -12,16 +12,16 @@
 
 ## Python 依赖
 
-根目录的 `pyproject.toml` 和 `uv.lock` 是阶段一 Python 依赖的声明与锁定文件。当前使用 `cupy-cuda12x==14.0.1`，对应 CUDA 12 系列；`.venv` 内固定安装 `nvidia-cublas-cu12`、`nvidia-cuda-nvrtc-cu12` 和 `nvidia-cuda-runtime-cu12`。框架也会加载 PyTorch 自带的 CUDA DLL，因此实际 NVRTC 版本受导入顺序影响，应在同一运行进程记录，不能只根据包版本推断。
+根目录的 `pyproject.toml` 和 `uv.lock` 是项目 Python 依赖的声明与锁定文件。当前使用 `cupy-cuda12x==14.0.1`，对应 CUDA 12 系列；`.venv` 内固定安装 `nvidia-cublas-cu12`、`nvidia-cuda-nvrtc-cu12` 和 `nvidia-cuda-runtime-cu12`。框架也会加载 PyTorch 自带的 CUDA DLL，因此实际 NVRTC 版本受导入顺序影响，应在同一运行进程记录，不能只根据包版本推断。
 
-同步阶段一依赖时使用：
+同步依赖时使用：
 
 ```powershell
 uv sync --locked --inexact
 uv pip check --python .venv\Scripts\python.exe
 ```
 
-默认 `dev` 依赖组包括统一测试入口需要的 FastAPI、httpx 和 python-multipart，并限定 `setuptools<82`，与当前 PyTorch wheel 的依赖约束一致。默认同时安装的 `console` 依赖组供训练控制台使用：FastAPI、uvicorn 和提供 `pynvml` 的 `nvidia-ml-py`（没有 NVML 时 GPU 采样退回 nvidia-smi）。`--inexact` 保留本地 wheel 安装的 PyTorch 及其额外依赖；普通的精确 `uv sync` 会移除未声明在锁文件中的包。
+默认 `dev` 依赖组包括统一测试入口需要的 FastAPI、httpx 和 python-multipart，并限定 `setuptools<82`，与当前 PyTorch wheel 的依赖约束一致。默认同时安装的 `console` 依赖组供训练控制台使用：FastAPI、uvicorn 和提供 `pynvml` 的 `nvidia-ml-py`（没有 NVML 时 GPU 采样退回 nvidia-smi）。默认还安装 `onnx` 组（onnxruntime-gpu，供 ONNX 评估、FastAPI/gRPC 推理服务、INT8 量化和驾驶 pilot 使用，CUDA/cuDNN DLL 复用 PyTorch wheel 自带的版本）和 `donkeycar` 组（donkeycar 5.3.0、gymnasium 1.3.0 和固定到 GitHub 提交的 gym-donkeycar，供 `mycar/manage.py` 模拟器驾驶）。donkeycar 5.3.0 声明 `numpy<2`，`pyproject.toml` 用 `override-dependencies` 统一为 numpy 2.2.6，因此 `uv pip check` 会报告这一条不兼容，属预期，其余应无报错。`--inexact` 保留本地 wheel 安装的 PyTorch 及其额外依赖；普通的精确 `uv sync` 会移除未声明在锁文件中的包。
 
 ## 训练控制台前端
 
@@ -42,7 +42,7 @@ uv pip install --python .venv\Scripts\python.exe `
   'D:\i-predictor\datasets\raw\torch-2.11.0+cu128-cp311-cp311-win_amd64.whl'
 ```
 
-历史环境仍保留在 `.venv-system-site/`，仅用于回溯，不参与当前测试。
+`.venv-system-site/` 是继承全局 Python 3.11 第三方包的旧环境，不参与统一测试。onnxruntime 与 donkeycar 已加入 `.venv`（2026-10-21 在 `.venv` 中实测 ONNX 评估、FastAPI/gRPC 推理、INT8 量化和驾驶 pilot 推理正常，未启动模拟器窗口），这些功能不再依赖该旧环境。
 
 ## CUDA 测试环境
 
