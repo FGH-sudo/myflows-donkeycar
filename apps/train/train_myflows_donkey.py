@@ -71,6 +71,51 @@ from MyFlows.utils.transforms import augment_chw_batch, chw_to_hwc, default_trai
 from MyFlows.utils.viz import TrainingHistory, plot_training_curves
 
 
+def _resolve_conv_backend(requested: str, device: str, dtype) -> str:
+    """auto：CUDA + float32 且原生 DLL 可用时用 cuda_native_register（寄存器分块 GEMM），否则交给算子按设备选 CuPy/NumPy。"""
+    if requested != "auto":
+        return requested
+    if device == "cuda" and dtype == np.float32:
+        from MyFlows.ops.cuda_native import is_available
+
+        if is_available():
+            return "cuda_native_register"
+    return "auto"
+
+
+class _DeviceSpan:
+    """量一段计算在设备上的耗时。
+
+    GPU 上 kernel 异步执行，perf_counter 只能量到 CPU 发射 kernel 的时间；这里改用 CUDA event，
+    在步末读 loss（已同步）之后再取差值，不额外插入同步点。CPU 上退化为 perf_counter。
+    """
+
+    def __init__(self, device: str):
+        from MyFlows.core.device import xp
+
+        self._events = (xp.cuda.Event(), xp.cuda.Event()) if device == "cuda" else None
+        self._xp = xp
+        self._start = self._stop = 0.0
+
+    def start(self) -> None:
+        if self._events:
+            self._events[0].record()
+        else:
+            self._start = time.perf_counter()
+
+    def stop(self) -> None:
+        if self._events:
+            self._events[1].record()
+        else:
+            self._stop = time.perf_counter()
+
+    def elapsed_ms(self) -> float:
+        if self._events:
+            self._events[1].synchronize()
+            return float(self._xp.cuda.get_elapsed_time(*self._events))
+        return (self._stop - self._start) * 1000.0
+
+
 def _load_training_sample(sample: tuple[str, float, float, int, int, str]) -> tuple[np.ndarray, np.ndarray]:
     path_str, angle, throttle, image_w, image_h, dtype_name = sample
     dtype = np.float32 if dtype_name == "float32" else np.float64
@@ -141,6 +186,14 @@ def main() -> None:
     ap.add_argument("--onnx-out", type=str, default=None, help="ONNX 输出路径，默认跟 --best-out 同名 .onnx")
     ap.add_argument("--stem", type=str, default="cifar", choices=("cifar", "imagenet"), help="小分辨率建议 cifar")
     ap.add_argument("--graph-opt", action="store_true", help="打开构图期优化(可能略快)")
+    ap.add_argument(
+        "--conv-backend",
+        type=str,
+        default="auto",
+        choices=("auto", "numpy", "cupy", "cuda_native_register", "cuda_native_cublas"),
+        help="卷积/池化后端；cuda_native_register / cuda_native_cublas 是原生 DLL 的两个 GEMM 引擎（寄存器分块 kernel / cuBLAS），"
+        "auto 在 CUDA + float32 且原生 DLL 可用时用 cuda_native_register，否则按设备用 CuPy/NumPy",
+    )
     ap.add_argument(
         "--logdir",
         type=str,
@@ -306,15 +359,22 @@ def main() -> None:
 
     device = resolve_myflows_device(args.device)
     print_myflows_device(device, args.device)
+    # 层参数按全局默认 dtype 创建：必须与输入一致，否则 float32 输入会和 float64 权重混算成 float64
+    ms.set_default_dtype(dtype)
+    conv_backend = _resolve_conv_backend(args.conv_backend, device, dtype)
+    print(f"计算 dtype: {args.dtype}, 卷积后端: {conv_backend}")
 
     # 变量与模型（只构图一次，批大小固定为 B；须在 set_device 之后创建）
+    # 输入与标签不需要梯度：stem 卷积因此跳过 dX 的 GEMM 与 col2im
     x_var = ms.Variable(
         np.zeros((B, 3, h, w), dtype=dtype),
         name="X",
+        requires_grad=False,
     )
     y_var = ms.Variable(
         np.zeros((B, 2), dtype=dtype),
         name="y",
+        requires_grad=False,
     )
     model = ms.ResNet18(
         in_channels=3,
@@ -324,6 +384,7 @@ def main() -> None:
         name="resnet18_donkey",
         dropout=args.dropout,
         initializer=args.initializer,
+        conv_backend=conv_backend,
     )
     logits = model(x_var)
     loss_node = ms.MSELoss(logits, y_var, name="loss")
@@ -419,6 +480,7 @@ def main() -> None:
         for rel, angle, throttle in val_index
     ]
     inspect_done = False
+    train_span = _DeviceSpan(device)
 
     def _validation_step(x_items, y_items):
         real_count = len(x_items)
@@ -465,9 +527,9 @@ def main() -> None:
             y_var.value = y_batch
 
             model.train(True)
-            train_start = time.perf_counter()
+            train_span.start()
             opt.one_step()
-            train_elapsed_ms = (time.perf_counter() - train_start) * 1000.0
+            train_span.stop()
             if reg_config.enabled:
                 apply_regularization(opt, model.params, reg_config)
             if (args.check_shape or args.check_content) and not inspect_done:
@@ -477,15 +539,17 @@ def main() -> None:
                 if not report["ok"]:
                     raise SystemExit("graph inspection failed")
                 inspect_done = True
-            grad_norm = global_gradient_norm(model)
             if dashboard.active and dashboard.grad_interval > 0 and (global_step % dashboard.grad_interval == 0):
-                dashboard.tb.log_scalar("gradients/global_norm", grad_norm, global_step)
+                # 只在要记录时才算：全局范数要读回一个标量，会让 CPU 等 GPU 跑完整个反向
+                dashboard.tb.log_scalar("gradients/global_norm", global_gradient_norm(model), global_step)
             dashboard.log_gradients(global_step, model)
             dashboard.log_parameters(global_step, model, args.lr)
             opt.update()
-            step_elapsed_ms = (time.perf_counter() - after_load) * 1000.0
-            data_load_ms = (after_load - load_start) * 1000.0
+            # 每步只在这里读回一次 loss（同步点），之后再取 CUDA event 计时
             step_loss = myflows_scalar_float(loss_node.value)
+            step_elapsed_ms = (time.perf_counter() - after_load) * 1000.0
+            train_elapsed_ms = train_span.elapsed_ms()
+            data_load_ms = (after_load - load_start) * 1000.0
             total_loss += step_loss
             count += 1
             global_step += 1
@@ -506,10 +570,7 @@ def main() -> None:
             )
             dashboard.log_activations(global_step, getattr(model, "_last_feature_nodes", {}), preferred_last="layer4")
             if s % 10 == 0 or s == steps - 1:
-                print(
-                    f"epoch {ep+1} step {s+1}/{steps} "
-                    f"loss={myflows_scalar_float(loss_node.value):.6f}"
-                )
+                print(f"epoch {ep+1} step {s+1}/{steps} loss={step_loss:.6f}")
             if args.checkpoint_every and count % int(args.checkpoint_every) == 0:
                 json_path, npz_path = ms.save_checkpoint(
                     [model],

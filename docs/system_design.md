@@ -1,6 +1,6 @@
 # 当前系统设计
 
-更新时间：2026-09-23。
+更新时间：2026-10-22。
 
 本文只说明仓库当前已经存在的系统。第一阶段已实现 CUDA C/C++ Conv/Pool 与 Nsight 实验入口；分布式阶段已按 [stage1_distributed_gpu_spec.md](stage1_distributed_gpu_spec.md) 实现 GPU Worker 的同步 PS（Socket JSON / gRPC）与 Ring AllReduce。训练控制台（第 8 节）已把运行记录、实时曲线、GPU 占用和任务启停集中到一个 Web 界面。AutoPilot Agent、完整 GPU 监控和预训练模型库继续按 [semester_spec.md](semester_spec.md) 推进。
 
@@ -27,7 +27,7 @@ flowchart LR
   onnx --> serve[gRPC / FastAPI]
   framework[MyFlows 计算图和算子] --> train
   framework --> eval
-  native[原生 CUDA DLL 与 cuBLAS] --> framework
+  native[原生 CUDA DLL：寄存器分块 GEMM / cuBLAS] --> framework
   framework --> dist[PS 与 Ring 分布式训练]
   prepared[预处理数据 npy] --> dist
   dist --> archive[逐 rank 指标与资源采样归档]
@@ -89,9 +89,9 @@ PS 模式和 Ring 模式二选一；Ring 模式没有 PS 进程。所有进程�
 
 ## 6. 第一阶段新增能力
 
-- `Conv2D` / `MaxPool2d` 和对应 Op 接收 `backend=auto/numpy/cupy/cuda_native_cublas`；默认保留 NumPy/CuPy，显式原生 CUDA 路径严格验证 FP32、设备和配置。
-- `cuda_native_cublas` 由 C/C++ DLL 在当前 stream 上调度自写 im2col/col2im、max-pool kernel，并调用 cuBLAS 完成卷积 GEMM；底层返回局部梯度，Op 用 `+=` 合并。
-- 直接卷积、CUDA im2col 和自写 GEMM 仅作为历史失败基线保留在实验报告中，不再作为当前代码后端。
+- `Conv2D` / `MaxPool2d` 和对应 Op 接收 `backend=auto/numpy/cupy/cuda_native_register/cuda_native_cublas`；默认保留 NumPy/CuPy，显式原生 CUDA 路径严格验证 FP32、设备和配置。
+- 两个原生后端由 C/C++ DLL 在当前 stream 上调度自写 im2col/col2im、max-pool kernel，只在卷积 GEMM 的引擎上不同：`cuda_native_register` 用第 19 讲的寄存器分块 kernel（2026-10-22 起为训练入口与分布式任务的默认），`cuda_native_cublas` 调用 cuBLAS；底层返回局部梯度，Op 用 `+=` 合并。
+- 第一阶段的直接卷积、CUDA im2col 和自写 GEMM 仅作为历史失败基线保留在实验报告中。第 19 讲的寄存器分块 GEMM 是重新写的实现，现为原生卷积与 `Dense` 的默认 GEMM 引擎（见第 10 节）；课件的其余矩阵乘写法与补偿累加只作为对照实验，以及 `Linear` 的实验后端。
 - FP32 小 CNN 完成同初值 CuPy/CUDA C 训练对照；完整 ResNet 的精度和 ImageNet stem 兼容仍在后续范围。
 - `benchmark/cuda_ops.py`、`profile_cuda.py` 分别记录 CuPy/原生 CUDA 实验和真实 Nsight 报告；GPU Events、端到端 wall time、profile 计时分开。
 - 统一测试入口补齐函数式测试，训练 smoke 显式传 seed；DataLoader 预先分批并按序返回，避免 worker 调度改变尾批数量。
@@ -140,4 +140,19 @@ flowchart LR
 - GPU 监控仍不完整：`MyFlows/monitoring` 已支持 NVML 多卡采样，并由控制台接入分布式与单进程任务，但 `distributed_experiment` 内部的采样仍是 nvidia-smi 且只读第一张卡，资源曲线也没有写入 TensorBoard。Windows WDDM 驱动下读不到单个进程的显存，只能显示整卡显存和各进程 RSS。
 - 没有预训练参数导入和冻结训练功能。
 - 当前跨框架性能测试的方法需要重做，旧结果不能直接用于本学期结论。
-- 主训练入口 `apps/train` 的完整 ResNet 仍未接入原生 CUDA 后端；通用模型状态与 checkpoint 精确恢复仍待后续完成。
+- 通用模型状态与 checkpoint 精确恢复仍待后续完成（`apps/train` 的完整 ResNet 已于 2026-10-22 接入原生 CUDA 后端，见第 10 节）。
+- GPU 上的端到端梯度误差由卷积 GEMM 的 float32 累加决定（ResNet18 单步梯度相对 FP64 的中位误差 3e-6–4e-6）。自写的寄存器分块 GEMM 是原生卷积与 `Dense` 的默认引擎，cuBLAS 可选：ResNet18 每步耗时两者相同，寄存器分块的梯度中位误差高约 5%，在窄输出的前向 GEMM 上误差最多为 cuBLAS 的 6.3 倍。补偿累加（kahan/dot2）只作为实验后端，没有接入卷积。
+- 计算图每步为所有节点分配并清零梯度，再以 `+=` 累加，比首次写入直接赋值多一次全张量读写。
+
+## 10. 数值精度与 CUDA 第 19 讲改进（2026-10-22）
+
+实测与修改前代码（上一提交的 git worktree，含其自己编译的 DLL）的逐项对照见 [CUDA 第 19 讲实验报告](experiments/semester_2026_fall/cuda_lecture19/README.md)。
+
+- 默认 dtype：层参数与 BN 统计量默认 float32（`MyFlows.set_default_dtype` 可改为 float64）。此前默认 float64，`apps/train` 的 ResNet18 因此整网以 FP64 计算。
+- 规约：BN 统计量、BN/卷积/Linear 的 bias 梯度、交叉熵的 log-sum-exp、MSE、全局平均池化与全局梯度范数都在 FP64 中按固定顺序累加，再舍入一次。BN 的均值以两个 float 的和保存，`x − mean` 按 `(x − hi) − lo` 计算，均值远大于标准差时 x̂ 不再丢失精度。
+- 融合 kernel（`MyFlows/ops/fused.py`）：BN 前向为一次统计 + 一次归一化，反向为一次规约 + 一次 dX，不再为每层保存 x̂；softmax、log-sum-exp 与逐行损失在一个 kernel 内完成，标签越界时该行损失为 NaN 而不在主机端同步检查；Adam 每个参数一次 kernel，CPU 回退与 GPU 逐位一致。
+- Adam 改为 Kingma & Ba 的标准形式（矩估计从 0 开始、偏差修正）。旧实现首步令 v = g、s = g² 后仍做修正，首步步长约为标准值的 0.32 倍，且 g₁² 在 s 中被放大 1000 倍、上千步才衰减；此前的实验结果均基于旧实现。
+- 原生 DLL：卷积尾处理用 32×33 共享内存 tile 把 NHWC 行转成 NCHW，同时加 bias 与 ReLU/LeakyReLU；反向在同一 kernel 内做激活门控、dY 转置和 FP64 bias 部分和（warp shuffle）；输入 `requires_grad=False` 时跳过 dX 的 GEMM 与 col2im。
+- 训练入口：`apps/train` 按 `--dtype` 设置默认 dtype，`--conv-backend auto` 在 CUDA + float32 时选 `cuda_native_register`（`cuda_native_cublas` 可显式指定，控制台“新建训练”页同样提供这两项）；输入与标签不求梯度；全局梯度范数只在需要记录时计算；`train_step_ms` 改用 CUDA event，每步只在读回 loss 时同步一次。
+- 确定性：原生路径与 CuPy 的 col2im（改为 gather kernel，不再用原子加的 `add.at`）结果逐位可复现。
+- GEMM 引擎：第 19 讲的寄存器分块 kernel 推广为 NN/NT/TN 三种布局、五种 tile，输出小而 K 长时按 K 切分，再在 FP64 中归约（`native.gemm`）。`cuda_native_register` 后端用它做卷积与 `Dense` 的 GEMM，`cuda_native_cublas` 则调用 cuBLAS，两者的 ResNet18 每步耗时相同。Triton 扩展决定不做。

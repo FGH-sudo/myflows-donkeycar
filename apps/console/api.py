@@ -19,6 +19,7 @@ from .presets import (
     MODE_LABELS,
     TASK_LABELS,
     ValidationError,
+    conv_backends,
     distributed_presets,
     modes,
     single_cli_args,
@@ -235,7 +236,7 @@ def build_router(*, registry: RunRegistry, jobs: JobManager, live, sampler, repo
     def presets():
         return {
             "modes": modes(), "tasks": [{"task": t, "label": l} for t, l in TASK_LABELS.items()],
-            "max_workers": MAX_WORKERS, "worker_choices": [1, 2, 4],
+            "max_workers": MAX_WORKERS, "worker_choices": [1, 2, 4], "conv_backends": conv_backends(),
             "distributed": distributed_presets(repo_root, archive_root), "single": single_presets(repo_root),
         }
 

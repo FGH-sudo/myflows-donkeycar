@@ -21,13 +21,17 @@
 
 已按 [分布式 GPU Spec](docs/stage1_distributed_gpu_spec.md) 实现单机同步 PS（Socket JSON / gRPC）与 Ring AllReduce（gRPC），Worker 在 GPU 上计算并本地更新，PS 只聚合梯度；MNIST MLP 与 DonkeyCar ResNet18 两个任务的 1/2/4 Worker 结果见 [PS / Ring 双任务实测报告](docs/experiments/semester_2026_fall/distributed_gpu/20260919_optimized/README.md)。Agent 的进一步设计与实现安排到后续阶段。
 
+按《CUDA 编程（上）》课件（第 19 讲）重新审查了数值实现与 CUDA 路径：修正了 Adam 首步步长偏小、`apps/train` 整网以 FP64 计算、BN 在均值远大于标准差时丢失精度、交叉熵 `log(p + 1e-10)` 截断等问题，加入第 19 讲的矩阵乘 kernel 与 Nsight Compute 分析；与修改前代码的逐项对照见 [CUDA 第 19 讲实验报告](docs/experiments/semester_2026_fall/cuda_lecture19/README.md)。
+
 ## 当前基础
 
 仓库目前已经具备：
 
 - NumPy/CuPy 动态计算图和自动求导。
 - Conv2D、MaxPool2D、BatchNorm、Dropout 等基础算子。
-- 显式 FP32 原生 CUDA Conv/Pool 后端（C/C++ DLL 调度自写 kernel，卷积 GEMM 调用 cuBLAS）、三后端实验与 Nsight Systems/Compute 采集。
+- 显式 FP32 原生 CUDA Conv/Pool 后端（C/C++ DLL 调度自写 kernel；卷积 GEMM 可选第 19 讲的寄存器分块 kernel 或 cuBLAS）、三后端实验与 Nsight Systems/Compute 采集；`apps/train`、分布式任务与控制台在 CUDA + float32 时默认使用寄存器分块版。
+- 层参数默认 float32；BN 统计量、bias 梯度、交叉熵等规约在 FP64 中累加；BN、交叉熵、Adam 为融合 kernel，Adam 为标准实现。
+- 第 19 讲矩阵乘 kernel（basic / tiled / shared / 寄存器分块 × fp32 / kahan / dot2 累加）与 `benchmark/matmul_compare.py`；寄存器分块版推广为原生卷积与 `Dense` 的 GEMM 引擎，与 cuBLAS 并列可选（`benchmark/gemm_engines.py`）。
 - 单机同步 Parameter Server（Socket JSON / gRPC）与 Ring AllReduce（gRPC），1/2/4 个 GPU Worker 共享单卡；数值等价、状态恢复、故障注入与通信量检查。
 - 分布式实验中的资源采样（nvidia-smi + psutil，约 1 秒一次）和 CUDA Event 阶段计时。
 - MyFlows/monitoring：NVML 优先、nvidia-smi 兜底的整卡 GPU 采样与后台记录器（JSONL）。
@@ -39,7 +43,7 @@
 
 以下内容仍是本学期的待开发项：
 
-- 主训练入口 apps/train 接入原生 CUDA 后端；ResNet 分片与整批的逐步梯度严格等价（当前仍超差）。
+- ResNet 分片与整批的逐步梯度严格等价（当前仍超差）。
 - AutoPilot Agent。
 - 框架级 GPU 监控的剩余部分：TensorBoard 资源曲线、分布式实验内部监控切换到 NVML；Windows WDDM 下无法读取单进程显存，控制台只显示整卡显存和各 Worker 的 RSS。
 - 三种 CNN 的预训练参数导入、冻结和迁移训练。

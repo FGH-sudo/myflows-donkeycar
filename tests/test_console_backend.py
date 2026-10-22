@@ -406,6 +406,39 @@ class ConsoleApiTest(unittest.TestCase):
         self.assertEqual(stopped["status"], "cancelled")
         self.assertEqual(self.client.post("/api/jobs/nope/stop").status_code, 404)
 
+    def test_conv_backend_options_and_validation(self):
+        presets = self.client.get("/api/presets").json()
+        options = {o["value"]: o for o in presets["conv_backends"]}
+        self.assertEqual([v for v, o in options.items() if o["default"]], ["cuda_native_register", "numpy"])
+        self.assertEqual(options["cuda_native_cublas"]["device"], "cuda")
+        self.assertTrue(all(p["args"]["conv_backend"] == "auto" for p in presets["single"]))
+
+        smoke = next(p for p in presets["distributed"] if p["id"] == "synthetic-smoke")
+        base = dict(smoke["config"], mode="single", transport="none", train_workers=1)
+        for config, message in (
+            (dict(base, conv_backend="cuda_native_magic"), "conv_backend 只能是"),
+            (dict(base, device="cpu", conv_backend="cuda_native_register"), "不能用于 device=cpu"),
+        ):
+            response = self.client.post("/api/jobs", json={"type": "distributed", "config": config})
+            self.assertEqual(response.status_code, 422)
+            self.assertIn(message, response.json()["detail"])
+        for args, message in (
+            ({"device": "cpu", "conv_backend": "cuda_native_cublas"}, "不能用于 device=cpu"),
+            ({"dtype": "float64", "conv_backend": "cuda_native_register"}, "只支持 float32"),
+        ):
+            response = self.client.post("/api/jobs", json={"type": "single", "args": {"epochs": 1, "batch": 2, **args}})
+            self.assertEqual(response.status_code, 422)
+            self.assertIn(message, response.json()["detail"])
+
+        with mock.patch.object(self.app.state.jobs, "_launch"):
+            single = self.client.post("/api/jobs", json={"type": "single", "args": {
+                "epochs": 1, "batch": 2, "device": "cuda", "conv_backend": "cuda_native_cublas"}}).json()
+            dist = self.client.post("/api/jobs", json={"type": "distributed", "config": dict(
+                base, device="cuda", conv_backend="cuda_native_register")}).json()
+        command = single["command"]
+        self.assertEqual(command[command.index("--conv-backend") + 1], "cuda_native_cublas")
+        self.assertEqual(dist["status"], "pending")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -105,7 +105,7 @@ def main():
                 if task == 'mnist_mlp':
                     assert final['val']['accuracy'] >= .95
                 else:
-                    assert set(final['backends']) == {'cuda_native_cublas'}
+                    assert set(final['backends']) in ({'cuda_native_register'}, {'cuda_native_cublas'})
                     with np.load(directory/'rank-0/final.npz') as saved:
                         for name in initial:
                             if name.startswith('buffer::'):

@@ -859,7 +859,8 @@ code {
   min-width: 0;
 }
 
-.option-tile-desc {
+.option-tile-desc,
+.select-option-desc {
   font-size: calc(12px * var(--s));
   line-height: 1.5;
   color: var(--text-muted);

@@ -30,13 +30,37 @@ SINGLE_ARGS = {
     "max_samples": int, "epochs": int, "batch": int, "lr": float, "device": str, "dtype": str, "stem": str,
     "augment": bool, "graph_opt": bool, "checkpoint_every": int, "tb_log_interval": int, "weight_decay": float,
     "dropout": float, "early_stopping": bool, "patience": int, "val_size": int, "test_size": int,
-    "sample_seed": int, "split_seed": int, "num_workers": int, "no_tensorboard": bool,
+    "sample_seed": int, "split_seed": int, "num_workers": int, "no_tensorboard": bool, "conv_backend": str,
 }
 MAX_WORKERS = 8
+# Conv/pool backends of the donkey_* tasks and apps.train: backend -> (device, label, description). The
+# two native CUDA backends differ only in the GEMM engine; register-tiled is the default on CUDA.
+CONV_BACKENDS = {
+    "cuda_native_register": ("cuda", "原生 · 寄存器分块", "原生 CUDA 算子，GEMM 用第 19 讲的寄存器分块 kernel"),
+    "cuda_native_cublas": ("cuda", "原生 · cuBLAS", "原生 CUDA 算子，GEMM 调用 cuBLAS"),
+    "cupy": ("cuda", "CuPy", "CuPy 数组实现的 im2col 卷积"),
+    "numpy": ("cpu", "NumPy", "CPU 上的 NumPy 实现"),
+}
+DEFAULT_CONV_BACKEND = {"cuda": "cuda_native_register", "cpu": "numpy"}
 
 
 class ValidationError(ValueError):
     pass
+
+
+def conv_backends() -> list[dict]:
+    return [{"value": value, "device": device, "label": label, "description": description,
+             "default": DEFAULT_CONV_BACKEND[device] == value}
+            for value, (device, label, description) in CONV_BACKENDS.items()]
+
+
+def _check_conv_backend(backend, device: str | None, dtype: str | None) -> None:
+    if backend not in CONV_BACKENDS:
+        raise ValidationError(f"conv_backend 只能是 {', '.join(CONV_BACKENDS)}")
+    if device in ("cpu", "cuda") and CONV_BACKENDS[backend][0] != device:
+        raise ValidationError(f"conv_backend={backend} 不能用于 device={device}")
+    if dtype == "float64" and backend.startswith("cuda_native"):
+        raise ValidationError("原生 CUDA 后端只支持 float32")
 
 
 def modes() -> list[dict]:
@@ -90,12 +114,13 @@ def single_presets(repo_root: Path) -> list[dict]:
         {"id": "single-resnet18-smoke", "type": "single", "task": "donkey_resnet18_single",
          "label": "单进程 ResNet18 小样本（200 张）", "description": "apps.train 主训练入口，200 个样本、1 个 epoch。",
          "args": {"max_samples": 200, "epochs": 1, "batch": 2, "lr": 0.001, "device": "auto", "dtype": "float32",
-                  "checkpoint_every": 0, "tb_log_interval": 5}, "data_ready": data_ready, "data_hint": hint},
+                  "conv_backend": "auto", "checkpoint_every": 0, "tb_log_interval": 5}, "data_ready": data_ready,
+         "data_hint": hint},
         {"id": "single-resnet18-1k", "type": "single", "task": "donkey_resnet18_single",
          "label": "单进程 ResNet18（1000 张 × 2 epoch）", "description": "带验证集的短训练。",
          "args": {"max_samples": 1000, "epochs": 2, "batch": 4, "lr": 0.001, "device": "auto", "dtype": "float32",
-                  "val_size": 100, "checkpoint_every": 0, "tb_log_interval": 10}, "data_ready": data_ready,
-         "data_hint": hint},
+                  "conv_backend": "auto", "val_size": 100, "checkpoint_every": 0, "tb_log_interval": 10},
+         "data_ready": data_ready, "data_hint": hint},
     ]
 
 
@@ -123,6 +148,8 @@ def validate_distributed(config: dict) -> dict:
     config["train_workers"] = workers
     if config.get("device") not in ("cpu", "cuda"):
         raise ValidationError("device 只能是 cpu 或 cuda")
+    if config.get("conv_backend") not in (None, ""):
+        _check_conv_backend(config["conv_backend"], config["device"], None)
     if config.get("optimizer", "mbgd") not in ("mbgd", "adam"):
         raise ValidationError("optimizer 只能是 mbgd 或 adam")
     if float(config.get("learning_rate", 0.01)) <= 0:
@@ -162,6 +189,8 @@ def validate_single(args: dict, repo_root: Path) -> dict:
         raise ValidationError("device 只能是 auto、cpu 或 cuda")
     if out.get("dtype", "float32") not in ("float32", "float64"):
         raise ValidationError("dtype 只能是 float32 或 float64")
+    if out.get("conv_backend", "auto") != "auto":
+        _check_conv_backend(out["conv_backend"], out.get("device"), out.get("dtype"))
     if out.get("epochs", 1) < 1 or out.get("batch", 1) < 1:
         raise ValidationError("epochs 与 batch 必须为正整数")
     if not (Path(repo_root) / "mycar" / "data").is_dir():

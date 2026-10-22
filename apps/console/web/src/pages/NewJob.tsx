@@ -5,7 +5,7 @@ import { Alert, App, Button, Col, Form, Input, InputNumber, Row, Segmented, Sele
 import { useEffect, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { api } from '../api'
-import type { ModeOption, Preset } from '../api'
+import type { ConvBackendOption, ModeOption, Preset } from '../api'
 import EChart from '../components/EChart'
 import EmptyState from '../components/EmptyState'
 import { Panel } from '../components/Panel'
@@ -13,6 +13,7 @@ import { topologyOption } from './run/TopologyTab'
 
 const FORM_KEYS = [
   'device',
+  'conv_backend',
   'optimizer',
   'learning_rate',
   'global_batch',
@@ -98,6 +99,41 @@ function PresetPicker({ presets, value, onChange }: { presets: Preset[]; value?:
   )
 }
 
+const CONV_TOOLTIP = '卷积与池化的实现。两个原生选项只有 GEMM 引擎不同：寄存器分块是第 19 讲的自写 kernel，cuBLAS 是 NVIDIA 库'
+
+interface ConvChoice {
+  value: string
+  label: string
+  description: string
+}
+
+/** Conv backend choices for a device; `auto` (apps.train only) resolves to register-tiled on CUDA + float32. */
+function convOptions(backends: ConvBackendOption[], device: string | undefined, withAuto: boolean, float64 = false): ConvChoice[] {
+  const options = backends
+    .filter((b) => device === undefined || device === 'auto' || b.device === device)
+    .filter((b) => !(float64 && b.value.startsWith('cuda_native')))
+    .map((b) => ({ value: b.value, label: b.label, description: b.default ? `默认 · ${b.description}` : b.description }))
+  const auto = { value: 'auto', label: '自动', description: 'CUDA + float32 用原生 · 寄存器分块，否则按设备用 CuPy / NumPy' }
+  return withAuto ? [auto, ...options] : options
+}
+
+/** Select whose dropdown adds each option's description under its label. */
+function ConvSelect({ options, ...rest }: { options: ConvChoice[]; value?: string; onChange?: (v: string) => void }) {
+  return (
+    <Select
+      {...rest}
+      options={options}
+      popupMatchSelectWidth={false}
+      optionRender={(o) => (
+        <div>
+          <div>{o.label}</div>
+          <div className="select-option-desc">{o.data.description}</div>
+        </div>
+      )}
+    />
+  )
+}
+
 const modeParts = (label: string) => {
   const [head, ...rest] = label.split(' · ')
   return { head, tail: rest.join(' · ') }
@@ -167,11 +203,13 @@ function DistributedForm({
   modes,
   workerChoices,
   maxWorkers,
+  convBackends,
 }: {
   presets: Preset[]
   modes: ModeOption[]
   workerChoices: number[]
   maxWorkers: number
+  convBackends: ConvBackendOption[]
 }) {
   const { message } = App.useApp()
   const navigate = useNavigate()
@@ -203,7 +241,18 @@ function DistributedForm({
   const optimizer = Form.useWatch('optimizer', form) as string | undefined
   const lr = Form.useWatch('learning_rate', form) as number | undefined
   const epochs = Form.useWatch('epochs', form) as number | undefined
+  const convBackend = Form.useWatch('conv_backend', form) as string | undefined
   const device = deviceValue === 'cpu' ? 'CPU' : 'GPU'
+  // Only the donkey_* tasks have convolutions; their backend follows the device.
+  const convTask = preset?.task.startsWith('donkey_') ?? false
+  const convChoices = useMemo(() => convOptions(convBackends, deviceValue ?? 'cuda', false), [convBackends, deviceValue])
+
+  useEffect(() => {
+    if (convTask && deviceValue && !convChoices.some((o) => o.value === convBackend)) {
+      const fallback = convBackends.find((b) => b.device === deviceValue && b.default)
+      form.setFieldValue('conv_backend', fallback?.value)
+    }
+  }, [convTask, deviceValue, convBackend, convChoices, convBackends, form])
   const batchError =
     globalBatch !== undefined && globalBatch < workers ? `全局 batch（${globalBatch}）必须不小于 Worker 数（${workers}）` : null
   const preview = useMemo(() => topologyOption(mode, transport, workers, [], true), [mode, transport, workers])
@@ -274,6 +323,13 @@ function DistributedForm({
                   <Select options={[{ value: 'cuda', label: 'CUDA (GPU)' }, { value: 'cpu', label: 'CPU' }]} />
                 </Form.Item>
               </Col>
+              {convTask ? (
+                <Col xs={24} sm={12} md={8}>
+                  <Form.Item name="conv_backend" label="卷积后端" tooltip={CONV_TOOLTIP}>
+                    <ConvSelect options={convChoices} />
+                  </Form.Item>
+                </Col>
+              ) : null}
               <Col xs={24} sm={12} md={8}>
                 <Form.Item name="optimizer" label="优化器">
                   <Select options={[{ value: 'adam', label: 'Adam' }, { value: 'mbgd', label: 'MBGD' }]} />
@@ -357,6 +413,7 @@ function DistributedForm({
               ['任务', preset?.label],
               ['架构', modeLabel],
               ['Worker', `${workers} 个 · ${device}`],
+              ...(convTask ? [['卷积后端', convBackends.find((b) => b.value === convBackend)?.label] as [string, ReactNode]] : []),
               ['优化器 / 学习率', optimizer ? <span className="num" key="o">{`${optimizer} / ${lr ?? '—'}`}</span> : null],
               ['全局 Batch / Epoch', <span className="num" key="b">{`${globalBatch ?? '—'} / ${epochs ?? '—'}`}</span>],
             ]}
@@ -380,7 +437,7 @@ function DistributedForm({
   )
 }
 
-function SingleForm({ presets }: { presets: Preset[] }) {
+function SingleForm({ presets, convBackends }: { presets: Preset[]; convBackends: ConvBackendOption[] }) {
   const { message } = App.useApp()
   const navigate = useNavigate()
   const queryClient = useQueryClient()
@@ -394,10 +451,20 @@ function SingleForm({ presets }: { presets: Preset[] }) {
   const lr = Form.useWatch('lr', form) as number | undefined
   const device = Form.useWatch('device', form) as string | undefined
   const maxSamples = Form.useWatch('max_samples', form) as number | undefined
+  const dtype = Form.useWatch('dtype', form) as string | undefined
+  const convBackend = Form.useWatch('conv_backend', form) as string | undefined
+  const convChoices = useMemo(
+    () => convOptions(convBackends, device, true, dtype === 'float64'),
+    [convBackends, device, dtype],
+  )
 
   useEffect(() => {
-    if (preset?.args) form.setFieldsValue({ augment: false, graph_opt: false, ...preset.args })
+    if (preset?.args) form.setFieldsValue({ augment: false, graph_opt: false, conv_backend: 'auto', ...preset.args })
   }, [preset, form])
+
+  useEffect(() => {
+    if (convBackend && !convChoices.some((o) => o.value === convBackend)) form.setFieldValue('conv_backend', 'auto')
+  }, [convBackend, convChoices, form])
 
   const submit = async () => {
     const values = await form.validateFields()
@@ -456,6 +523,11 @@ function SingleForm({ presets }: { presets: Preset[] }) {
                 </Form.Item>
               </Col>
               <Col xs={24} sm={12} md={8}>
+                <Form.Item name="conv_backend" label="卷积后端" tooltip={CONV_TOOLTIP}>
+                  <ConvSelect options={convChoices} />
+                </Form.Item>
+              </Col>
+              <Col xs={24} sm={12} md={8}>
                 <Form.Item name="val_size" label="验证集样本数">
                   <InputNumber min={0} style={{ width: '100%' }} />
                 </Form.Item>
@@ -492,6 +564,7 @@ function SingleForm({ presets }: { presets: Preset[] }) {
               ['Epoch / Batch', <span className="num" key="e">{`${epochs ?? '—'} / ${batch ?? '—'}`}</span>],
               ['学习率', lr !== undefined ? <span className="num" key="l">{lr}</span> : null],
               ['设备', device],
+              ['卷积后端', convChoices.find((o) => o.value === convBackend)?.label],
             ]}
           />
           <SubmitBox
@@ -539,7 +612,15 @@ export default function NewJob() {
                 分布式训练
               </span>
             ),
-            children: <DistributedForm presets={p.distributed} modes={p.modes} workerChoices={p.worker_choices} maxWorkers={p.max_workers} />,
+            children: (
+              <DistributedForm
+                presets={p.distributed}
+                modes={p.modes}
+                workerChoices={p.worker_choices}
+                maxWorkers={p.max_workers}
+                convBackends={p.conv_backends}
+              />
+            ),
           },
           {
             key: 'single',
@@ -549,7 +630,7 @@ export default function NewJob() {
                 单进程基线
               </span>
             ),
-            children: <SingleForm presets={p.single} />,
+            children: <SingleForm presets={p.single} convBackends={p.conv_backends} />,
           },
         ]}
       />

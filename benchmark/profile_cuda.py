@@ -23,7 +23,7 @@ def main():
     parser.add_argument("--tool", choices=("nsys", "ncu"), required=True)
     parser.add_argument("--tool-path", required=True)
     parser.add_argument("--case", choices=("P0", "P1"), required=True)
-    parser.add_argument("--backend", choices=("cupy", "cuda_native_cublas"), default="cuda_native_cublas")
+    parser.add_argument("--backend", choices=("cupy", "cuda_native_register", "cuda_native_cublas"), default="cuda_native_cublas")
     parser.add_argument("--kernel", default="im2col_forward")
     parser.add_argument("--out-dir", required=True)
     args = parser.parse_args()
@@ -52,7 +52,7 @@ def main():
             execute(stats_command, run.path / "stats.log")
             with (run.path / "summary_cuda_gpu_kern_sum.csv").open(encoding="utf-8-sig", newline="") as stream:
                 kernels = list(csv.DictReader(stream))
-            expected_kernel = {"cuda_native_cublas": "im2col_forward"}.get(args.backend)
+            expected_kernel = None if args.backend == "cupy" else "im2col_forward"
             if not kernels or (expected_kernel and not any(expected_kernel in row["Name"] for row in kernels)):
                 raise RuntimeError("trace does not contain the expected GPU kernels")
             run.results["kernel_summary"] = kernels

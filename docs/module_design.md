@@ -6,9 +6,10 @@
 
 | 路径 | 当前职责 |
 | --- | --- |
-| MyFlows/core/ | 计算图、节点、Tensor 和 CPU/CUDA 设备切换 |
-| MyFlows/ops/ | 当前 NumPy/CuPy 算子，包括卷积、池化、损失和激活函数 |
-| MyFlows/ops/cuda_native/ | 原生 C/C++ 调度自写 FP32 Conv/Pool kernel、cuBLAS GEMM、严格数组 wrapper 和运行时 DLL 管理 |
+| MyFlows/core/ | 计算图、节点、Tensor 和 CPU/CUDA 设备切换；`dtype.py` 的全局默认 dtype（float32，可用 `set_default_dtype` 改为 float64）；`Variable(requires_grad=False)` 标记输入/标签，算子据此跳过 dX |
+| MyFlows/ops/ | 当前 NumPy/CuPy 算子，包括卷积、池化、损失和激活函数；卷积/池化与 `Linear` 可选原生后端 `cuda_native_register`（寄存器分块 GEMM）/ `cuda_native_cublas`，`Linear` 另有实验用的 `cuda_native_kahan` / `cuda_native_dot2`，bias 梯度 FP64 累加；CuPy 的 col2im 为确定性的 gather kernel |
+| MyFlows/ops/fused.py | 融合 kernel 与同算法 NumPy 回退：BatchNorm2d（FP64 平移统计、均值 hi/lo 双 float、反向重算 x̂）、softmax 交叉熵（FP64 log-sum-exp）、Adam（逐步显式舍入，CPU/GPU 逐位一致）、ReLU/LeakyReLU 反向累加、FP64 全局梯度范数 |
+| MyFlows/ops/cuda_native/ | 原生 C/C++ 调度自写 FP32 Conv/Pool kernel，GEMM 引擎为第 19 讲的寄存器分块 kernel（NN/NT/TN，五种 tile，长 K 小输出按 K 切分后 FP64 归约，`native.gemm`）或 cuBLAS；严格数组 wrapper 和运行时 DLL 管理；NVRTC 按设备架构生成 SASS 并缓存到 `build/native-cuda/kernel-cache`；卷积尾处理融合 NHWC→NCHW 转置、bias 与 ReLU/LeakyReLU，bias 梯度 FP64；第 19 讲 basic/tiled/shared/register（寄存器分块）矩阵乘（fp32/kahan/dot2 累加）经 `native.matmul` 暴露；错误信息含源码行号与 CUDA/cuBLAS 错误名，`MYFLOWS_NATIVE_SYNC=1` 或 `set_debug_sync` 逐 kernel 同步 |
 | MyFlows/distributed/ | 单机回环同步 PS（Socket JSON / gRPC）与 Ring AllReduce；Worker 本地优化器更新，PS 只聚合梯度 |
 | MyFlows/distributed/launcher.py | `run_training(**config)`：配置规范化、端口分配、spawn 启动、事件收集与清理 |
 | MyFlows/distributed/ps.py、engine.py | PS 进程入口与同步轮次状态机：加权聚合、心跳与存活检查、重复/陈旧消息拒绝 |
@@ -19,8 +20,8 @@
 | MyFlows/distributed/tasks/ | synthetic、mnist_mlp、donkey_cnn、donkey_resnet18 任务适配与预处理数据读取 |
 | MyFlows/examples/stage1_cnn.py | 同 seed、全链路 FP32 的 32 样本 CNN 训练 fixture |
 | MyFlows/layers/resnet.py | 当前主模型 ResNet18 |
-| MyFlows/train/ | SGD、Momentum、AdaGrad、RMSProp、Adam 和正则化 |
-| MyFlows/utils/checkpoint.py | JSON + NPZ checkpoint 保存和恢复 |
+| MyFlows/train/ | SGD、Momentum、AdaGrad、RMSProp、Adam 和正则化；Adam 为标准实现（零初始化矩估计 + 偏差修正，2026-10-22 起），每个参数一次融合更新 |
+| MyFlows/utils/checkpoint.py | JSON + NPZ checkpoint 保存和恢复；参数与优化器状态按当前模型的 dtype 恢复 |
 | MyFlows/utils/onnx_exporter.py | ONNX 导出 |
 | MyFlows/utils/training_dashboard.py | TensorBoard 训练指标记录；可选同时逐行写 metrics.jsonl 供控制台增量读取 |
 | MyFlows/monitoring/gpu.py | `GpuSampler`（NVML 优先、nvidia-smi 兜底，缺测字段为 null 并记录原因）与 `ResourceRecorder`（后台线程，内存环形历史 + 可选 JSONL） |
@@ -42,12 +43,16 @@
 | apps/console/api.py | REST 与 SSE 路由：GPU 实时流、运行列表/详情、step/epoch/资源增量序列、日志尾部、任务提交与停止 |
 | apps/console/registry.py、readers.py | 发现控制台任务、分布式归档（run_index.json）与 TensorBoard 单进程日志；按游标增量读取 JSONL，统一 perf_counter 时间轴 |
 | apps/console/jobs.py | 任务排队（默认串行）、子进程启动、停止（分布式发 CTRL_BREAK，单进程写暂停文件，超时后结束进程树）与重启后重新接管 |
-| apps/console/presets.py | 任务预设与提交校验：只接受框架支持的模式/传输组合和白名单参数 |
+| apps/console/presets.py | 任务预设与提交校验：只接受框架支持的模式/传输组合和白名单参数；卷积后端选项（原生寄存器分块 / 原生 cuBLAS / CuPy / NumPy）及其与设备、dtype 的匹配 |
 | apps/console/web/ | React + Vite + Ant Design + ECharts 前端：总览、运行记录、运行详情（曲线/耗时/资源/拓扑/配置/日志）、新建训练、运行对比 |
 | mycar/myflows_pilot.py | DonkeyCar 驾驶控制器；不是训练调优 Agent |
 | tools/analyze_donkey_data.py | 数据数量和标签分布检查 |
 | tools/export_resnet_onnx.py | 当前 ResNet18 ONNX 导出入口 |
 | benchmark/cuda_ops.py | CUDA/NumPy/CuPy 正确性、性能、CNN 训练和短 profile 工作负载 |
+| benchmark/matmul_compare.py | 第 19 讲矩阵乘：课件格式的数据记录表（NumPy 为基线，1024/2048/4096 各测三轮）；自写 kernel × 三种累加与 NumPy/CuPy/cuBLAS 的精度（对 FP64 与 NumPy）、单独计时的 H2D/D2H、交叉点和可选 Nsight Compute 指标 |
+| benchmark/gemm_engines.py | 原生卷积的两个 GEMM 引擎（寄存器分块 / cuBLAS）：ResNet18 一次训练步的逐形状 GEMM 耗时与误差、多 batch 单步梯度、交替多轮的每步耗时 |
+| benchmark/ops_before_after.py、resnet_before_after.py | 以另一代码树（如上一提交的 git worktree）为“修改前”，逐进程对照算子精度、ResNet18 单步梯度与每步耗时 |
+| benchmark/mlp_backends.py | MNIST MLP：各 Linear 后端的梯度精度、一个 epoch 的速度/准确率与 FP64 轨迹距离、Adam 修正前后对照 |
 | benchmark/ps_demo.py | 同步 PS 数值对照及故障注入（转发新训练入口） |
 | benchmark/distributed_train.py | 单进程 / PS / Ring 统一训练入口 |
 | benchmark/distributed_compare.py | 分布式 Spec 第 12.2 节七配置矩阵的对比入口 |

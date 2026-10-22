@@ -193,11 +193,21 @@ export interface Preset {
   data_hint: string | null
 }
 
+/** Conv/pool backend of the donkey_* tasks and apps.train; `default` marks the device's default. */
+export interface ConvBackendOption {
+  value: string
+  device: 'cuda' | 'cpu'
+  label: string
+  description: string
+  default: boolean
+}
+
 export interface PresetsResponse {
   modes: ModeOption[]
   tasks: { task: string; label: string }[]
   max_workers: number
   worker_choices: number[]
+  conv_backends: ConvBackendOption[]
   distributed: Preset[]
   single: Preset[]
 }

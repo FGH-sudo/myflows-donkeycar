@@ -173,7 +173,7 @@ def run_matrix(args, run):
     if not rows:
         raise ValueError("no case matched --case")
     for row in measurements:
-        if row["backend"] == "cuda_native_cublas":
+        if row["backend"].startswith("cuda_native"):
             for ref in ("numpy", "cupy"):
                 match = next((m for m in measurements if (m["case"], m["phase"], m["backend"]) == (row["case"], row["phase"], ref)), None)
                 if match:
@@ -269,9 +269,9 @@ def main():
     parser.add_argument("--suite-timeout", type=float, default=1800)
     args = parser.parse_args()
     args.backends = args.backends.split(",")
-    allowed_backends = ("numpy", "cupy", "cuda_native_cublas")
+    allowed_backends = ("numpy", "cupy", "cuda_native_register", "cuda_native_cublas")
     if not args.backends or len(args.backends) != len(set(args.backends)) or any(b not in allowed_backends for b in args.backends):
-        parser.error("--backends must be a unique comma-separated subset of numpy,cupy,cuda_native_cublas")
+        parser.error("--backends must be a unique comma-separated subset of " + ",".join(allowed_backends))
     if min(args.measure, args.repeats, args.case_timeout, args.suite_timeout) <= 0 or args.warmup < 0:
         parser.error("budgets must be positive, warmup must be nonnegative")
     with RunArtifacts(args.out_dir, vars(args)) as run:
