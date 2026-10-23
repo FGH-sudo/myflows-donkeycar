@@ -202,12 +202,23 @@ export interface ConvBackendOption {
   default: boolean
 }
 
+/** Native CUDA library on the console host; jobs build a missing or stale one before training. */
+export interface NativeLibraryStatus {
+  path: string
+  built: boolean
+  current: boolean
+  reason: string | null
+  cmake: string | null
+  dependencies: boolean
+}
+
 export interface PresetsResponse {
   modes: ModeOption[]
   tasks: { task: string; label: string }[]
   max_workers: number
   worker_choices: number[]
   conv_backends: ConvBackendOption[]
+  native_library: NativeLibraryStatus
   distributed: Preset[]
   single: Preset[]
 }

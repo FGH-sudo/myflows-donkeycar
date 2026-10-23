@@ -20,22 +20,18 @@ absolute and relative errors against NumPy.
 
 import argparse
 import csv
-import shutil
 import subprocess
 import sys
 import time
-from pathlib import Path
 
 import numpy as np
 
+from benchmark.nsight import find_tool
 from benchmark.stage1_common import ROOT, RunArtifacts, array_hash
 from MyFlows.core.device import set_device, xp
 from MyFlows.ops.cuda_native import native
 
 U32 = float(np.finfo(np.float32).eps) / 2  # unit roundoff of float32
-# The executable itself, not ncu.bat: cmd.exe would split the kernel regex at "|".
-NCU_DEFAULT = Path("C:/Program Files/NVIDIA Corporation/Nsight Compute 2026.2.1/"
-                   "target/windows-desktop-win7-x64/ncu.exe")
 NCU_METRICS = (
     "gpu__time_duration.sum",
     "dram__bytes_read.sum",
@@ -289,12 +285,7 @@ def report(run, rows, copies, sizes, rounds):
 
 
 def run_ncu(args, run):
-    tool = Path(args.ncu_exe) if args.ncu_exe else NCU_DEFAULT
-    if not tool.exists():
-        found = shutil.which("ncu")
-        if not found:
-            raise FileNotFoundError("Nsight Compute not found; pass --ncu-exe")
-        tool = Path(found)
+    tool = find_tool("ncu", args.ncu_exe)
     prefix = run.path / f"ncu-{args.ncu_size}"
     child = [sys.executable, "-X", "utf8", "-m", "benchmark.matmul_compare", "--profile-child",
              "--ncu-size", str(args.ncu_size), "--seed", str(args.seed)]
@@ -369,7 +360,7 @@ def main(argv=None):
     parser.add_argument("--basic-limit", type=int, default=4096, help="skip basic kernels above this size")
     parser.add_argument("--ncu", action="store_true", help="also collect Nsight Compute metrics")
     parser.add_argument("--ncu-size", type=int, default=2048)
-    parser.add_argument("--ncu-exe")
+    parser.add_argument("--ncu-exe", help="ncu executable; default: MF_NCU, PATH, then the newest install")
     parser.add_argument("--profile-child", action="store_true", help=argparse.SUPPRESS)
     args = parser.parse_args(argv)
     if args.profile_child:

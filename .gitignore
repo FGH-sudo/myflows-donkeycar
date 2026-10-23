@@ -31,6 +31,8 @@ AGENTS.md
 
 # DonkeyCar runtime data and large external assets
 DonkeySimWin/
+DonkeySimLinux/
+DonkeySimMac/
 mycar/data/
 mycar/generated-road-data/
 mycar/logs/

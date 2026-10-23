@@ -17,6 +17,7 @@ import traceback
 import numpy as np
 import psutil
 
+from benchmark.config_paths import resolve_config_paths
 from MyFlows.distributed.launcher import run_training
 from MyFlows.distributed.measurement import write_json
 
@@ -129,7 +130,7 @@ def main():
     ap.add_argument('--out', required=True)
     args=ap.parse_args()
     out=Path(args.out).resolve()
-    config=json.loads(Path(args.config).read_text(encoding='utf-8'))
+    config=resolve_config_paths(json.loads(Path(args.config).read_text(encoding='utf-8')))
     for parent in out.parents:
         scope_file=parent/'execution_scope.json'
         if scope_file.exists():

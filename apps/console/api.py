@@ -22,6 +22,7 @@ from .presets import (
     conv_backends,
     distributed_presets,
     modes,
+    native_library,
     single_cli_args,
     single_presets,
     validate_distributed,
@@ -204,9 +205,8 @@ def build_router(*, registry: RunRegistry, jobs: JobManager, live, sampler, repo
                 "steps": steps if any(len(s.get("x", [])) for s in steps["ranks"].values()) else None,
                 "epochs": epochs if any(epochs["ranks"].values()) else None,
                 "resources": resources if resources["series"]["t"] else None,
-                "status": {"summary": summary, "ranks": data.ranks(),
-                           "rank_status": data.rank_status(active=summary.get("status") in ACTIVE_STATUSES)
-                           if data.kind == "distributed" else []},
+                "status": {"summary": summary, "ranks": data.series_ranks(),
+                           "rank_status": data.rank_status(active=summary.get("status") in ACTIVE_STATUSES)},
                 "cursor": dict(state["cursor"]),
             }
 
@@ -237,6 +237,7 @@ def build_router(*, registry: RunRegistry, jobs: JobManager, live, sampler, repo
         return {
             "modes": modes(), "tasks": [{"task": t, "label": l} for t, l in TASK_LABELS.items()],
             "max_workers": MAX_WORKERS, "worker_choices": [1, 2, 4], "conv_backends": conv_backends(),
+            "native_library": native_library(),
             "distributed": distributed_presets(repo_root, archive_root), "single": single_presets(repo_root),
         }
 
@@ -259,7 +260,10 @@ def build_router(*, registry: RunRegistry, jobs: JobManager, live, sampler, repo
                                    config=config)
             if job_type == "single":
                 args = validate_single(body.get("args") or {}, repo_root)
-                label = body.get("label") or f"单进程 ResNet18 · {args.get('max_samples', '全部')} 样本"
+                parallel = ("单进程" if args["distributed"] == "none" else
+                            f"{MODE_LABELS.get((args['distributed'], args['transport']), args['distributed'])}"
+                            f" · {args['workers']}w")
+                label = body.get("label") or f"ResNet18 · {parallel} · {args.get('max_samples') or '全部'} 样本"
                 command = [python, "-m", "apps.train.train_myflows_donkey", *single_cli_args(args),
                            "--run-dir", "{run_dir}", "--log-dir", "{run_dir}", "--log-file", "{run_dir}/train.log",
                            "--logdir", "{run_dir}/tensorboard", "--out", "{run_dir}/checkpoints/checkpoint",

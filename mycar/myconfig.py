@@ -1,14 +1,21 @@
 # -*- coding: utf-8 -*-
-"""Local DonkeyCar overrides for Windows simulator and MyFlows pilot."""
+"""Local DonkeyCar overrides for the simulator and MyFlows pilot."""
 
 import os
+import sys
 
 
 REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 
-# Windows + DonkeySimWin. Use "remote" if the simulator is already running.
+# Simulator unpacked into the repository root from the gym-donkeycar release for this platform
+# (DonkeySimWin, DonkeySimLinux or DonkeySimMac). The DONKEY_SIM_PATH environment variable
+# overrides it; "remote" uses a simulator that is already running.
 DONKEY_GYM = True
-DONKEY_SIM_PATH = os.path.join(REPO_ROOT, "DonkeySimWin", "donkey_sim.exe")
+_simulator = {
+    "win32": ("DonkeySimWin", "donkey_sim.exe"),
+    "darwin": ("DonkeySimMac", "donkey_sim.app", "Contents", "MacOS", "donkey_sim"),
+}.get(sys.platform, ("DonkeySimLinux", "donkey_sim.x86_64"))
+DONKEY_SIM_PATH = os.environ.get("DONKEY_SIM_PATH") or os.path.join(REPO_ROOT, *_simulator)
 # gym-donkeycar: donkey-generated-roads-v0 -> generated_road（与 generated-road 训练数据一致）
 # donkey-generated-track-v0 -> generated_track（环形赛道，训练数据未覆盖）
 DONKEY_GYM_ENV_NAME = "donkey-generated-roads-v0"

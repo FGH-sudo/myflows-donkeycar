@@ -26,12 +26,18 @@ DISTRIBUTED_KEYS = {
     "bn_statistics", "heartbeat_interval_s", "heartbeat_timeout_s", "poll_interval_s", "collect_history",
     "numerical_snapshots", "conv_backend", "image_h", "image_w", "hidden", "data_dir", "record_local_gradients",
 }
+# Arguments of apps.train.train_myflows_donkey, the formal training entry; distributed / workers / transport run
+# the same loop as PS or Ring AllReduce data parallelism.
 SINGLE_ARGS = {
     "max_samples": int, "epochs": int, "batch": int, "lr": float, "device": str, "dtype": str, "stem": str,
     "augment": bool, "graph_opt": bool, "checkpoint_every": int, "tb_log_interval": int, "weight_decay": float,
     "dropout": float, "early_stopping": bool, "patience": int, "val_size": int, "test_size": int,
     "sample_seed": int, "split_seed": int, "num_workers": int, "no_tensorboard": bool, "conv_backend": str,
+    "distributed": str, "workers": int, "transport": str, "sync_timeout": float, "base_width": int, "seed": int,
+    "export_onnx": bool,
 }
+# Parallel modes of the formal training entry: distributed value -> transports, as in apps.train.
+TRAINING_PARALLEL = {"none": ("none",), "ps": ("grpc_proto", "socket_json"), "ring": ("grpc_proto",)}
 MAX_WORKERS = 8
 # Conv/pool backends of the donkey_* tasks and apps.train: backend -> (device, label, description). The
 # two native CUDA backends differ only in the GEMM engine; register-tiled is the default on CUDA.
@@ -54,6 +60,14 @@ def conv_backends() -> list[dict]:
             for value, (device, label, description) in CONV_BACKENDS.items()]
 
 
+def native_library() -> dict:
+    """State of the native CUDA library. Jobs with a native backend build a missing or stale library
+    themselves before training, so the form only reports it (and warns when CMake is missing)."""
+    from MyFlows.ops.cuda_native.native import library_status
+
+    return library_status()
+
+
 def _check_conv_backend(backend, device: str | None, dtype: str | None) -> None:
     if backend not in CONV_BACKENDS:
         raise ValidationError(f"conv_backend 只能是 {', '.join(CONV_BACKENDS)}")
@@ -69,9 +83,10 @@ def modes() -> list[dict]:
 
 
 def _task_config(archive_root: Path | None, task: str) -> dict:
+    from benchmark.config_paths import resolve_config_paths
     from benchmark.distributed_suite import base_config, task_config
 
-    config = task_config(archive_root, task) if archive_root else base_config(task)
+    config = task_config(archive_root, task) if archive_root else resolve_config_paths(base_config(task))
     if task == "synthetic":
         config.pop("prepared_dir", None)
     return config
@@ -110,27 +125,35 @@ def distributed_presets(repo_root: Path, archive_root: Path | None) -> list[dict
 def single_presets(repo_root: Path) -> list[dict]:
     data_ready = (Path(repo_root) / "mycar" / "data" / "images").exists()
     hint = None if data_ready else "未找到 mycar/data/images"
+    base = {"lr": 0.001, "device": "auto", "dtype": "float32", "conv_backend": "auto", "distributed": "none"}
+
+    def preset(pid, label, description, args):
+        return {"id": pid, "type": "single", "task": "donkey_resnet18_single", "label": label,
+                "description": description, "args": {**base, **args}, "data_ready": data_ready, "data_hint": hint}
+
     return [
-        {"id": "single-resnet18-smoke", "type": "single", "task": "donkey_resnet18_single",
-         "label": "单进程 ResNet18 小样本（200 张）", "description": "apps.train 主训练入口，200 个样本、1 个 epoch。",
-         "args": {"max_samples": 200, "epochs": 1, "batch": 2, "lr": 0.001, "device": "auto", "dtype": "float32",
-                  "conv_backend": "auto", "checkpoint_every": 0, "tb_log_interval": 5}, "data_ready": data_ready,
-         "data_hint": hint},
-        {"id": "single-resnet18-1k", "type": "single", "task": "donkey_resnet18_single",
-         "label": "单进程 ResNet18（1000 张 × 2 epoch）", "description": "带验证集的短训练。",
-         "args": {"max_samples": 1000, "epochs": 2, "batch": 4, "lr": 0.001, "device": "auto", "dtype": "float32",
-                  "conv_backend": "auto", "val_size": 100, "checkpoint_every": 0, "tb_log_interval": 10},
-         "data_ready": data_ready, "data_hint": hint},
+        preset("single-resnet18-smoke", "ResNet18 小样本（200 张）", "单进程，200 个样本、1 个 epoch。",
+               {"max_samples": 200, "epochs": 1, "batch": 2, "checkpoint_every": 0, "tb_log_interval": 5}),
+        preset("single-resnet18-1k", "ResNet18（1000 张 × 2 epoch）", "单进程，带验证集的短训练。",
+               {"max_samples": 1000, "epochs": 2, "batch": 4, "val_size": 100, "checkpoint_every": 0,
+                "tb_log_interval": 10}),
+        preset("train-resnet18-ring", "ResNet18 数据并行（Ring · 2 Worker）",
+               "同一个训练入口拆成 2 个 Worker，梯度经 Ring AllReduce 平均；断点与 ONNX 和单进程格式相同。",
+               {"max_samples": 1000, "epochs": 2, "batch": 8, "val_size": 100, "checkpoint_every": 0,
+                "tb_log_interval": 10, "distributed": "ring", "workers": 2, "transport": "grpc_proto",
+                "export_onnx": True}),
     ]
 
 
 def validate_distributed(config: dict) -> dict:
+    from benchmark.config_paths import resolve_config_paths
     from MyFlows.distributed.launcher import normalize_config
 
     unknown = set(config) - DISTRIBUTED_KEYS
     if unknown:
         raise ValidationError(f"不支持的配置项：{', '.join(sorted(unknown))}")
-    config = copy.deepcopy(config)
+    # Data and BN paths may be relative to the repository or recorded by another checkout.
+    config = resolve_config_paths(copy.deepcopy(config))
     task = config.get("task")
     if task not in KNOWN_TASKS:
         raise ValidationError(f"未知任务 {task}")
@@ -193,6 +216,30 @@ def validate_single(args: dict, repo_root: Path) -> dict:
         _check_conv_backend(out["conv_backend"], out.get("device"), out.get("dtype"))
     if out.get("epochs", 1) < 1 or out.get("batch", 1) < 1:
         raise ValidationError("epochs 与 batch 必须为正整数")
+    distributed = out.setdefault("distributed", "none")
+    if distributed not in TRAINING_PARALLEL:
+        raise ValidationError("distributed 只能是 none、ps 或 ring")
+    if distributed == "none":
+        for key in ("workers", "transport", "sync_timeout"):
+            out.pop(key, None)
+    else:
+        if out.get("transport") in (None, "none"):
+            out["transport"] = "grpc_proto"
+        if out["transport"] not in TRAINING_PARALLEL[distributed]:
+            raise ValidationError(f"{distributed} 只支持 {'、'.join(TRAINING_PARALLEL[distributed])} 通信")
+        workers = out.setdefault("workers", 2)
+        if not 1 <= workers <= MAX_WORKERS:
+            raise ValidationError(f"Worker 数必须在 1 到 {MAX_WORKERS} 之间")
+        if out.get("batch", 1) < workers:
+            raise ValidationError(f"全局 batch（{out.get('batch', 1)}）必须不小于 Worker 数（{workers}）")
+        if out.get("dtype", "float32") != "float32":
+            raise ValidationError("分布式训练按 FP32 交换梯度，只支持 float32")
+        # ResNet-18 has ~11.2M values at width 64 (they scale with width squared); Socket JSON spells each
+        # with ~18 bytes and keeps the 64 MB frame limit, which holds up to width 32.
+        if out["transport"] == "socket_json" and out.get("base_width", 64) > 32:
+            raise ValidationError("Socket JSON 单条消息有 64 MB 上限，只能训练 ResNet 宽度不超过 32 的模型；请改用 gRPC")
+    if out.get("base_width", 64) < 1:
+        raise ValidationError("base_width 必须为正整数")
     if not (Path(repo_root) / "mycar" / "data").is_dir():
         raise ValidationError("数据目录 mycar/data 不存在")
     return out

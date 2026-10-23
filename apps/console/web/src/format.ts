@@ -30,9 +30,11 @@ export const TRANSPORT_TEXT: Record<string, string> = {
   grpc_proto: 'gRPC',
 }
 
+// single = apps.train (the formal training entry, one process or PS / Ring workers); distributed = the measured
+// PS / Ring experiments of benchmark.distributed_experiment.
 export const KIND_TEXT: Record<string, string> = {
-  distributed: '分布式',
-  single: '单进程',
+  distributed: '分布式实验',
+  single: '正式训练',
   tensorboard: 'TensorBoard',
 }
 

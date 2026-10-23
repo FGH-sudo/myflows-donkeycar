@@ -10,6 +10,7 @@ import sys
 
 import numpy as np
 
+from benchmark.config_paths import REPO_ROOT, resolve_config_paths
 from benchmark.distributed_compare import MATRIX
 from MyFlows.distributed.measurement import write_json
 
@@ -71,7 +72,7 @@ def base_config(task):
         global_batch=128 if task=='mnist_mlp' else 32,epochs=10 if task=='mnist_mlp' else 20,
         steps=100000,timeout=180.,profile=True,evaluate=True,final_test=True,
         monitor=True,poll_interval_s=.001,collect_history=False,
-        prepared_dir=str(Path('.codex/distributed-data-v1','donkey_cnn' if task=='donkey_resnet18' else task).resolve()))
+        prepared_dir=str(REPO_ROOT/'.codex'/'distributed-data-v1'/('donkey_cnn' if task=='donkey_resnet18' else task)))
     if task == 'donkey_resnet18':
         config.update(base_width=16, resnet_stem='imagenet', bn_mode='frozen', global_batch=128,
                       eval_batch=32, epochs=5, learning_rate=.0003, save_epoch_checkpoints=True,
@@ -84,7 +85,7 @@ def task_config(root, task):
     frozen = root/'frozen_task_configs.json'
     if frozen.exists():
         config.update(json.loads(frozen.read_text(encoding='utf-8')).get(task, {}))
-    return config
+    return resolve_config_paths(config)
 
 
 def merge_checks(path, rows, key='run'):

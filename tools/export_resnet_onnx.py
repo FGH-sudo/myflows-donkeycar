@@ -42,6 +42,7 @@ def export_resnet18_onnx(
     stem: str = "cifar",
     device: str = "auto",
     graph_opt: bool = True,
+    base_width: int = 64,
 ) -> Path:
     """Load a ResNet-18 checkpoint and export an ONNX graph for deployment."""
     checkpoint_path = _checkpoint_stem(_resolve_repo_path(checkpoint).resolve())
@@ -70,7 +71,7 @@ def export_resnet18_onnx(
         in_channels=3,
         output_dim=2,
         stem=stem,
-        base_width=64,
+        base_width=int(base_width),
         name="resnet18_donkey",
     )
     logits = model(x_var)
@@ -164,6 +165,7 @@ def main() -> None:
     parser.add_argument("--image-w", type=int, default=160, help="Input image width.")
     parser.add_argument("--image-h", type=int, default=120, help="Input image height.")
     parser.add_argument("--stem", choices=("cifar", "imagenet"), default="cifar")
+    parser.add_argument("--base-width", type=int, default=64, help="ResNet-18 first-stage width used in training.")
     parser.add_argument("--device", choices=("auto", "cpu", "cuda"), default="auto")
     parser.add_argument("--no-graph-opt", action="store_true", help="Disable graph optimization during export.")
     args = parser.parse_args()
@@ -189,6 +191,7 @@ def main() -> None:
                 stem=args.stem,
                 device=args.device,
                 graph_opt=not args.no_graph_opt,
+                base_width=args.base_width,
             )
     except (FileNotFoundError, ValueError) as exc:
         raise SystemExit(str(exc)) from exc
