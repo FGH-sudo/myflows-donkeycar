@@ -8,6 +8,7 @@ import time
 
 import numpy as np
 
+from benchmark.nsight import ENVIRONMENT
 from benchmark.stage1_common import RunArtifacts, array_hash, command, error_metrics
 from MyFlows.core.device import set_device, xp, asnumpy
 from MyFlows.core.node import Variable
@@ -51,14 +52,18 @@ def main():
         if os.name == "nt":
             suffix = ".exe"
             roots = [Path("C:/Program Files/NVIDIA Corporation"),
-                     Path("C:/Program Files/NVIDIA GPU Computing Toolkit"),
-                     Path("D:/NVIDIA"), Path("D:/CUDA")]
+                     Path("C:/Program Files/NVIDIA GPU Computing Toolkit")]
         else:
             suffix = ""
             roots = [Path("/opt/nvidia"), *sorted(Path("/usr/local").glob("cuda*"))]
+        # Tools installed elsewhere are named by the environment (CUDA_PATH; MF_NSYS / MF_NCU as in
+        # benchmark/nsight.py), not by machine-specific search roots.
+        if os.environ.get("CUDA_PATH"):
+            roots.append(Path(os.environ["CUDA_PATH"]))
         found = {}
         for name in ("nvcc", "nsys", "ncu"):
-            paths = [shutil.which(name)]
+            configured = os.environ.get(ENVIRONMENT[name]) if name in ENVIRONMENT else None
+            paths = [shutil.which(name), configured if configured and Path(configured).is_file() else None]
             for root in roots:
                 if root.exists():
                     paths.extend(str(p) for p in root.rglob(name + suffix) if p.is_file())

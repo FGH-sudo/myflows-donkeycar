@@ -132,8 +132,8 @@ Systems 的 P1 dX 平均耗时从 **608.337 us** 降到 **84.661 us**，约 7.19
 
 本机最初没有可用 Nsight。使用 NVIDIA 签名验证为 Valid 的官方 MSI 做便携目录解包，未改动全局工具安装。Windows 长路径导致两次 MSI 管理解包失败，改用短根路径后成功：
 
-- Systems：`D:\ns1s\ProgramFiles64Folder\NVIDIA Corporation\Nsight Systems 2026.4.1\target-windows-x64\nsys.exe`，版本 2026.4.1.191。
-- Compute：`D:\ns1c\ProgramFiles64Folder\NVIDIA Corporation\Nsight Compute 2026.2.1\target\windows-desktop-win7-x64\ncu.exe`，版本 2026.2.1.0。
+- Systems：`<短根目录>\ProgramFiles64Folder\NVIDIA Corporation\Nsight Systems 2026.4.1\target-windows-x64\nsys.exe`，版本 2026.4.1.191。
+- Compute：`<短根目录>\ProgramFiles64Folder\NVIDIA Corporation\Nsight Compute 2026.2.1\target\windows-desktop-win7-x64\ncu.exe`，版本 2026.2.1.0。
 
 Compute 首次采集出现 `ERR_NVGPUCTRPERM`。用户在 NVIDIA 控制面板允许所有用户访问 GPU 性能计数器后，P0/P1 均实际采集通过，该项当前不再阻塞。早期 `ncu-P0-001` 仅 workload 成功，不能当作有效 Compute 报告；最终包使用经过采集器验证的两份报告。
 
@@ -191,11 +191,11 @@ Windows、Python 3.11.7；RTX 4060 Laptop GPU 8188 MiB、驱动 591.74、compute
 .\.venv\Scripts\python.exe -X utf8 -m benchmark.ps_demo --workers 2 --steps 2 --fault crash --out-dir docs/experiments/semester_2026_fall/stage1/my-fault-001
 ```
 
-Nsight 命令使用本机已验证路径；其他机器须替换 `--tool-path`。将 `--case P1` 改为 P0 可采小规模；Systems 的 `--backend cupy` 可采旧实现。
+nsys / ncu 按 `--tool-path`、环境变量 `MF_NSYS` / `MF_NCU`、PATH、默认安装目录的顺序查找（`benchmark/nsight.py`）；工具解包在其他位置时，用 `--tool-path` 或这两个环境变量指定。将 `--case P1` 改为 P0 可采小规模；Systems 的 `--backend cupy` 可采旧实现。
 
 ```powershell
-.\.venv\Scripts\python.exe -X utf8 -m benchmark.profile_cuda --tool nsys --tool-path 'D:/ns1s/ProgramFiles64Folder/NVIDIA Corporation/Nsight Systems 2026.4.1/target-windows-x64/nsys.exe' --case P1 --backend cuda_native_cublas --out-dir docs/experiments/semester_2026_fall/stage1/my-nsys-001
-.\.venv\Scripts\python.exe -X utf8 -m benchmark.profile_cuda --tool ncu --tool-path 'D:/ns1c/ProgramFiles64Folder/NVIDIA Corporation/Nsight Compute 2026.2.1/target/windows-desktop-win7-x64/ncu.exe' --case P1 --out-dir docs/experiments/semester_2026_fall/stage1/my-ncu-001
+.\.venv\Scripts\python.exe -X utf8 -m benchmark.profile_cuda --tool nsys --case P1 --backend cuda_native_cublas --out-dir docs/experiments/semester_2026_fall/stage1/my-nsys-001
+.\.venv\Scripts\python.exe -X utf8 -m benchmark.profile_cuda --tool ncu --case P1 --out-dir docs/experiments/semester_2026_fall/stage1/my-ncu-001
 # 若另行准备完整原始 run 目录，可重建图表；当前精简交付已直接保留中文图表。
 .\.venv\Scripts\python.exe -X utf8 docs/experiments/semester_2026_fall/stage1/analysis/generate_evidence.py --runs-dir docs/experiments/semester_2026_fall/stage1 --out-dir docs/experiments/semester_2026_fall/stage1/my-analysis-001
 ```

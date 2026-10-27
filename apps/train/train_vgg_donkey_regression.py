@@ -4,7 +4,7 @@
 MyFlows VGG-11 在 Donkey 道路图像上做转向角和油门回归。
 
 标签：从 DonkeyCar catalog 或文件名解析出 [angle, throttle]。
-用法（项目根目录 d:\\DL\\testmyflow）:
+用法（在项目根目录下运行）:
   python -m apps.train.train_vgg_donkey_regression --data mycar/data --epochs 10 --batch 2 \\
       --max-samples 0 --augment --device auto --export-onnx
 """

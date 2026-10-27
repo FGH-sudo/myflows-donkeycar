@@ -7,7 +7,7 @@
 - catalog 缺少 throttle 或文件名模式下，`throttle` 固定为 `--fixed-throttle`（默认 0.5）
 - 可单进程训练，也可用 `--distributed ps|ring` 在本机多进程数据并行训练
 
-用法（在项目根目录 d:\\DL\\testmyflow 下）:
+用法（在项目根目录下运行）:
   # 试跑
   python -m apps.train.train_myflows_donkey --max-samples 200 --epochs 1 --device auto
 

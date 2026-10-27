@@ -2,7 +2,7 @@
 
 Archived configs (frozen_task_configs.json, candidate_config.json) store data and BN statistics
 paths relative to the repository root. Older archives recorded absolute Windows paths of one
-checkout (D:\\DL\\testmyflow\\.codex\\...); those are re-rooted onto the current checkout when they
+checkout (``<checkout>\\.codex\\...``); those are re-rooted onto the current checkout when they
 do not exist here, so the same archive works from another clone, from WSL or on Linux.
 """
 

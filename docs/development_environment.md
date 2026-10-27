@@ -35,11 +35,11 @@ npm run dev     # 开发模式，http://127.0.0.1:5173，/api 代理到 8790（�
 npm run lint    # oxlint
 ```
 
-`.venv` 使用 `include-system-site-packages = false`，不会读取全局 Python 的第三方包。PyTorch 使用项目外的本地 wheel 安装，原因是该 wheel 体积较大，不适合提交到仓库；重建时先同步锁文件，再执行：
+`.venv` 使用 `include-system-site-packages = false`，不会读取全局 Python 的第三方包。PyTorch 使用项目外的本地 wheel 安装，原因是该 wheel 体积较大，不适合提交到仓库；重建时先同步锁文件，再执行（`<wheel 所在目录>` 换成本机存放该 wheel 的目录）：
 
 ```powershell
 uv pip install --python .venv\Scripts\python.exe `
-  'D:\i-predictor\datasets\raw\torch-2.11.0+cu128-cp311-cp311-win_amd64.whl'
+  '<wheel 所在目录>\torch-2.11.0+cu128-cp311-cp311-win_amd64.whl'
 ```
 
 `.venv-system-site/` 是继承全局 Python 3.11 第三方包的旧环境，不参与统一测试。onnxruntime 与 donkeycar 已加入 `.venv`（2026-10-21 在 `.venv` 中实测 ONNX 评估、FastAPI/gRPC 推理、INT8 量化和驾驶 pilot 推理正常，未启动模拟器窗口），这些功能不再依赖该旧环境。

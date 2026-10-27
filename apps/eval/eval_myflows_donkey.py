@@ -6,7 +6,7 @@
 - angle 符号正确率（用于判断“方向反了”的问题）
 - 预测幅度分布（用于判断“拐弯幅度太小”）
 
-使用方式（在项目根目录 D:\\DL\\testmyflow）：
+使用方式（在项目根目录下运行）：
   # 走 MyFlows 图推理（GPU=CUDA+CuPy）；checkpoint 可为 .onnx 或 .json/.npz 基名
   python -m apps.eval.eval_myflows_donkey --checkpoint mycar/models/myflow_resnet18_best \\
       --max-samples 2000 --batch 4 --device auto
