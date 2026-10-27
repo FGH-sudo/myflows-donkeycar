@@ -12,6 +12,8 @@ service ParameterService {
   rpc InitialStateApplied(PsRequest) returns (PsResponse);
   rpc UpdateApplied(PsRequest) returns (PsResponse);
   rpc Stop(PsRequest) returns (PsResponse);
+  // Sums small per-rank tensors under reduce_key once every rank sent them (validation sums).
+  rpc Reduce(PsRequest) returns (PsResponse);
 }
 
 message PsRequest {
@@ -33,6 +35,9 @@ message PsRequest {
   string digest = 16;
   string parameter_hash = 17;
   repeated TensorBlob tensors = 18;
+  // UpdateApplied: this rank asks the run to stop after this step (training stop file).
+  bool stop_requested = 19;
+  string reduce_key = 20;
 }
 
 message PsResponse {
@@ -58,4 +63,6 @@ message PsResponse {
   OptimizerMeta optimizer = 20;
   repeated TensorBlob parameters = 21;
   int32 global_step = 22;
+  // UpdateApplied once the round committed: some rank asked to stop after this step.
+  bool stop = 23;
 }

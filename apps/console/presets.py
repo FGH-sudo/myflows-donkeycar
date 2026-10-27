@@ -26,17 +26,59 @@ DISTRIBUTED_KEYS = {
     "bn_statistics", "heartbeat_interval_s", "heartbeat_timeout_s", "poll_interval_s", "collect_history",
     "numerical_snapshots", "conv_backend", "image_h", "image_w", "hidden", "data_dir", "record_local_gradients",
 }
+# Arguments of apps.train.train_myflows_donkey, the formal training entry; distributed / workers / transport run
+# the same loop as PS or Ring AllReduce data parallelism.
 SINGLE_ARGS = {
     "max_samples": int, "epochs": int, "batch": int, "lr": float, "device": str, "dtype": str, "stem": str,
     "augment": bool, "graph_opt": bool, "checkpoint_every": int, "tb_log_interval": int, "weight_decay": float,
     "dropout": float, "early_stopping": bool, "patience": int, "val_size": int, "test_size": int,
-    "sample_seed": int, "split_seed": int, "num_workers": int, "no_tensorboard": bool,
+    "sample_seed": int, "split_seed": int, "num_workers": int, "no_tensorboard": bool, "conv_backend": str,
+    "distributed": str, "workers": int, "transport": str, "sync_timeout": float, "base_width": int, "seed": int,
+    "state_every": int, "keep_states": int, "resume_state": str,
+    "export_onnx": bool, "split_file": str, "phase_timing_every": int,
+    "arch": str, "pretrained": str, "freeze_stages": int, "image_size": str, "input_norm": str,
 }
+TRANSFER_ARCHS = ("resnet18", "mobilenet_v2", "alexnet")
+MAX_FREEZE_STAGES = 5
+# Parallel modes of the formal training entry: distributed value -> transports, as in apps.train.
+TRAINING_PARALLEL = {"none": ("none",), "ps": ("grpc_proto", "socket_json"), "ring": ("grpc_proto",)}
 MAX_WORKERS = 8
+# Conv/pool backends of the donkey_* tasks and apps.train: backend -> (device, label, description). The
+# two native CUDA backends differ only in the GEMM engine; register-tiled is the default on CUDA.
+CONV_BACKENDS = {
+    "cuda_native_register": ("cuda", "原生 · 寄存器分块", "原生 CUDA 算子，GEMM 用第 19 讲的寄存器分块 kernel"),
+    "cuda_native_cublas": ("cuda", "原生 · cuBLAS", "原生 CUDA 算子，GEMM 调用 cuBLAS"),
+    "cupy": ("cuda", "CuPy", "CuPy 数组实现的 im2col 卷积"),
+    "numpy": ("cpu", "NumPy", "CPU 上的 NumPy 实现"),
+}
+DEFAULT_CONV_BACKEND = {"cuda": "cuda_native_register", "cpu": "numpy"}
 
 
 class ValidationError(ValueError):
     pass
+
+
+def conv_backends() -> list[dict]:
+    return [{"value": value, "device": device, "label": label, "description": description,
+             "default": DEFAULT_CONV_BACKEND[device] == value}
+            for value, (device, label, description) in CONV_BACKENDS.items()]
+
+
+def native_library() -> dict:
+    """State of the native CUDA library. Jobs with a native backend build a missing or stale library
+    themselves before training, so the form only reports it (and warns when CMake is missing)."""
+    from MyFlows.ops.cuda_native.native import library_status
+
+    return library_status()
+
+
+def _check_conv_backend(backend, device: str | None, dtype: str | None) -> None:
+    if backend not in CONV_BACKENDS:
+        raise ValidationError(f"conv_backend 只能是 {', '.join(CONV_BACKENDS)}")
+    if device in ("cpu", "cuda") and CONV_BACKENDS[backend][0] != device:
+        raise ValidationError(f"conv_backend={backend} 不能用于 device={device}")
+    if dtype == "float64" and backend.startswith("cuda_native"):
+        raise ValidationError("原生 CUDA 后端只支持 float32")
 
 
 def modes() -> list[dict]:
@@ -45,9 +87,10 @@ def modes() -> list[dict]:
 
 
 def _task_config(archive_root: Path | None, task: str) -> dict:
+    from benchmark.config_paths import resolve_config_paths
     from benchmark.distributed_suite import base_config, task_config
 
-    config = task_config(archive_root, task) if archive_root else base_config(task)
+    config = task_config(archive_root, task) if archive_root else resolve_config_paths(base_config(task))
     if task == "synthetic":
         config.pop("prepared_dir", None)
     return config
@@ -86,26 +129,35 @@ def distributed_presets(repo_root: Path, archive_root: Path | None) -> list[dict
 def single_presets(repo_root: Path) -> list[dict]:
     data_ready = (Path(repo_root) / "mycar" / "data" / "images").exists()
     hint = None if data_ready else "未找到 mycar/data/images"
+    base = {"lr": 0.001, "device": "auto", "dtype": "float32", "conv_backend": "auto", "distributed": "none"}
+
+    def preset(pid, label, description, args):
+        return {"id": pid, "type": "single", "task": "donkey_resnet18_single", "label": label,
+                "description": description, "args": {**base, **args}, "data_ready": data_ready, "data_hint": hint}
+
     return [
-        {"id": "single-resnet18-smoke", "type": "single", "task": "donkey_resnet18_single",
-         "label": "单进程 ResNet18 小样本（200 张）", "description": "apps.train 主训练入口，200 个样本、1 个 epoch。",
-         "args": {"max_samples": 200, "epochs": 1, "batch": 2, "lr": 0.001, "device": "auto", "dtype": "float32",
-                  "checkpoint_every": 0, "tb_log_interval": 5}, "data_ready": data_ready, "data_hint": hint},
-        {"id": "single-resnet18-1k", "type": "single", "task": "donkey_resnet18_single",
-         "label": "单进程 ResNet18（1000 张 × 2 epoch）", "description": "带验证集的短训练。",
-         "args": {"max_samples": 1000, "epochs": 2, "batch": 4, "lr": 0.001, "device": "auto", "dtype": "float32",
-                  "val_size": 100, "checkpoint_every": 0, "tb_log_interval": 10}, "data_ready": data_ready,
-         "data_hint": hint},
+        preset("single-resnet18-smoke", "ResNet18 小样本（200 张）", "单进程，200 个样本、1 个 epoch。",
+               {"max_samples": 200, "epochs": 1, "batch": 2, "checkpoint_every": 0, "tb_log_interval": 5}),
+        preset("single-resnet18-1k", "ResNet18（1000 张 × 2 epoch）", "单进程，带验证集的短训练。",
+               {"max_samples": 1000, "epochs": 2, "batch": 4, "val_size": 100, "checkpoint_every": 0,
+                "tb_log_interval": 10}),
+        preset("train-resnet18-ring", "ResNet18 数据并行（Ring · 2 Worker）",
+               "同一个训练入口拆成 2 个 Worker，梯度经 Ring AllReduce 平均；断点与 ONNX 和单进程格式相同。",
+               {"max_samples": 1000, "epochs": 2, "batch": 8, "val_size": 100, "checkpoint_every": 0,
+                "tb_log_interval": 10, "distributed": "ring", "workers": 2, "transport": "grpc_proto",
+                "export_onnx": True}),
     ]
 
 
 def validate_distributed(config: dict) -> dict:
+    from benchmark.config_paths import resolve_config_paths
     from MyFlows.distributed.launcher import normalize_config
 
     unknown = set(config) - DISTRIBUTED_KEYS
     if unknown:
         raise ValidationError(f"不支持的配置项：{', '.join(sorted(unknown))}")
-    config = copy.deepcopy(config)
+    # Data and BN paths may be relative to the repository or recorded by another checkout.
+    config = resolve_config_paths(copy.deepcopy(config))
     task = config.get("task")
     if task not in KNOWN_TASKS:
         raise ValidationError(f"未知任务 {task}")
@@ -123,6 +175,8 @@ def validate_distributed(config: dict) -> dict:
     config["train_workers"] = workers
     if config.get("device") not in ("cpu", "cuda"):
         raise ValidationError("device 只能是 cpu 或 cuda")
+    if config.get("conv_backend") not in (None, ""):
+        _check_conv_backend(config["conv_backend"], config["device"], None)
     if config.get("optimizer", "mbgd") not in ("mbgd", "adam"):
         raise ValidationError("optimizer 只能是 mbgd 或 adam")
     if float(config.get("learning_rate", 0.01)) <= 0:
@@ -162,11 +216,93 @@ def validate_single(args: dict, repo_root: Path) -> dict:
         raise ValidationError("device 只能是 auto、cpu 或 cuda")
     if out.get("dtype", "float32") not in ("float32", "float64"):
         raise ValidationError("dtype 只能是 float32 或 float64")
+    if out.get("conv_backend", "auto") != "auto":
+        _check_conv_backend(out["conv_backend"], out.get("device"), out.get("dtype"))
     if out.get("epochs", 1) < 1 or out.get("batch", 1) < 1:
         raise ValidationError("epochs 与 batch 必须为正整数")
+    distributed = out.setdefault("distributed", "none")
+    if distributed not in TRAINING_PARALLEL:
+        raise ValidationError("distributed 只能是 none、ps 或 ring")
+    if distributed == "none":
+        for key in ("workers", "transport", "sync_timeout"):
+            out.pop(key, None)
+    else:
+        if out.get("transport") in (None, "none"):
+            out["transport"] = "grpc_proto"
+        if out["transport"] not in TRAINING_PARALLEL[distributed]:
+            raise ValidationError(f"{distributed} 只支持 {'、'.join(TRAINING_PARALLEL[distributed])} 通信")
+        workers = out.setdefault("workers", 2)
+        if not 1 <= workers <= MAX_WORKERS:
+            raise ValidationError(f"Worker 数必须在 1 到 {MAX_WORKERS} 之间")
+        if out.get("batch", 1) < workers:
+            raise ValidationError(f"全局 batch（{out.get('batch', 1)}）必须不小于 Worker 数（{workers}）")
+        if out.get("dtype", "float32") != "float32":
+            raise ValidationError("分布式训练按 FP32 交换梯度，只支持 float32")
+        # ResNet-18 has ~11.2M values at width 64 (they scale with width squared); Socket JSON spells each
+        # with ~18 bytes and keeps the 64 MB frame limit, which holds up to width 32.
+        if out["transport"] == "socket_json" and out.get("base_width", 64) > 32:
+            raise ValidationError("Socket JSON 单条消息有 64 MB 上限，只能训练 ResNet 宽度不超过 32 的模型；请改用 gRPC")
+    if out.get("base_width", 64) < 1:
+        raise ValidationError("base_width 必须为正整数")
+    _check_transfer(out, Path(repo_root))
+    if out.get("num_workers", 0) < 0:
+        raise ValidationError("num_workers 不能为负数")
+    if out.get("lr", 1e-3) <= 0:
+        raise ValidationError("lr 必须为正数")
+    if out.get("state_every", 0) < 0 or out.get("keep_states", 1) < 1:
+        raise ValidationError("state_every 不能为负数，keep_states 至少为 1")
+    if (out.get("state_every") or out.get("resume_state")) and out.get("distributed", "none") != "none":
+        raise ValidationError("TrainingState（state_every / resume_state）只用于单进程训练")
+    if out.get("resume_state"):
+        state = Path(out["resume_state"])
+        state = state if state.is_absolute() else Path(repo_root) / state
+        if not (state / "manifest.json").is_file():
+            raise ValidationError(f"TrainingState 不存在或不完整：{out['resume_state']}")
+    if "split_file" in out:
+        split = Path(out["split_file"])
+        split = split if split.is_absolute() else Path(repo_root) / split
+        if not split.is_file():
+            raise ValidationError(f"划分文件不存在：{out['split_file']}")
     if not (Path(repo_root) / "mycar" / "data").is_dir():
         raise ValidationError("数据目录 mycar/data 不存在")
     return out
+
+
+def pretrained_path(arch: str, pretrained: str, repo_root: Path) -> Path:
+    """--pretrained 的文件：imagenet = runs/pretrained/converted/<arch>.npz，否则是（相对仓库根的）路径。"""
+    if pretrained == "imagenet":
+        return Path(repo_root) / "runs" / "pretrained" / "converted" / f"{arch}.npz"
+    path = Path(pretrained)
+    return path if path.is_absolute() else Path(repo_root) / path
+
+
+def _check_transfer(out: dict, repo_root: Path) -> None:
+    """迁移训练参数（E2）：结构、预训练权重是否已转换、冻结阶段数与输入尺寸。"""
+    arch = out.get("arch", "resnet18")
+    if arch not in TRANSFER_ARCHS:
+        raise ValidationError(f"arch 只能是 {'、'.join(TRANSFER_ARCHS)}")
+    pretrained = out.get("pretrained")
+    if pretrained:
+        path = pretrained_path(arch, pretrained, repo_root)
+        if not path.is_file():
+            raise ValidationError(f"预训练权重不存在：{path}（先运行 tools/convert_torchvision_weights.py）")
+    freeze = out.get("freeze_stages", 0)
+    if not 0 <= freeze <= MAX_FREEZE_STAGES:
+        raise ValidationError(f"freeze_stages 必须在 0 到 {MAX_FREEZE_STAGES} 之间")
+    if freeze and not pretrained:
+        raise ValidationError("freeze_stages 需要 pretrained")
+    if out.get("input_norm", "auto") not in ("auto", "none", "imagenet"):
+        raise ValidationError("input_norm 只能是 auto、none 或 imagenet")
+    if (arch != "resnet18" or pretrained) and out.get("distributed", "none") != "none":
+        raise ValidationError("迁移训练（arch / pretrained）目前只支持单进程")
+    size = out.get("image_size")
+    if size:
+        try:
+            h, w = (int(v) for v in str(size).lower().split("x"))
+        except ValueError:
+            raise ValidationError(f"image_size 应为 HxW，例如 224x224：{size}") from None
+        if h < 32 or w < 32:
+            raise ValidationError("image_size 的高和宽至少为 32")
 
 
 def single_cli_args(args: dict) -> list[str]:
@@ -179,3 +315,31 @@ def single_cli_args(args: dict) -> list[str]:
         else:
             cli += [flag, str(value)]
     return cli
+
+
+def single_label(args: dict) -> str:
+    parallel = ("单进程" if args.get("distributed", "none") == "none" else
+                f"{MODE_LABELS.get((args['distributed'], args['transport']), args['distributed'])}"
+                f" · {args['workers']}w")
+    return f"ResNet18 · {parallel} · {args.get('max_samples') or '全部'} 样本"
+
+
+TRAIN_MODULE = "apps.train.train_myflows_donkey"
+
+
+def single_job(args: dict, python: str, *, label: str | None = None, extra: dict | None = None,
+               module: str = TRAIN_MODULE) -> dict:
+    """Keyword arguments of ``JobManager.submit`` for a validated apps.train job.
+
+    The console's "正式训练" form and AutoPilot trials both go through here, so they share the argument
+    whitelist (``validate_single``), the output layout inside the run directory (log, TensorBoard, checkpoints,
+    stop file, config.json / metrics.jsonl / result.json) and per-job resource sampling. ``module`` is replaced
+    only by tests (a fake training entry with the same command line).
+    """
+    command = [python, "-m", module, *single_cli_args(args),
+               "--run-dir", "{run_dir}", "--log-dir", "{run_dir}", "--log-file", "{run_dir}/train.log",
+               "--logdir", "{run_dir}/tensorboard", "--out", "{run_dir}/checkpoints/checkpoint",
+               "--best-out", "{run_dir}/checkpoints/best", "--stop-file", "{run_dir}/STOP_TRAINING"]
+    return {"job_type": "single", "label": label or single_label(args), "task": "donkey_resnet18_single",
+            "command": command, "config": {"kind": "single", "task": "donkey_resnet18_single", "args": args},
+            "extra": {"record_resources": True, "stop_file": "{run_dir}/STOP_TRAINING", **(extra or {})}}

@@ -3,7 +3,7 @@
 - 版本：v0.2，阶段已完成；C0-C7 实现、逐项验收与实验包见阶段报告。
 - 日期：2026-09-05。
 - 最近汇报节点：第 4 次课，主题为分布式计算、GPU 编程实现及 CUDA Nsight。
-- 总体范围：[semester_spec.md](semester_spec.md)；现状证据：[semester_spec_review.md](semester_spec_review.md)。
+- 总体范围：[semester_spec.md](semester_spec.md)。
 - 课程依据：[课程 PDF](<深度学习框架-16 综合项目III.pdf>) 第 3、4、7、8、9 页。
 - 实施结果：[阶段报告与复现入口](experiments/semester_2026_fall/stage1/README.md)。本文件保留验收约定，报告记录实际 run_id、结果与限制。
 - 后续变化（2026-09-23 补记）：本阶段的 CPU Queue PS 已在分布式阶段被 GPU Worker 的同步 PS（Socket JSON / gRPC）替换，并新增 Ring AllReduce，见 [分布式 GPU Spec](stage1_distributed_gpu_spec.md)。下文“当前不展开 All-Reduce、GPU PS”与“小 CNN/PS 集成继续”等描述只代表第一阶段范围。

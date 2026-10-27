@@ -10,6 +10,7 @@ import traceback
 
 import psutil
 
+from benchmark.config_paths import relative_config_paths, resolve_config_paths
 from benchmark.distributed_suite import execute, numerical, state_checks, faults, train, performance
 from MyFlows.distributed.measurement import write_json
 
@@ -45,7 +46,7 @@ def main():
         candidate=root/'resnet_preflight/width-16-batch-128/candidate_config.json'
         if not candidate.exists():
             run(root,'benchmark.prepare_resnet_comparison','--root',str(root))
-        config=json.loads(candidate.read_text(encoding='utf-8'))
+        config=resolve_config_paths(json.loads(candidate.read_text(encoding='utf-8')))
         out,pilot=execute(root,'resnet_preflight/pilot-5epochs',dict(config,mode='single',transport='none',train_workers=1,final_test=False))
         initial=json.loads((out/'rank-0/initial.json').read_text(encoding='utf-8'))
         data=json.loads((out/'data_manifest.json').read_text(encoding='utf-8'))
@@ -54,12 +55,12 @@ def main():
             raise AssertionError(f'ResNet pilot quality not met; preserve {out} and diagnose before freezing')
         frozen=root/'frozen_task_configs.json'
         chosen=json.loads(frozen.read_text(encoding='utf-8')) if frozen.exists() else {}
-        chosen['donkey_resnet18']=config
+        chosen['donkey_resnet18']=relative_config_paths(config)
         write_json(frozen,chosen)
         write_json(root/'resnet_preflight/freeze_decision.json',{'pilot':str(out.relative_to(root)),
                    'train_loss':final['train']['loss'],'initial_train_loss':initial['train']['loss'],
                    'val_angle_mae':final['val']['angle_mae'],'constant_val_angle_mae':data['constant_val_angle_mae'],
-                   'test_set_used':False,'config':config})
+                   'test_set_used':False,'config':relative_config_paths(config)})
         print('FROZEN RESNET',final['val'],flush=True)
     if args.phase in ('validate','all'):
         run(root,'tools.run_tests','--scope','all')

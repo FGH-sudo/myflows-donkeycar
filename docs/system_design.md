@@ -1,6 +1,6 @@
 # 当前系统设计
 
-更新时间：2026-09-23。
+更新时间：2026-10-22。
 
 本文只说明仓库当前已经存在的系统。第一阶段已实现 CUDA C/C++ Conv/Pool 与 Nsight 实验入口；分布式阶段已按 [stage1_distributed_gpu_spec.md](stage1_distributed_gpu_spec.md) 实现 GPU Worker 的同步 PS（Socket JSON / gRPC）与 Ring AllReduce。训练控制台（第 8 节）已把运行记录、实时曲线、GPU 占用和任务启停集中到一个 Web 界面。AutoPilot Agent、完整 GPU 监控和预训练模型库继续按 [semester_spec.md](semester_spec.md) 推进。
 
@@ -27,7 +27,7 @@ flowchart LR
   onnx --> serve[gRPC / FastAPI]
   framework[MyFlows 计算图和算子] --> train
   framework --> eval
-  native[原生 CUDA DLL 与 cuBLAS] --> framework
+  native[原生 CUDA 库（Windows DLL / Linux .so）：寄存器分块 GEMM / cuBLAS] --> framework
   framework --> dist[PS 与 Ring 分布式训练]
   prepared[预处理数据 npy] --> dist
   dist --> archive[逐 rank 指标与资源采样归档]
@@ -89,22 +89,44 @@ PS 模式和 Ring 模式二选一；Ring 模式没有 PS 进程。所有进程�
 
 ## 6. 第一阶段新增能力
 
-- `Conv2D` / `MaxPool2d` 和对应 Op 接收 `backend=auto/numpy/cupy/cuda_native_cublas`；默认保留 NumPy/CuPy，显式原生 CUDA 路径严格验证 FP32、设备和配置。
-- `cuda_native_cublas` 由 C/C++ DLL 在当前 stream 上调度自写 im2col/col2im、max-pool kernel，并调用 cuBLAS 完成卷积 GEMM；底层返回局部梯度，Op 用 `+=` 合并。
-- 直接卷积、CUDA im2col 和自写 GEMM 仅作为历史失败基线保留在实验报告中，不再作为当前代码后端。
+- `Conv2D` / `MaxPool2d` 和对应 Op 接收 `backend=auto/numpy/cupy/cuda_native_register/cuda_native_cublas`；默认保留 NumPy/CuPy，显式原生 CUDA 路径严格验证 FP32、设备和配置。
+- 两个原生后端由 C/C++ 动态库（Windows 为 `native_cublas.dll`，Linux 为 `native_cublas.so`）在当前 stream 上调度自写 im2col/col2im、max-pool kernel，只在卷积 GEMM 的引擎上不同：`cuda_native_register` 用第 19 讲的寄存器分块 kernel（2026-10-22 起为训练入口与分布式任务的默认），`cuda_native_cublas` 调用 cuBLAS；底层返回局部梯度，Op 用 `+=` 合并。
+- 第一阶段的直接卷积、CUDA im2col 和自写 GEMM 仅作为历史失败基线保留在实验报告中。第 19 讲的寄存器分块 GEMM 是重新写的实现，现为原生卷积与 `Dense` 的默认 GEMM 引擎（见第 10 节）；课件的其余矩阵乘写法与补偿累加只作为对照实验，以及 `Linear` 的实验后端。
 - FP32 小 CNN 完成同初值 CuPy/CUDA C 训练对照；完整 ResNet 的精度和 ImageNet stem 兼容仍在后续范围。
 - `benchmark/cuda_ops.py`、`profile_cuda.py` 分别记录 CuPy/原生 CUDA 实验和真实 Nsight 报告；GPU Events、端到端 wall time、profile 计时分开。
 - 统一测试入口补齐函数式测试，训练 smoke 显式传 seed；DataLoader 预先分批并按序返回，避免 worker 调度改变尾批数量。
 
 ## 7. 分布式训练（2026-09-19 交付）
 
-- `MyFlows/distributed/launcher.py` 的 `run_training(**config)` 用 Windows spawn 启动进程。合法组合为 single/none、ps/socket_json、ps/grpc_proto、ring/grpc_proto；任务为 synthetic、mnist_mlp、donkey_cnn、donkey_resnet18。
+- `MyFlows/distributed/launcher.py` 的 `run_training(**config)` 用 spawn 方式启动进程（Windows 与 Linux 相同）。合法组合为 single/none、ps/socket_json、ps/grpc_proto、ring/grpc_proto；任务为 synthetic、mnist_mlp、donkey_cnn、donkey_resnet18。
 - PS 模式：1 个 CPU PS 进程分发初值、按样本数加权聚合并返回平均梯度；N 个 Worker 在 GPU 上前向、反向和本地 Adam/MBGD 更新，通过更新确认屏障保持一致。PS 不执行优化器更新。
 - Ring 模式：N 个对等 rank，每个 rank 运行 gRPC 服务并连接右邻居，完成 Split、N−1 轮 ScatterReduce 与 N−1 轮 AllGather；启动器另起元数据屏障，只传摘要，不传梯度。
 - 心跳、watchdog、限时等待、重复/陈旧消息拒绝和故障注入（crash、timeout、duplicate、retry、schema、heartbeat_loss、gather_crash）。
 - `benchmark/distributed_experiment.py` 是正式实验单元：写 config/manifest，运行训练，并在后台线程约 1 秒一次采样 nvidia-smi 与 psutil，写 `resources.jsonl`；各 rank 通过 `Recorder` 写 `rank-*/steps.jsonl`、`epochs.jsonl` 与状态快照；结束后汇总为 `results.json`、`epochs.csv`、`events.jsonl`。
 - `benchmark/distributed_suite.py` 与 `complete_course_experiments.py` 串行编排数值、状态、训练、性能、故障各阶段；`report_distributed.py` 生成对比表和图。
-- 所有时间戳使用 `time.perf_counter()`；Windows 上它是系统级计数器，不同进程的记录可以直接对齐。
+- 所有时间戳使用 `time.perf_counter()`；它在 Windows（QueryPerformanceCounter）和 Linux（CLOCK_MONOTONIC）上都是系统级计数器，不同进程的记录可以直接对齐。
+
+### 7.1 正式训练中的数据并行（2026-10-23）
+
+上面的 `run_training` 是测量用的实验框架：冻结的预处理数据、冻结 BN 统计量、逐步记录与故障注入。要训练能部署的模型，正式训练入口 `apps.train.train_myflows_donkey` 加上 `--distributed ps|ring --workers N` 即可，单进程和多 Worker 跑的是同一个训练循环 `train_rank`，同步部分由 `MyFlows/distributed/sync.py` 提供，复用同一套 PS 引擎、gRPC/Socket 传输与 Ring 分块交换。
+
+~~~mermaid
+flowchart LR
+    main["主进程 prepare<br/>索引、划分、初始状态"] --> run["SyncRun"]
+    run --> ps["PS 进程（ps 模式）<br/>或 Ring 元数据屏障（ring 模式）"]
+    run --> w0["rank 0：train_rank<br/>日志、TensorBoard、断点"]
+    run --> w1["rank 1..N-1：train_rank"]
+    w0 <--> ps
+    w1 <--> ps
+~~~
+
+- 初始状态：主进程在 CPU 上按同样的参数构建模型（续训时载入断点），把参数与 BN 统计量写成初始状态；PS 模式由 PS 分发，Ring 模式各 rank 读同一文件后用屏障核对摘要。
+- 数据：全局顺序与单进程的 `MultiprocessDataLoader(shuffle=True, seed=epoch)` 相同，最后一个不满的 batch 重复末样本补齐，再把每个全局 batch 依次切给各 Worker；`--batch` 是全局 batch。各 Worker 只读自己的图片。
+- 每步同步：每个 Worker 发送本分片的梯度（已含 L1/L2 正则项）、前向更新后的 BN 滑动统计量和 loss，按样本数加权平均后，所有 Worker 用同一个平均梯度做本地 Adam 更新，并把 BN 统计量设为平均值。BN 前向用各 Worker 本地 batch 的统计量（与 PyTorch DDP 不开 SyncBN 相同）。Ring 先乘以 FP32 的 n_i/N 再求和，与 PS 的算法一致：1 个 Worker 时与单进程逐位相同，2 个 Worker 时 PS 与 Ring 逐位相同。
+- 一致性：每步提交时比较参数、BN 统计量与 Adam 矩逐个 FP64 求和后的哈希，不同则整次运行失败；任一 Worker 退出、超时或心跳中断也会让整次运行失败。
+- 停止与续训：任何 Worker 看到停止文件都会在提交时投票，所有 Worker 在同一步停下，由 rank 0 保存断点。断点元数据记录 epoch、下一步、全局 step、本 epoch 已累计的 loss 与早停计数，`--resume` 从中间步继续；单进程断点格式相同，可以和多 Worker 互相续训。
+- 验证与最佳模型：验证集按 Worker 交错切分，各自累加逐样本 MSE 后经 `reduce` 求和；所有 Worker 得到同一个验证 loss，最佳模型与早停判断一致，由 rank 0 保存。ONNX 导出在主进程中进行。
+- 资源：所有 Worker 共享本机一张 GPU，每个 Worker 的 CuPy 显存池默认上限为启动时空闲显存的 90% 除以 Worker 数，超出时报显存不足；否则 Windows WDDM 驱动会把显存换到系统内存，训练看起来像卡住。Socket JSON 每条消息有 64 MB 上限，只能用于宽度不超过 32 的 ResNet。
 
 ## 8. 训练控制台（2026-09-23）
 
@@ -118,7 +140,7 @@ flowchart LR
     API --> Live["ResourceRecorder 实时 1 s"]
     Live --> Sampler["GpuSampler NVML / nvidia-smi"]
     Jobs -- "子进程" --> Dist["benchmark.distributed_experiment"]
-    Jobs -- "子进程" --> Single["apps.train.train_myflows_donkey"]
+    Jobs -- "子进程" --> Single["apps.train.train_myflows_donkey（单进程或 PS / Ring Worker）"]
     Jobs --> JobRec["每任务 ResourceRecorder 0.5 s"]
     Registry -- "增量读取" --> Files["rank-*/steps.jsonl、epochs.jsonl、metrics.jsonl、resources.jsonl、results.json"]
     Registry --> Archive["docs/experiments/.../run_index.json"]
@@ -128,16 +150,31 @@ flowchart LR
 - 数据来源：控制台任务目录 `runs/console/`、分布式正式归档（按 `run_index.json` 发现）和 TensorBoard 单进程日志。控制台只读这些文件，不改动训练进程。
 - 实时更新：前端先用 REST 取全量（降采样到 3000 点），再订阅 `/api/runs/{id}/stream`，服务端按游标每秒推送新增的 step、epoch 和资源行；运行结束时发送 `end` 事件。
 - 时间对齐：step、epoch、资源采样都用 `perf_counter`，以最早一条记录为原点，因此 loss 曲线、阶段耗时和 GPU 利用率可以放在同一时间轴上。
-- 任务：只接受框架支持的模式/传输组合与白名单参数；默认串行执行。分布式任务停止时发送 CTRL_BREAK，单进程任务写 `STOP_TRAINING` 让训练保存断点后退出；20 秒内未退出则结束整个进程树。控制台重启后按 PID 与创建时间重新接管仍在运行的任务。
-- Worker 视图：分布式运行按 rank 显示曲线、阶段耗时占比、最新 step 与梯度同步占比；各 rank 在 `prepare.json` 中记录 PID，控制台据此把 GPU 进程和进程内存对应到 rank。
+- 任务：只接受框架支持的模式/传输组合与白名单参数；默认串行执行。分布式实验停止时发送 CTRL_BREAK，正式训练（单进程或多 Worker）写 `STOP_TRAINING` 让训练在同一步保存断点后退出；20 秒内未退出则结束整个进程树。正式训练用到原生后端而原生库缺失时，任务启动后先自动编译，新建页面会提示这一点。控制台重启后按 PID 与创建时间重新接管仍在运行的任务。
+- Worker 视图：分布式实验按 rank 显示曲线、阶段耗时占比、最新 step 与梯度同步占比；各 rank 在 `prepare.json` 中记录 PID，控制台据此把 GPU 进程和进程内存对应到 rank。多 Worker 的正式训练也写 `rank-*/prepare.json` 与 `steps.jsonl`，拓扑页显示各 Worker 的 step 耗时与同步占比，曲线仍取 rank 0 的 `metrics.jsonl`。
 - 单进程训练：`TrainingDashboard` 在 `--run-dir` 下同时写 `metrics.jsonl`，与 TensorBoard 记录内容一致。
 
 ## 9. 当前限制
 
 - CUDA C 暂不支持 FP64、分组/空洞卷积和带 padding 的 Pool；这些高级卷积功能继续走原后端。当前原生路径限定 groups=1、dilation=1。
-- 分布式训练只支持单机回环；所有 Worker 共享一张 GPU，没有多 GPU、多机或 NCCL 实验，也不能按 Worker 指定设备。ResNet18 独立整批与分片轨迹的逐步梯度等价未通过。
+- 分布式训练只支持单机回环；所有 Worker 共享一张 GPU，没有多 GPU、多机或 NCCL 实验，也不能按 Worker 指定设备。分布式实验中 ResNet18 独立整批与分片轨迹的逐步梯度等价未通过。正式训练的多 Worker BN 用各 Worker 本地 batch 的统计量，没有 SyncBN。
 - 没有训练调优 AutoPilot Agent。
 - GPU 监控仍不完整：`MyFlows/monitoring` 已支持 NVML 多卡采样，并由控制台接入分布式与单进程任务，但 `distributed_experiment` 内部的采样仍是 nvidia-smi 且只读第一张卡，资源曲线也没有写入 TensorBoard。Windows WDDM 驱动下读不到单个进程的显存，只能显示整卡显存和各进程 RSS。
 - 没有预训练参数导入和冻结训练功能。
 - 当前跨框架性能测试的方法需要重做，旧结果不能直接用于本学期结论。
-- 主训练入口 `apps/train` 的完整 ResNet 仍未接入原生 CUDA 后端；通用模型状态与 checkpoint 精确恢复仍待后续完成。
+- 通用模型状态与 checkpoint 精确恢复仍待后续完成：`apps/train` 的断点已记录续训位置（epoch、step、本 epoch 累计 loss 与早停计数），但数据增强与 Dropout 的随机数状态不保存，续训后的增强序列与不中断时不同（`apps/train` 的完整 ResNet 已于 2026-10-22 接入原生 CUDA 后端，见第 10 节）。
+- GPU 上的端到端梯度误差由卷积 GEMM 的 float32 累加决定（ResNet18 单步梯度相对 FP64 的中位误差 3e-6–4e-6）。自写的寄存器分块 GEMM 是原生卷积与 `Dense` 的默认引擎，cuBLAS 可选：ResNet18 每步耗时两者相同，寄存器分块的梯度中位误差高约 5%，在窄输出的前向 GEMM 上误差最多为 cuBLAS 的 6.3 倍。补偿累加（kahan/dot2）只作为实验后端，没有接入卷积。
+- 计算图每步为所有节点分配并清零梯度，再以 `+=` 累加，比首次写入直接赋值多一次全张量读写。
+
+## 10. 数值精度与 CUDA 第 19 讲改进（2026-10-22）
+
+实测与修改前代码（上一提交的 git worktree，含其自己编译的 DLL）的逐项对照见 [CUDA 第 19 讲实验报告](experiments/semester_2026_fall/cuda_lecture19/README.md)。
+
+- 默认 dtype：层参数与 BN 统计量默认 float32（`MyFlows.set_default_dtype` 可改为 float64）。此前默认 float64，`apps/train` 的 ResNet18 因此整网以 FP64 计算。
+- 规约：BN 统计量、BN/卷积/Linear 的 bias 梯度、交叉熵的 log-sum-exp、MSE、全局平均池化与全局梯度范数都在 FP64 中按固定顺序累加，再舍入一次。BN 的均值以两个 float 的和保存，`x − mean` 按 `(x − hi) − lo` 计算，均值远大于标准差时 x̂ 不再丢失精度。
+- 融合 kernel（`MyFlows/ops/fused.py`）：BN 前向为一次统计 + 一次归一化，反向为一次规约 + 一次 dX，不再为每层保存 x̂；softmax、log-sum-exp 与逐行损失在一个 kernel 内完成，标签越界时该行损失为 NaN 而不在主机端同步检查；Adam 每个参数一次 kernel，CPU 回退与 GPU 逐位一致。
+- Adam 改为 Kingma & Ba 的标准形式（矩估计从 0 开始、偏差修正）。旧实现首步令 v = g、s = g² 后仍做修正，首步步长约为标准值的 0.32 倍，且 g₁² 在 s 中被放大 1000 倍、上千步才衰减；此前的实验结果均基于旧实现。
+- 原生库：卷积尾处理用 32×33 共享内存 tile 把 NHWC 行转成 NCHW，同时加 bias 与 ReLU/LeakyReLU；反向在同一 kernel 内做激活门控、dY 转置和 FP64 bias 部分和（warp shuffle）；输入 `requires_grad=False` 时跳过 dX 的 GEMM 与 col2im。
+- 训练入口：`apps/train` 按 `--dtype` 设置默认 dtype，`--conv-backend auto` 在 CUDA + float32 时选 `cuda_native_register`（`cuda_native_cublas` 可显式指定，控制台“新建训练”页同样提供这两项）；输入与标签不求梯度；全局梯度范数只在需要记录时计算；`train_step_ms` 改用 CUDA event，每步只在读回 loss 时同步一次。
+- 确定性：原生路径与 CuPy 的 col2im（改为 gather kernel，不再用原子加的 `add.at`）结果逐位可复现。
+- GEMM 引擎：第 19 讲的寄存器分块 kernel 推广为 NN/NT/TN 三种布局、五种 tile，输出小而 K 长时按 K 切分，再在 FP64 中归约（`native.gemm`）。`cuda_native_register` 后端用它做卷积与 `Dense` 的 GEMM，`cuda_native_cublas` 则调用 cuBLAS，两者的 ResNet18 每步耗时相同。Triton 扩展决定不做。

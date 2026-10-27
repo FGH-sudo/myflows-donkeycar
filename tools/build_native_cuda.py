@@ -1,36 +1,34 @@
-"""Build the user-space native CUDA/cuBLAS scheduler DLL with CMake/MSVC."""
+"""Build the native CUDA/cuBLAS scheduler library with CMake.
 
+The build itself lives in MyFlows/ops/cuda_native/build.py, which native.py also runs on first use
+when the library is missing or older than its sources. This script always rebuilds and streams
+CMake's output; --if-needed skips the build when the library is current.
+"""
+
+import argparse
+import importlib.util
 from pathlib import Path
-import subprocess
-import sys
-import shutil
-import os
-
 
 ROOT = Path(__file__).resolve().parents[1]
-SOURCE = ROOT / "MyFlows" / "ops" / "cuda_native" / "native_cublas.cpp"
-PROJECT = SOURCE.parent
-OUTPUT = ROOT / ".codex" / "native-cuda" / "native_cublas.dll"
-BUILD = ROOT / ".codex" / "native-cuda" / "build-msvc"
+# Load the build module by path: it only needs the standard library, unlike the MyFlows package.
+_spec = importlib.util.spec_from_file_location(
+    "myflows_native_build", ROOT / "MyFlows" / "ops" / "cuda_native" / "build.py")
+native_build = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(native_build)
 
 
-def main():
-    OUTPUT.parent.mkdir(parents=True, exist_ok=True)
-    cmake = shutil.which("cmake") or r"C:\Program Files\CMake\bin\cmake.exe"
-    generator = os.environ.get("MF_NATIVE_CMAKE_GENERATOR", "Visual Studio 17 2022")
-    configure = [cmake, "-S", str(PROJECT), "-B", str(BUILD), "-G", generator,
-                 "-A", "x64", f"-DCMAKE_RUNTIME_OUTPUT_DIRECTORY={OUTPUT.parent}"]
-    build = [cmake, "--build", str(BUILD), "--config", "Release", "--parallel"]
-    print("$", " ".join(configure), flush=True)
-    subprocess.run(configure, cwd=ROOT, check=True)
-    print("$", " ".join(build), flush=True)
-    subprocess.run(build, cwd=ROOT, check=True)
-    multi_config_output = OUTPUT.parent / "Release" / OUTPUT.name
-    if multi_config_output.exists():
-        shutil.copy2(multi_config_output, OUTPUT)
-    if not OUTPUT.exists():
-        raise FileNotFoundError(OUTPUT)
-    print(OUTPUT)
+def main(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--if-needed", action="store_true", help="build only when the library is missing or stale")
+    args = parser.parse_args(argv)
+    try:
+        if args.if_needed:
+            native_build.ensure_built()
+            print(native_build.OUTPUT)
+        else:
+            print(native_build.build())
+    except native_build.BuildError as exc:
+        raise SystemExit(f"native build failed: {exc}")
 
 
 if __name__ == "__main__":

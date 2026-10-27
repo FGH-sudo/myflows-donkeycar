@@ -7,6 +7,7 @@ import subprocess
 import sys
 
 from benchmark.distributed_suite import task_config
+from benchmark.nsight import find_tool
 from MyFlows.distributed.measurement import write_json
 
 
@@ -22,9 +23,9 @@ def main():
     ap.add_argument('--root',default='docs/experiments/semester_2026_fall/distributed_gpu/20260917')
     ap.add_argument('--tool',choices=('nsys','ncu'),default='nsys')
     ap.add_argument('--task',choices=('mnist_mlp','donkey_cnn','donkey_resnet18'),default='donkey_resnet18')
+    ap.add_argument('--tool-path',help='nsys/ncu executable; default: MF_NSYS/MF_NCU, PATH, then the newest install')
     args=ap.parse_args();root=Path(args.root).resolve()
-    executable=(Path('C:/Program Files/NVIDIA Corporation/Nsight Systems 2026.1.3/target-windows-x64/nsys.exe') if args.tool=='nsys'
-                else Path('C:/Program Files/NVIDIA Corporation/Nsight Compute 2026.2.1/target/windows-desktop-win7-x64/ncu.exe'))
+    executable=find_tool(args.tool,args.tool_path)
     summaries=[]
     for mode in ('ps','ring'):
         original=root/'profiles'/f'{args.task}-{args.tool}-{mode}'

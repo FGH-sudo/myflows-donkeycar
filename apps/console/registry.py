@@ -103,7 +103,8 @@ class RunData:
                 if self.tb is None:
                     self.tb = read_tensorboard(self.path)
                 return
-            if self.kind == "distributed":
+            if self.kind in ("distributed", "single"):
+                # Formal training with several workers writes the same rank-*/ records as the experiments.
                 self._discover_ranks()
                 for tail in (*self.rank_steps.values(), *self.rank_epochs.values()):
                     tail.poll()
@@ -114,8 +115,13 @@ class RunData:
     def ranks(self) -> list[int]:
         return sorted(self.rank_steps)
 
+    def series_ranks(self) -> list[int]:
+        """Ranks that have their own step series; a formal training run plots rank 0's metrics.jsonl only."""
+        return self.ranks() if self.kind == "distributed" else []
+
     def origin(self) -> float | None:
-        """perf_counter origin shared by steps and resources (system-wide clock on Windows)."""
+        """perf_counter origin shared by steps and resources (one host-wide clock: QueryPerformanceCounter on
+        Windows, CLOCK_MONOTONIC on Linux)."""
         candidates = []
         if self.resources.rows:
             candidates.append(self.resources.rows[0].get("monotonic_s"))
@@ -129,10 +135,9 @@ class RunData:
 
     def cursor(self) -> dict:
         cur = {"resources": len(self.resources.rows)}
-        for rank, tail in self.rank_steps.items():
-            cur[f"steps:{rank}"] = len(tail.rows)
-        for rank, tail in self.rank_epochs.items():
-            cur[f"epochs:{rank}"] = len(tail.rows)
+        for rank in self.series_ranks():
+            cur[f"steps:{rank}"] = len(self.rank_steps[rank].rows)
+            cur[f"epochs:{rank}"] = len(self.rank_epochs[rank].rows)
         if self.metrics is not None:
             cur["metrics"] = len(self.metrics.rows)
         return cur
@@ -291,8 +296,17 @@ class RunRegistry:
                 final["samples_per_s"] = epochs[-1].get("samples_per_s")
                 final["epoch_train_wall_s"] = epochs[-1].get("epoch_train_wall_s")
         elif kind == "single" and results:
-            final = {k: results.get(k) for k in ("last_mean_loss", "best_loss", "steps")}
+            final = {k: results.get(k) for k in ("last_mean_loss", "best_loss", "steps", "samples_per_s",
+                                                 "epoch_train_wall_s")}
         args = config.get("args") or {}
+        # apps.train records its parallel mode under "parallel"; the experiments use top-level mode/transport.
+        parallel = config.get("parallel") or {}
+        if kind == "single" and parallel.get("mode") not in (None, "none"):
+            mode, transport, workers = parallel["mode"], parallel.get("transport"), parallel.get("workers", 1)
+        else:
+            mode = config.get("mode", "single" if kind == "single" else None)
+            transport = config.get("transport", "none" if kind == "single" else None)
+            workers = config.get("train_workers", 1)
         started = job.get("started_unix_s") or config.get("started_unix_s") or _mtime(path / "config.json")
         finished = job.get("finished_unix_s") or _mtime(path / "results.json") or _mtime(path / "failure.json")
         if elapsed is None and started and finished and status not in ACTIVE_STATUSES:
@@ -300,9 +314,7 @@ class RunRegistry:
         return {
             "id": ref.run_id, "source": ref.source.key, "label": ref.label, "kind": kind,
             "task": config.get("task") or job.get("task"),
-            "mode": config.get("mode", "single" if kind == "single" else None),
-            "transport": config.get("transport", "none" if kind == "single" else None),
-            "workers": config.get("train_workers", 1),
+            "mode": mode, "transport": transport, "workers": workers,
             "status": status, "started_unix_s": started, "finished_unix_s": finished if status not in ACTIVE_STATUSES else None,
             "elapsed_s": elapsed, "device": config.get("device") or args.get("device"),
             "optimizer": config.get("optimizer"), "global_batch": config.get("global_batch") or args.get("batch"),
@@ -340,7 +352,7 @@ class RunRegistry:
     def detail(self, ref: RunRef) -> dict:
         data = self.data(ref)
         summary = self.summary(ref)
-        out = {"summary": summary, "kind": data.kind, "ranks": data.ranks(), "cursor": data.cursor()}
+        out = {"summary": summary, "kind": data.kind, "ranks": data.series_ranks(), "cursor": data.cursor()}
         if data.kind == "tensorboard":
             tb = data.tb or {}
             out.update(config=tb.get("config") or {}, epochs=tb.get("epochs", []), manifest=None,
@@ -363,10 +375,11 @@ class RunRegistry:
             out["results"] = None
         if data.kind == "distributed":
             out["epochs"] = (results or {}).get("epochs") or read_csv_rows(ref.path / "epochs.csv") or self._live_epochs(data)
-            out["rank_status"] = data.rank_status(active=summary.get("status") in ACTIVE_STATUSES)
-            out["rank_pids"] = data.rank_pids
         else:
             out["epochs"] = [r for r in (data.metrics.rows if data.metrics else []) if r.get("kind") == "epoch"]
+        if data.ranks():
+            out["rank_status"] = data.rank_status(active=summary.get("status") in ACTIVE_STATUSES)
+            out["rank_pids"] = data.rank_pids
         out["job"] = ref.job
         return out
 
@@ -439,7 +452,8 @@ class RunRegistry:
         cursor = cursor or {}
         origin = data.origin()
         out, new_cursor = {}, {}
-        for rank, tail in data.rank_epochs.items():
+        for rank in data.series_ranks():
+            tail = data.rank_epochs[rank]
             start = int(cursor.get(f"epochs:{rank}", 0))
             rows = [dict(r, t_start=(r["start_s"] - origin) if origin is not None else None,
                          t_end=(r["end_s"] - origin) if origin is not None else None) for r in tail.rows[start:]]

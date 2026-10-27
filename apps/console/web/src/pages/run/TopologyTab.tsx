@@ -208,7 +208,7 @@ export default function TopologyTab({ detail, rankStatus, live }: { detail: RunD
     [summary.mode, summary.transport, summary.workers, rankStatus, summary.device],
   )
 
-  if (detail.kind !== 'distributed') {
+  if (detail.kind !== 'distributed' && (summary.mode ?? 'single') === 'single') {
     return (
       <Panel>
         <EmptyState title="单进程训练没有通信拓扑" description="分布式运行（PS / Ring AllReduce）会在这里显示各 Rank 的连接与健康状态" />

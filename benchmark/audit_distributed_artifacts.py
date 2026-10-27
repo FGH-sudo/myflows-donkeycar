@@ -7,6 +7,7 @@ from pathlib import Path
 
 import numpy as np
 
+from benchmark.config_paths import repo_path
 from benchmark.distributed_compare import MATRIX
 from benchmark.distributed_experiment import read_jsonl
 from benchmark.distributed_suite import task_config, resolve_run
@@ -33,7 +34,7 @@ def main():
     assert code
     with np.load(base/'initial.npz', allow_pickle=False) as saved:
         initial = {key: saved[key].copy() for key in saved.files}
-    prepared = Path(load(base/'config.json')['prepared_dir'])
+    prepared = Path(repo_path(load(base/'config.json')['prepared_dir']))
     hashes = {name: hashlib.sha256((prepared/name).read_bytes()).hexdigest() for name in data['array_sha256']}
     assert hashes == data['array_sha256'], 'cached MNIST arrays changed'
     indices = {s: np.load(prepared/f'{s}_indices.npy') for s in ('train', 'val', 'test')}
@@ -105,7 +106,7 @@ def main():
                 if task == 'mnist_mlp':
                     assert final['val']['accuracy'] >= .95
                 else:
-                    assert set(final['backends']) == {'cuda_native_cublas'}
+                    assert set(final['backends']) in ({'cuda_native_register'}, {'cuda_native_cublas'})
                     with np.load(directory/'rank-0/final.npz') as saved:
                         for name in initial:
                             if name.startswith('buffer::'):

@@ -19,9 +19,12 @@ from fastapi import FastAPI
 from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 
+from apps.autopilot.service import AutoPilotService
 from MyFlows.monitoring import GpuSampler, ResourceRecorder
 
 from .api import build_router
+from .autopilot_agent_api import build_agent_router
+from .autopilot_api import build_autopilot_router
 from .jobs import JobManager
 from .registry import RunRegistry
 
@@ -41,9 +44,11 @@ _NOT_BUILT = """<!doctype html><meta charset="utf-8"><title>MyFlows 训练控制
 
 def create_app(*, repo_root: Path = REPO_ROOT, console_root: Path | None = None, registry: RunRegistry | None = None,
                sampler: GpuSampler | None = None, python: str | None = None, max_running: int = 1,
-               start_background: bool = True, web_dist: Path = WEB_DIST) -> FastAPI:
+               start_background: bool = True, web_dist: Path = WEB_DIST, autopilot_root: Path | None = None,
+               train_module: str | None = None, dsh_host=None, enable_dsh: bool = True) -> FastAPI:
     repo_root = Path(repo_root)
     console_root = Path(console_root) if console_root else repo_root / "runs" / "console"
+    autopilot_root = Path(autopilot_root) if autopilot_root else repo_root / "runs" / "autopilot"
     sampler = sampler or GpuSampler()
 
     def recorder_for_job(job: dict, pid: int):
@@ -58,21 +63,40 @@ def create_app(*, repo_root: Path = REPO_ROOT, console_root: Path | None = None,
         registry.jobs_provider = jobs.list
     live = ResourceRecorder(sampler, interval_s=LIVE_INTERVAL_S, history=300)
     archive_root = registry.archives[0].root if registry.archives else None
+    autopilot = AutoPilotService(autopilot_root, jobs=jobs, repo_root=repo_root, python=python,
+                                 **({"module": train_module} if train_module else {}))
+    if dsh_host is None and enable_dsh:
+        from apps.autopilot.dsh.host import DshHost
+
+        dsh_host = DshHost(repo_root=repo_root, autopilot_root=autopilot_root, python=python)
+    if dsh_host is not None:
+        autopilot.advisor = dsh_host.advisor(autopilot)
 
     @asynccontextmanager
     async def lifespan(_app):
         if start_background:
             live.start()
             jobs.start()
+            autopilot.start()
+            if dsh_host is not None:
+                dsh_host.start(console_url=f"http://127.0.0.1:{_app.state.port}" if getattr(_app.state, "port", None)
+                               else None)
         yield
+        if dsh_host is not None:
+            dsh_host.shutdown()
+        autopilot.shutdown()
         jobs.shutdown()
         live.stop()
         sampler.close()
 
     app = FastAPI(title="MyFlows 训练控制台", lifespan=lifespan)
     app.state.jobs, app.state.registry, app.state.live, app.state.sampler = jobs, registry, live, sampler
+    app.state.autopilot, app.state.dsh_host = autopilot, dsh_host
     app.include_router(build_router(registry=registry, jobs=jobs, live=live, sampler=sampler, repo_root=repo_root,
                                     archive_root=archive_root, python=python))
+    app.include_router(build_autopilot_router(autopilot, dsh_host=dsh_host))
+    if dsh_host is not None:
+        app.include_router(build_agent_router(autopilot, dsh_host, registry=registry))
 
     index = Path(web_dist) / "index.html"
     if (Path(web_dist) / "assets").is_dir():
@@ -100,12 +124,16 @@ def main(argv: list[str] | None = None) -> None:
     ap.add_argument("--port", type=int, default=DEFAULT_PORT)
     ap.add_argument("--max-running", type=int, default=1, help="同时运行的任务数；单 GPU 建议保持 1")
     ap.add_argument("--console-root", default=None, help="控制台任务目录，默认 runs/console")
+    ap.add_argument("--autopilot-root", default=None, help="AutoPilot campaign 目录，默认 runs/autopilot")
+    ap.add_argument("--no-dsh", action="store_true", help="不启动 AutoPilot 专用 dsh（LLM 层），只用规则策略")
     args = ap.parse_args(argv)
     if args.host not in ("127.0.0.1", "localhost", "::1"):
         print(f"[warning] 控制台可以在本机启动训练进程，监听 {args.host} 会把该能力暴露给网络中的其他机器。",
               file=sys.stderr)
     app = create_app(console_root=Path(args.console_root).resolve() if args.console_root else None,
-                     max_running=args.max_running)
+                     max_running=args.max_running, enable_dsh=not args.no_dsh,
+                     autopilot_root=Path(args.autopilot_root).resolve() if args.autopilot_root else None)
+    app.state.port = args.port
     print(f"MyFlows 训练控制台: http://{args.host}:{args.port}  (GPU 采样: {app.state.sampler.backend_name})")
     uvicorn.run(app, host=args.host, port=args.port, log_level="warning")
 

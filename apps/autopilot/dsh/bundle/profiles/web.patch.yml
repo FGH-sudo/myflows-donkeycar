@@ -1,0 +1,41 @@
+# Profile layer of myflows-autopilot-web, written by DshHost (apps/autopilot/dsh/host.py) on every start.
+#
+# The Web bundle mounts the model's tools per agent preset (`preset-*` rows with their own `plugins`). The
+# default preset `standard` is replaced with a tool-free composition (it keeps compaction and, having no
+# persona row of its own, the advisor persona of the bundle's system-prompt row); the other presets are off.
+# The embedded Web UI keeps chat, permission presets, approvals and the API key settings; the browser
+# terminal and the harness-checkout context are not needed and stay off.
+- id: preset-standard
+  config:
+    id: standard
+    order: 1
+    plugins:
+      - id: compaction
+        name: cordis:group
+        group: true
+        isolate:
+          compaction: true
+        config:
+          - id: compaction-basic
+            name: '@deepseek-ai/dsh-compaction-basic'
+          - id: command-compact
+            name: '@deepseek-ai/dsh-command-compact'
+- id: preset-ptc
+  disabled: true
+- id: preset-minimal
+  disabled: true
+- id: preset-cordis
+  disabled: true
+
+- id: autopilot-guard
+  config:
+    profile: web
+
+- id: harness-dev-context
+  disabled: true
+
+- id: terminal-controller
+  disabled: true
+
+- id: ui-sidebar-terminal
+  disabled: true

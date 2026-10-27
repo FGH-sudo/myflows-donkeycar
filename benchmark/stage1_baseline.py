@@ -1,6 +1,7 @@
 """Record the C0 NumPy/CuPy baseline and independently compile a CUDA probe."""
 
 import argparse
+import os
 from pathlib import Path
 import shutil
 import time
@@ -47,15 +48,20 @@ def main():
         run.manifest["cuda"] = {"runtime": cp.cuda.runtime.runtimeGetVersion(),
                                 "driver": cp.cuda.runtime.driverGetVersion(),
                                 "probe_source": source}
-        roots = [Path("C:/Program Files/NVIDIA Corporation"),
-                 Path("C:/Program Files/NVIDIA GPU Computing Toolkit"),
-                 Path("D:/NVIDIA"), Path("D:/CUDA")]
+        if os.name == "nt":
+            suffix = ".exe"
+            roots = [Path("C:/Program Files/NVIDIA Corporation"),
+                     Path("C:/Program Files/NVIDIA GPU Computing Toolkit"),
+                     Path("D:/NVIDIA"), Path("D:/CUDA")]
+        else:
+            suffix = ""
+            roots = [Path("/opt/nvidia"), *sorted(Path("/usr/local").glob("cuda*"))]
         found = {}
         for name in ("nvcc", "nsys", "ncu"):
             paths = [shutil.which(name)]
             for root in roots:
                 if root.exists():
-                    paths.extend(str(p) for p in root.rglob(name + ".exe"))
+                    paths.extend(str(p) for p in root.rglob(name + suffix) if p.is_file())
             found[name] = sorted(set(filter(None, paths)))
         run.results["tool_paths"] = found
         run.results["tool_versions"] = {p: command([p, "--version"])

@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 from typing import Any, Sequence
@@ -61,6 +62,59 @@ def build_split(
     return {"train": train, "val": val, "test": test}
 
 
+def build_time_block_split(
+    frames: Sequence[int],
+    *,
+    val_size: int,
+    test_size: int = 0,
+    block_size: int = 50,
+    gap: int = 5,
+    seed: int = 42,
+) -> dict[str, list[int]]:
+    """Split by contiguous time blocks, so neighbouring frames never land on both sides.
+
+    ``frames[i]`` is the time position of row ``i`` (DonkeyCar: the frame index in the image name). Rows are
+    ordered by it and cut into blocks of ``block_size``; whole blocks are shuffled with ``seed`` and handed to
+    the test set until it holds ``test_size`` rows, then to validation until ``val_size``, the rest to training.
+    Up to ``gap`` rows at each side of a boundary between two different splits are purged (in no split), so a
+    validation frame is never the next camera frame of a training one. Returns row indices like build_split,
+    plus ``"purged"``.
+    """
+    total = len(frames)
+    if val_size + test_size > total:
+        raise ValueError("validation + test split is larger than dataset")
+    order = sorted(range(total), key=lambda i: (frames[i], i))
+    blocks = [order[k:k + block_size] for k in range(0, total, max(1, int(block_size)))]
+    rng = np.random.default_rng(int(seed))
+    shuffled = list(rng.permutation(len(blocks)))
+    owner = ["train"] * len(blocks)
+    counts = {"test": 0, "val": 0}
+    for b in shuffled:
+        for name, want in (("test", test_size), ("val", val_size)):
+            if counts[name] < want:
+                owner[b] = name
+                counts[name] += len(blocks[b])
+                break
+    split = {"train": [], "val": [], "test": [], "purged": []}
+    for b, rows in enumerate(blocks):
+        name = owner[b]
+        left = b > 0 and owner[b - 1] != name
+        right = b + 1 < len(blocks) and owner[b + 1] != name
+        for j, row in enumerate(rows):
+            near = (left and j < gap) or (right and j >= len(rows) - gap)
+            split["purged" if near and name == "train" else name].append(int(row))
+    return {name: sorted(rows) for name, rows in split.items()}
+
+
+def frame_numbers(rels: Sequence[str]) -> list[int]:
+    """DonkeyCar frame index of each image name (``<index>_<angle>.jpg``); the row position when absent."""
+    out = []
+    for i, rel in enumerate(rels):
+        head = Path(str(rel)).name.split("_", 1)[0]
+        out.append(int(head) if head.isdigit() else i)
+    return out
+
+
 def split_enabled(
     *,
     split_file: str | Path | None = None,
@@ -84,6 +138,8 @@ def save_split(
     *,
     source_count: int,
     seed: int,
+    kind: str = "random",
+    meta: dict | None = None,
 ) -> Path:
     out = Path(path)
     out.parent.mkdir(parents=True, exist_ok=True)
@@ -91,6 +147,8 @@ def save_split(
         "version": 1,
         "source_count": int(source_count),
         "seed": int(seed),
+        "kind": kind,
+        **(meta or {}),
         "splits": {name: list(map(int, splits.get(name, []))) for name in SPLIT_NAMES},
     }
     out.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -157,3 +215,13 @@ def resolve_splits(
     )
     saved = save_split(split_out, splits, source_count=len(rows), seed=seed) if split_out else None
     return splits, saved
+
+
+def entries_hash(entries: Sequence[Any]) -> str:
+    """Fingerprint of a sample list ``(relative path, angle, throttle)``: checks that two runs trained or
+    validated on the same samples with the same labels."""
+
+    digest = hashlib.sha256()
+    for rel, angle, throttle in entries:
+        digest.update(f"{Path(rel).as_posix()}\t{float(angle):.9g}\t{float(throttle):.9g}\n".encode("utf-8"))
+    return digest.hexdigest()

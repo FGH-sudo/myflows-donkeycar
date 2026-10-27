@@ -77,7 +77,7 @@ export default function RunDetailPage() {
       label: tabLabel(<FundViewOutlined />, '硬件资源'),
       children: <ResourcesTab detail={data} state={state} />,
     },
-    ...(data.kind === 'distributed'
+    ...(data.kind === 'distributed' || s.workers > 1 || (s.mode !== 'single' && s.mode)
       ? [
           {
             key: 'topology',
@@ -102,7 +102,7 @@ export default function RunDetailPage() {
   const meta = [
     KIND_TEXT[s.kind] ?? s.kind,
     modeLabel(s),
-    data.kind === 'distributed' ? `${s.workers} Worker` : null,
+    data.kind === 'distributed' || s.workers > 1 ? `${s.workers} Worker` : null,
     s.device,
     s.started_unix_s ? `开始于 ${fmtTime(s.started_unix_s)}` : null,
   ].filter(Boolean)
@@ -142,7 +142,7 @@ export default function RunDetailPage() {
         {live && jobId ? (
           <Popconfirm
             title="停止该任务？"
-            description="分布式任务会结束全部进程；单进程任务会先保存断点再退出。"
+            description="分布式实验会直接结束全部进程；正式训练会先保存断点再退出（多 Worker 时在同一步停下）。"
             onConfirm={stop}
             okText="停止"
             okButtonProps={{ danger: true }}
@@ -162,7 +162,7 @@ export default function RunDetailPage() {
               label: '吞吐',
               value: s.final?.samples_per_s ? fmtNum(s.final.samples_per_s, 0) : '—',
               unit: s.final?.samples_per_s ? 'samples/s' : undefined,
-              hint: data.kind === 'distributed' ? `${s.workers} 个 Worker 合计` : '单进程',
+              hint: s.workers > 1 ? `${s.workers} 个 Worker 合计` : '单进程',
             },
             {
               label: '末 Epoch 耗时',

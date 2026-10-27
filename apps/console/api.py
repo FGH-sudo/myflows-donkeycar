@@ -19,9 +19,11 @@ from .presets import (
     MODE_LABELS,
     TASK_LABELS,
     ValidationError,
+    conv_backends,
     distributed_presets,
     modes,
-    single_cli_args,
+    native_library,
+    single_job,
     single_presets,
     validate_distributed,
     validate_single,
@@ -203,9 +205,8 @@ def build_router(*, registry: RunRegistry, jobs: JobManager, live, sampler, repo
                 "steps": steps if any(len(s.get("x", [])) for s in steps["ranks"].values()) else None,
                 "epochs": epochs if any(epochs["ranks"].values()) else None,
                 "resources": resources if resources["series"]["t"] else None,
-                "status": {"summary": summary, "ranks": data.ranks(),
-                           "rank_status": data.rank_status(active=summary.get("status") in ACTIVE_STATUSES)
-                           if data.kind == "distributed" else []},
+                "status": {"summary": summary, "ranks": data.series_ranks(),
+                           "rank_status": data.rank_status(active=summary.get("status") in ACTIVE_STATUSES)},
                 "cursor": dict(state["cursor"]),
             }
 
@@ -235,7 +236,8 @@ def build_router(*, registry: RunRegistry, jobs: JobManager, live, sampler, repo
     def presets():
         return {
             "modes": modes(), "tasks": [{"task": t, "label": l} for t, l in TASK_LABELS.items()],
-            "max_workers": MAX_WORKERS, "worker_choices": [1, 2, 4],
+            "max_workers": MAX_WORKERS, "worker_choices": [1, 2, 4], "conv_backends": conv_backends(),
+            "native_library": native_library(),
             "distributed": distributed_presets(repo_root, archive_root), "single": single_presets(repo_root),
         }
 
@@ -258,14 +260,7 @@ def build_router(*, registry: RunRegistry, jobs: JobManager, live, sampler, repo
                                    config=config)
             if job_type == "single":
                 args = validate_single(body.get("args") or {}, repo_root)
-                label = body.get("label") or f"单进程 ResNet18 · {args.get('max_samples', '全部')} 样本"
-                command = [python, "-m", "apps.train.train_myflows_donkey", *single_cli_args(args),
-                           "--run-dir", "{run_dir}", "--log-dir", "{run_dir}", "--log-file", "{run_dir}/train.log",
-                           "--logdir", "{run_dir}/tensorboard", "--out", "{run_dir}/checkpoints/checkpoint",
-                           "--best-out", "{run_dir}/checkpoints/best", "--stop-file", "{run_dir}/STOP_TRAINING"]
-                return jobs.submit(job_type="single", label=label, task="donkey_resnet18_single", command=command,
-                                   config={"kind": "single", "task": "donkey_resnet18_single", "args": args},
-                                   extra={"record_resources": True, "stop_file": "{run_dir}/STOP_TRAINING"})
+                return jobs.submit(**single_job(args, python, label=body.get("label")))
         except ValidationError as exc:
             raise HTTPException(422, str(exc))
         raise HTTPException(422, "type 必须是 distributed 或 single")

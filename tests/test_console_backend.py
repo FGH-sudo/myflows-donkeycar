@@ -186,6 +186,39 @@ class RunRegistryTest(unittest.TestCase):
         self.assertEqual((detail["kind"], len(detail["epochs"])), ("single", 1))
         self.assertEqual(registry.summary(ref)["global_batch"], 4)
 
+    def test_formal_distributed_run_reports_parallel_mode_and_rank_status(self):
+        run_dir = self.root / "console" / "ring2"
+        run_dir.mkdir(parents=True)
+        (run_dir / "config.json").write_text(json.dumps({
+            "kind": "single", "task": "donkey_resnet18_single", "args": {"device": "cuda", "batch": 8},
+            "parallel": {"mode": "ring", "transport": "grpc_proto", "workers": 2, "shard_sizes": [4, 4]}}),
+            encoding="utf-8")
+        _write_jsonl(run_dir / "metrics.jsonl", [
+            {"kind": "step", "monotonic_s": 10.0, "epoch": 1, "step": 1, "loss": 2.0},
+            {"kind": "epoch", "monotonic_s": 11.0, "epoch": 1, "loss": 2.0, "val_loss": 1.5},
+        ])
+        for rank in (0, 1):
+            (run_dir / f"rank-{rank}").mkdir()
+            (run_dir / f"rank-{rank}" / "prepare.json").write_text(json.dumps({"pid": 4000 + rank}), encoding="utf-8")
+            _write_jsonl(run_dir / f"rank-{rank}" / "steps.jsonl", [
+                {"rank": rank, "epoch": 0, "step": 0, "start_s": 9.0, "end_s": 10.0, "step_wall_s": 1.0,
+                 "gradient_sync_s": 0.25, "n_samples": 4, "loss": 2.0}])
+        job = {"id": "ring2", "type": "single", "label": "r", "status": "succeeded", "run_dir": str(run_dir)}
+        registry = make_registry(self.root, jobs=[job])
+        ref = registry.resolve("console/ring2")
+        summary = registry.summary(ref)
+        self.assertEqual((summary["kind"], summary["mode"], summary["transport"], summary["workers"]),
+                         ("single", "ring", "grpc_proto", 2))
+        detail = registry.detail(ref)
+        # Curves come from rank 0's metrics.jsonl; the rank-*/ records only describe each worker.
+        self.assertEqual(detail["ranks"], [])
+        self.assertEqual([r["rank"] for r in detail["rank_status"]], [0, 1])
+        self.assertEqual(detail["rank_status"][1]["sync_fraction"], 0.25)
+        self.assertEqual(detail["rank_pids"], {0: 4000, 1: 4001})
+        self.assertNotIn("steps:1", detail["cursor"])
+        self.assertEqual(list(registry.steps(ref)["ranks"]), ["0"])
+        self.assertEqual(list(registry.rank_epochs(ref)["ranks"]), ["0"])
+
 
 def _py(code: str) -> list[str]:
     return [sys.executable, "-c", code]
@@ -405,6 +438,70 @@ class ConsoleApiTest(unittest.TestCase):
         stopped = self.client.post(f"/api/jobs/{job['id']}/stop").json()
         self.assertEqual(stopped["status"], "cancelled")
         self.assertEqual(self.client.post("/api/jobs/nope/stop").status_code, 404)
+
+    def test_conv_backend_options_and_validation(self):
+        presets = self.client.get("/api/presets").json()
+        options = {o["value"]: o for o in presets["conv_backends"]}
+        self.assertEqual([v for v, o in options.items() if o["default"]], ["cuda_native_register", "numpy"])
+        self.assertEqual(options["cuda_native_cublas"]["device"], "cuda")
+        self.assertTrue(all(p["args"]["conv_backend"] == "auto" for p in presets["single"]))
+
+        smoke = next(p for p in presets["distributed"] if p["id"] == "synthetic-smoke")
+        base = dict(smoke["config"], mode="single", transport="none", train_workers=1)
+        for config, message in (
+            (dict(base, conv_backend="cuda_native_magic"), "conv_backend 只能是"),
+            (dict(base, device="cpu", conv_backend="cuda_native_register"), "不能用于 device=cpu"),
+        ):
+            response = self.client.post("/api/jobs", json={"type": "distributed", "config": config})
+            self.assertEqual(response.status_code, 422)
+            self.assertIn(message, response.json()["detail"])
+        for args, message in (
+            ({"device": "cpu", "conv_backend": "cuda_native_cublas"}, "不能用于 device=cpu"),
+            ({"dtype": "float64", "conv_backend": "cuda_native_register"}, "只支持 float32"),
+        ):
+            response = self.client.post("/api/jobs", json={"type": "single", "args": {"epochs": 1, "batch": 2, **args}})
+            self.assertEqual(response.status_code, 422)
+            self.assertIn(message, response.json()["detail"])
+
+        with mock.patch.object(self.app.state.jobs, "_launch"):
+            single = self.client.post("/api/jobs", json={"type": "single", "args": {
+                "epochs": 1, "batch": 2, "device": "cuda", "conv_backend": "cuda_native_cublas"}}).json()
+            dist = self.client.post("/api/jobs", json={"type": "distributed", "config": dict(
+                base, device="cuda", conv_backend="cuda_native_register")}).json()
+        command = single["command"]
+        self.assertEqual(command[command.index("--conv-backend") + 1], "cuda_native_cublas")
+        self.assertEqual(dist["status"], "pending")
+
+    def test_formal_training_parallel_args(self):
+        presets = self.client.get("/api/presets").json()
+        self.assertIn("current", presets["native_library"])
+        ring = next(p for p in presets["single"] if p["args"]["distributed"] == "ring")
+        self.assertEqual(ring["args"]["workers"], 2)
+        for args, message in (
+            ({"distributed": "mesh"}, "distributed 只能是"),
+            ({"distributed": "ring", "transport": "socket_json"}, "ring 只支持"),
+            ({"distributed": "ps", "workers": 4, "batch": 2}, "必须不小于 Worker 数"),
+            ({"distributed": "ps", "dtype": "float64"}, "只支持 float32"),
+            ({"distributed": "ps", "workers": 99}, "Worker 数必须在"),
+            ({"distributed": "ps", "transport": "socket_json"}, "宽度不超过 32"),
+        ):
+            response = self.client.post("/api/jobs", json={"type": "single", "args": {"epochs": 1, "batch": 8, **args}})
+            self.assertEqual(response.status_code, 422, args)
+            self.assertIn(message, response.json()["detail"])
+        with mock.patch.object(self.app.state.jobs, "_launch"):
+            job = self.client.post("/api/jobs", json={"type": "single", "args": {
+                "epochs": 1, "batch": 8, "distributed": "ring", "workers": 2, "export_onnx": True}}).json()
+            plain = self.client.post("/api/jobs", json={"type": "single", "args": {
+                "epochs": 1, "batch": 8, "workers": 4, "transport": "grpc_proto"}}).json()
+        command = job["command"]
+        self.assertEqual([command[command.index(flag) + 1] for flag in ("--distributed", "--workers", "--transport")],
+                         ["ring", "2", "grpc_proto"])
+        self.assertIn("--export-onnx", command)
+        self.assertIn("Ring AllReduce · gRPC · 2w", job["label"])
+        # Without a parallel mode the worker settings are dropped instead of reaching apps.train.
+        self.assertEqual(plain["command"][plain["command"].index("--distributed") + 1], "none")
+        self.assertNotIn("--workers", plain["command"])
+        self.assertIn("单进程", plain["label"])
 
 
 if __name__ == "__main__":

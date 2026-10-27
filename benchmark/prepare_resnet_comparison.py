@@ -7,6 +7,7 @@ import time
 
 import numpy as np
 
+from benchmark.config_paths import relative_config_paths
 from benchmark.distributed_suite import base_config
 from MyFlows.core.device import asnumpy, xp
 from MyFlows.distributed.measurement import write_json
@@ -44,13 +45,13 @@ def main():
         row=session.forward_backward(x,y,materialize_cpu_gradients=False)
         session.apply_global_gradients(row['device_gradients'],f'preflight-{index}')
         rows.append({'loss':row['loss'],'timings':row['timings'], 'update':session.update_timings})
-    info={'model':session.task.model_metadata, 'config':config, 'calibration_training_samples':512,
+    info={'model':session.task.model_metadata, 'config':relative_config_paths(config), 'calibration_training_samples':512,
           'validation_or_test_used':False, 'data_split_fingerprint':data['meta']['split_fingerprint'],
           'elapsed_s':time.perf_counter()-start,'steps':rows,
           'allocator_reserved_mib':xp.get_default_memory_pool().total_bytes()/2**20,
           'cuda_free_and_total_bytes':list(xp.cuda.runtime.memGetInfo())}
     write_json(directory/'results.json',info)
-    write_json(directory/'candidate_config.json',config)
+    write_json(directory/'candidate_config.json',relative_config_paths(config))
     print(json.dumps(info,ensure_ascii=False),flush=True)
 
 

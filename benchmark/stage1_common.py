@@ -51,7 +51,8 @@ def source_state():
             candidates = set(origin["files_sha256"])
             for parent, directories, filenames in os.walk(directory):
                 directories[:] = [d for d in directories if d not in
-                                  (".git", ".venv", ".codex", ".agents", "__pycache__", "experiments", "DonkeySimWin")
+                                  (".git", ".venv", ".codex", ".agents", "__pycache__", "experiments", "DonkeySimWin",
+                                   "DonkeySimLinux", "DonkeySimMac", "build")
                                   and not (name == "root" and Path(parent) == directory and d == "MyFlows")]
                 for filename in filenames:
                     p = Path(parent) / filename

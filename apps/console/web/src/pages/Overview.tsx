@@ -277,7 +277,7 @@ function QueueSection({ jobs, gpu }: { jobs: Job[]; gpu: GpuInfo | undefined }) 
                       <span className="num">{p.used_memory_mib.toFixed(0)} MiB</span>
                     ) : (
                       <Tooltip title={gpu?.missing?.process_memory}>
-                        <span className="muted nowrap">WDDM 不可读</span>
+                        <span className="muted nowrap">不可读</span>
                       </Tooltip>
                     ),
                 },

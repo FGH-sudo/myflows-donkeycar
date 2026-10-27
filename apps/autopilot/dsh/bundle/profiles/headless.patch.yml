@@ -1,0 +1,18 @@
+# Profile layer of myflows-autopilot-headless, written by DshHost (apps/autopilot/dsh/host.py) on every start.
+# Background one-shot runs (Planner advisor, report explanation) get the read-only subset, request_trials and
+# write_note. They use the credential the person saved through the Web page — an API key or a DeepSeek account
+# login — so the local credential store and the account services the headless bundle turns off are mounted again
+# (the Web process signs in and out; headless runs only resolve the stored login). With only an account login,
+# DshHost adds an overlay that moves the default model to the account route.
+- id: autopilot-guard
+  config:
+    profile: headless
+
+- id: credentials
+  disabled: false
+
+- id: authorization
+  disabled: false
+
+- id: deepseek-account
+  disabled: false

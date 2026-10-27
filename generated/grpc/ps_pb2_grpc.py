@@ -69,6 +69,11 @@ class ParameterServiceStub:
                 request_serializer=ps__pb2.PsRequest.SerializeToString,
                 response_deserializer=ps__pb2.PsResponse.FromString,
                 _registered_method=True)
+        self.Reduce = channel.unary_unary(
+                '/myflows.distributed.ParameterService/Reduce',
+                request_serializer=ps__pb2.PsRequest.SerializeToString,
+                response_deserializer=ps__pb2.PsResponse.FromString,
+                _registered_method=True)
 
 
 class ParameterServiceServicer:
@@ -116,6 +121,13 @@ class ParameterServiceServicer:
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
+    def Reduce(self, request, context):
+        """Sums small per-rank tensors under reduce_key once every rank sent them (validation sums).
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
 
 def add_ParameterServiceServicer_to_server(servicer, server):
     rpc_method_handlers = {
@@ -151,6 +163,11 @@ def add_ParameterServiceServicer_to_server(servicer, server):
             ),
             'Stop': grpc.unary_unary_rpc_method_handler(
                     servicer.Stop,
+                    request_deserializer=ps__pb2.PsRequest.FromString,
+                    response_serializer=ps__pb2.PsResponse.SerializeToString,
+            ),
+            'Reduce': grpc.unary_unary_rpc_method_handler(
+                    servicer.Reduce,
                     request_deserializer=ps__pb2.PsRequest.FromString,
                     response_serializer=ps__pb2.PsResponse.SerializeToString,
             ),
@@ -342,6 +359,33 @@ class ParameterService:
             request,
             target,
             '/myflows.distributed.ParameterService/Stop',
+            ps__pb2.PsRequest.SerializeToString,
+            ps__pb2.PsResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def Reduce(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/myflows.distributed.ParameterService/Reduce',
             ps__pb2.PsRequest.SerializeToString,
             ps__pb2.PsResponse.FromString,
             options,
