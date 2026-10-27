@@ -4,6 +4,7 @@ import {
   PlusCircleOutlined,
   PlusOutlined,
   RightOutlined,
+  RobotOutlined,
   UnorderedListOutlined,
 } from '@ant-design/icons'
 import { useQuery } from '@tanstack/react-query'
@@ -18,6 +19,10 @@ import NewJob from './pages/NewJob'
 import Overview from './pages/Overview'
 import RunDetailPage from './pages/RunDetail'
 import Runs from './pages/Runs'
+import Assistant from './pages/autopilot/Assistant'
+import CampaignDetail from './pages/autopilot/CampaignDetail'
+import CampaignList from './pages/autopilot/CampaignList'
+import NewCampaign from './pages/autopilot/NewCampaign'
 
 const { Sider, Content, Header } = Layout
 
@@ -26,7 +31,10 @@ const SECTIONS: Record<string, string> = {
   '/runs': '运行记录',
   '/new': '新建训练',
   '/compare': '运行对比',
+  '/autopilot': 'AutoPilot',
 }
+
+const AUTOPILOT_PAGES: Record<string, string> = { new: '新建 campaign', assistant: 'AutoPilot 助手' }
 
 const NARROW_QUERY = '(max-width: 991.98px)'
 
@@ -59,6 +67,13 @@ export default function App() {
   const runId = isRunDetail ? decodeURIComponent(location.pathname.slice('/run/'.length)) : ''
   const run = useQuery({ queryKey: ['run', runId], queryFn: () => api.run(runId), enabled: isRunDetail })
   const section = isRunDetail ? '/runs' : '/' + (location.pathname.split('/')[1] ?? '')
+  const parts = location.pathname.split('/')
+  const autopilotSub =
+    parts[1] === 'autopilot' && parts[2]
+      ? parts[2] === 'c'
+        ? decodeURIComponent(parts[3] ?? '')
+        : (AUTOPILOT_PAGES[parts[2]] ?? parts[2])
+      : null
 
   const items = [
     { key: '/', icon: <DashboardOutlined />, label: '总览' },
@@ -74,6 +89,7 @@ export default function App() {
     },
     { key: '/new', icon: <PlusCircleOutlined />, label: '新建训练' },
     { key: '/compare', icon: <LineChartOutlined />, label: '运行对比' },
+    { key: '/autopilot', icon: <RobotOutlined />, label: 'AutoPilot' },
   ]
 
   const gpuInfo = gpu.data?.latest?.gpus[0]
@@ -130,6 +146,12 @@ export default function App() {
                 <RightOutlined className="crumb-sep" />
                 <span className="crumb-current">{run.data?.summary.label ?? runId}</span>
               </>
+            ) : autopilotSub ? (
+              <>
+                <Link to="/autopilot">AutoPilot</Link>
+                <RightOutlined className="crumb-sep" />
+                <span className="crumb-current">{autopilotSub}</span>
+              </>
             ) : (
               <span className="crumb-current">{SECTIONS[section] ?? '控制台'}</span>
             )}
@@ -162,6 +184,10 @@ export default function App() {
               <Route path="/run/*" element={<RunDetailPage />} />
               <Route path="/new" element={<NewJob />} />
               <Route path="/compare" element={<Compare />} />
+              <Route path="/autopilot" element={<CampaignList />} />
+              <Route path="/autopilot/new" element={<NewCampaign />} />
+              <Route path="/autopilot/assistant" element={<Assistant />} />
+              <Route path="/autopilot/c/:cid" element={<CampaignDetail />} />
               <Route path="*" element={<Navigate to="/" replace />} />
             </Routes>
           </div>

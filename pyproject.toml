@@ -26,6 +26,7 @@ dependencies = [
 console = [
     "fastapi>=0.141.1",
     "nvidia-ml-py>=13.610.43",
+    "optuna>=4.0",
     "uvicorn>=0.53.0",
 ]
 dev = [

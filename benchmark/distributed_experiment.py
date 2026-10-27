@@ -17,6 +17,7 @@ import traceback
 import numpy as np
 import psutil
 
+from apps.common.gpu_lock import GpuLock
 from benchmark.config_paths import resolve_config_paths
 from MyFlows.distributed.launcher import run_training
 from MyFlows.distributed.measurement import write_json
@@ -149,7 +150,11 @@ def main():
     if config.get('prepared_dir'):
         write_json(out/'data_manifest.json',json.loads((Path(config['prepared_dir'])/'manifest.json').read_text(encoding='utf-8')))
     result={}
+    # GPU runs queue for the machine-wide GPU lock (apps.train does the same); the parent holds it for all ranks
+    lock=GpuLock(label=f"distributed_experiment {out.name}", run_dir=out) if config.get('device')=='cuda' else None
     try:
+        if lock is not None:
+            lock.acquire()
         with Resources(out, config.get('monitor',True)):
             result=run_training(**config)
         with (out/'events.jsonl').open('w',encoding='utf-8') as f:
@@ -164,6 +169,9 @@ def main():
     except BaseException as exc:
         write_json(out/'failure.json',{'error':str(exc),'traceback':traceback.format_exc()})
         raise
+    finally:
+        if lock is not None:
+            lock.release()
 
 
 if __name__=='__main__':

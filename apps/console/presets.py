@@ -34,8 +34,12 @@ SINGLE_ARGS = {
     "dropout": float, "early_stopping": bool, "patience": int, "val_size": int, "test_size": int,
     "sample_seed": int, "split_seed": int, "num_workers": int, "no_tensorboard": bool, "conv_backend": str,
     "distributed": str, "workers": int, "transport": str, "sync_timeout": float, "base_width": int, "seed": int,
-    "export_onnx": bool,
+    "state_every": int, "keep_states": int, "resume_state": str,
+    "export_onnx": bool, "split_file": str, "phase_timing_every": int,
+    "arch": str, "pretrained": str, "freeze_stages": int, "image_size": str, "input_norm": str,
 }
+TRANSFER_ARCHS = ("resnet18", "mobilenet_v2", "alexnet")
+MAX_FREEZE_STAGES = 5
 # Parallel modes of the formal training entry: distributed value -> transports, as in apps.train.
 TRAINING_PARALLEL = {"none": ("none",), "ps": ("grpc_proto", "socket_json"), "ring": ("grpc_proto",)}
 MAX_WORKERS = 8
@@ -240,9 +244,65 @@ def validate_single(args: dict, repo_root: Path) -> dict:
             raise ValidationError("Socket JSON 单条消息有 64 MB 上限，只能训练 ResNet 宽度不超过 32 的模型；请改用 gRPC")
     if out.get("base_width", 64) < 1:
         raise ValidationError("base_width 必须为正整数")
+    _check_transfer(out, Path(repo_root))
+    if out.get("num_workers", 0) < 0:
+        raise ValidationError("num_workers 不能为负数")
+    if out.get("lr", 1e-3) <= 0:
+        raise ValidationError("lr 必须为正数")
+    if out.get("state_every", 0) < 0 or out.get("keep_states", 1) < 1:
+        raise ValidationError("state_every 不能为负数，keep_states 至少为 1")
+    if (out.get("state_every") or out.get("resume_state")) and out.get("distributed", "none") != "none":
+        raise ValidationError("TrainingState（state_every / resume_state）只用于单进程训练")
+    if out.get("resume_state"):
+        state = Path(out["resume_state"])
+        state = state if state.is_absolute() else Path(repo_root) / state
+        if not (state / "manifest.json").is_file():
+            raise ValidationError(f"TrainingState 不存在或不完整：{out['resume_state']}")
+    if "split_file" in out:
+        split = Path(out["split_file"])
+        split = split if split.is_absolute() else Path(repo_root) / split
+        if not split.is_file():
+            raise ValidationError(f"划分文件不存在：{out['split_file']}")
     if not (Path(repo_root) / "mycar" / "data").is_dir():
         raise ValidationError("数据目录 mycar/data 不存在")
     return out
+
+
+def pretrained_path(arch: str, pretrained: str, repo_root: Path) -> Path:
+    """--pretrained 的文件：imagenet = runs/pretrained/converted/<arch>.npz，否则是（相对仓库根的）路径。"""
+    if pretrained == "imagenet":
+        return Path(repo_root) / "runs" / "pretrained" / "converted" / f"{arch}.npz"
+    path = Path(pretrained)
+    return path if path.is_absolute() else Path(repo_root) / path
+
+
+def _check_transfer(out: dict, repo_root: Path) -> None:
+    """迁移训练参数（E2）：结构、预训练权重是否已转换、冻结阶段数与输入尺寸。"""
+    arch = out.get("arch", "resnet18")
+    if arch not in TRANSFER_ARCHS:
+        raise ValidationError(f"arch 只能是 {'、'.join(TRANSFER_ARCHS)}")
+    pretrained = out.get("pretrained")
+    if pretrained:
+        path = pretrained_path(arch, pretrained, repo_root)
+        if not path.is_file():
+            raise ValidationError(f"预训练权重不存在：{path}（先运行 tools/convert_torchvision_weights.py）")
+    freeze = out.get("freeze_stages", 0)
+    if not 0 <= freeze <= MAX_FREEZE_STAGES:
+        raise ValidationError(f"freeze_stages 必须在 0 到 {MAX_FREEZE_STAGES} 之间")
+    if freeze and not pretrained:
+        raise ValidationError("freeze_stages 需要 pretrained")
+    if out.get("input_norm", "auto") not in ("auto", "none", "imagenet"):
+        raise ValidationError("input_norm 只能是 auto、none 或 imagenet")
+    if (arch != "resnet18" or pretrained) and out.get("distributed", "none") != "none":
+        raise ValidationError("迁移训练（arch / pretrained）目前只支持单进程")
+    size = out.get("image_size")
+    if size:
+        try:
+            h, w = (int(v) for v in str(size).lower().split("x"))
+        except ValueError:
+            raise ValidationError(f"image_size 应为 HxW，例如 224x224：{size}") from None
+        if h < 32 or w < 32:
+            raise ValidationError("image_size 的高和宽至少为 32")
 
 
 def single_cli_args(args: dict) -> list[str]:
@@ -255,3 +315,31 @@ def single_cli_args(args: dict) -> list[str]:
         else:
             cli += [flag, str(value)]
     return cli
+
+
+def single_label(args: dict) -> str:
+    parallel = ("单进程" if args.get("distributed", "none") == "none" else
+                f"{MODE_LABELS.get((args['distributed'], args['transport']), args['distributed'])}"
+                f" · {args['workers']}w")
+    return f"ResNet18 · {parallel} · {args.get('max_samples') or '全部'} 样本"
+
+
+TRAIN_MODULE = "apps.train.train_myflows_donkey"
+
+
+def single_job(args: dict, python: str, *, label: str | None = None, extra: dict | None = None,
+               module: str = TRAIN_MODULE) -> dict:
+    """Keyword arguments of ``JobManager.submit`` for a validated apps.train job.
+
+    The console's "正式训练" form and AutoPilot trials both go through here, so they share the argument
+    whitelist (``validate_single``), the output layout inside the run directory (log, TensorBoard, checkpoints,
+    stop file, config.json / metrics.jsonl / result.json) and per-job resource sampling. ``module`` is replaced
+    only by tests (a fake training entry with the same command line).
+    """
+    command = [python, "-m", module, *single_cli_args(args),
+               "--run-dir", "{run_dir}", "--log-dir", "{run_dir}", "--log-file", "{run_dir}/train.log",
+               "--logdir", "{run_dir}/tensorboard", "--out", "{run_dir}/checkpoints/checkpoint",
+               "--best-out", "{run_dir}/checkpoints/best", "--stop-file", "{run_dir}/STOP_TRAINING"]
+    return {"job_type": "single", "label": label or single_label(args), "task": "donkey_resnet18_single",
+            "command": command, "config": {"kind": "single", "task": "donkey_resnet18_single", "args": args},
+            "extra": {"record_resources": True, "stop_file": "{run_dir}/STOP_TRAINING", **(extra or {})}}

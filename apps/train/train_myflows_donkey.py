@@ -30,16 +30,22 @@
   按样本数加权平均，所有 Worker 的参数始终一致并逐步核对；BN 前向用各 Worker 本地 batch 的统计量（与 PyTorch
   DDP 不开 SyncBN 相同）。验证集按 Worker 切分后汇总；断点、最佳模型与 ONNX 与单进程格式相同，可以互相续训。
   停止文件出现时所有 Worker 在同一步停下并保存断点；--resume 从断点记录的 epoch 与 step 继续。
+
+  GPU 训练开始前先取得本机 GPU 锁（apps/common/gpu_lock.py），控制台、AutoPilot 与终端启动的训练依次排队；
+  指定 --run-dir 时结束后写 result.json，退出码区分非有限 loss（3）、显存不足（4）与其他错误（1）。
 """
 from __future__ import annotations
 
 import argparse
 import hashlib
 import json
+import math
 import os
 import random
 import sys
 import time
+import traceback
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -54,7 +60,9 @@ import MyFlows as ms
 from apps.common.donkey_data import load_donkey_index as _load_donkey_index
 from apps.common.image_preprocess import imread_nchw as _imread_nchw
 from apps.common.image_preprocess import pad_fixed_batch as _pad_fixed_batch
-from apps.common.splits import resolve_splits, select_split
+from apps.common.gpu_lock import GpuLock
+from apps.common.splits import entries_hash, resolve_splits, select_split
+from apps.train.common import outcome
 from apps.train.common.checkpoints import (
     DEFAULT_RESNET_BEST_OUT,
     DEFAULT_RESNET_CHECKPOINT_OUT,
@@ -64,7 +72,7 @@ from apps.train.common.checkpoints import (
 )
 from apps.train.common.training_control import BestScore, EarlyStopping
 from apps.train.common.logging import TeeLogger
-from MyFlows.core.device import asnumpy, set_device, xp
+from MyFlows.core.device import asnumpy, cuda_available, set_device, xp
 from MyFlows.data.pipeline import MultiprocessDataLoader
 from MyFlows.distributed.shards import split_global_batch
 from MyFlows.train.regularization import RegularizationConfig, apply_regularization
@@ -122,6 +130,111 @@ class _DeviceSpan:
             self._events[1].synchronize()
             return float(xp.cuda.get_elapsed_time(*self._events))
         return (self._stop - self._start) * 1000.0
+
+
+PHASES = ("forward", "backward", "optimizer")
+
+
+class _StepPhases:
+    """一步里前向 / 反向 / 优化器三段的耗时，以及 CuPy 显存池的区间峰值。
+
+    每 ``every`` 步用 CUDA event 分别量一次三段耗时（0 关闭）；每段结束时读一次显存池的已用字节数
+    （只读主机端计数，不同步 GPU），取两次写出之间的最大值。WDDM 下 NVML 读不到单个进程的显存，所以显存以
+    本进程的 CuPy 显存池为准：used 是张量实际占用，pool 是显存池向驱动申请的总量（训练中只增不减）。
+    """
+
+    def __init__(self, device: str, every: int):
+        self.every = max(0, int(every))
+        self.spans = {phase: _DeviceSpan(device) for phase in PHASES}
+        self.pool = xp.get_default_memory_pool() if device == "cuda" else None
+        self.device_total_bytes = None
+        if self.pool is not None:
+            _free, self.device_total_bytes = xp.cuda.runtime.memGetInfo()
+        self.timing = False
+        self.interval_used = self.peak_used = self.peak_pool = 0
+
+    def begin(self, global_step: int) -> None:
+        self.timing = self.every > 0 and global_step % self.every == 0
+
+    def sample(self) -> None:
+        if self.pool is None:
+            return
+        used, total = self.pool.used_bytes(), self.pool.total_bytes()
+        self.interval_used = max(self.interval_used, used)
+        self.peak_used = max(self.peak_used, used)
+        self.peak_pool = max(self.peak_pool, total)
+
+    @contextmanager
+    def __call__(self, phase: str):
+        if self.timing:
+            self.spans[phase].start()
+        try:
+            yield
+        finally:
+            if self.timing:
+                self.spans[phase].stop()
+            self.sample()
+
+    def row(self) -> dict:
+        """写进本步 step 行的字段（读 event 时间要在步末的同步点之后调用），并开始新的显存区间。"""
+        row = {}
+        if self.timing:
+            row.update({f"{phase}_ms": self.spans[phase].elapsed_ms() for phase in PHASES})
+        if self.pool is not None:
+            row.update(gpu_mem_used_mb=self.interval_used / 2**20, gpu_mem_pool_mb=self.pool.total_bytes() / 2**20)
+            self.interval_used = 0
+        return row
+
+    def summary(self) -> dict:
+        if self.pool is None:
+            return {"source": None}
+        return {"source": "cupy_memory_pool", "peak_used_mb": self.peak_used / 2**20,
+                "peak_pool_mb": self.peak_pool / 2**20, "device_total_mb": self.device_total_bytes / 2**20}
+
+
+# Arguments that do not change the numbers of a training trajectory: paths, logging, checkpoint cadence, data
+# loading parallelism (sample order and augmentation do not depend on it), timeouts. Everything else is in
+# the TrainingState fingerprint; --lr may differ on --resume-state (a rollback halves it) and is recorded.
+_NON_TRAJECTORY_ARGS = {
+    "out", "best_out", "run_dir", "log_file", "stop_file", "resume", "resume_state", "state_every", "state_dir",
+    "keep_states", "checkpoint_every", "unique_run", "run_id", "export_onnx", "onnx_out", "no_tensorboard",
+    "save_png_plots", "summary_once", "check_shape", "check_content", "num_workers", "gpu_lock_timeout",
+    "phase_timing_every", "sync_timeout", "worker_memory_mb", "epochs", "lr", "log_dir", "logdir", "plot_prefix",
+    "split_out",
+}
+
+
+# Arguments added after TrainingStates were first written: left out at their defaults, so older states still match.
+_LATER_DEFAULTS = {"arch": "resnet18", "pretrained": None, "freeze_stages": 0, "image_size": None, "input_norm": "auto"}
+
+
+def trajectory_config(args: argparse.Namespace) -> dict:
+    return {k: v for k, v in sorted(vars(args).items())
+            if k not in _NON_TRAJECTORY_ARGS and not k.startswith("tb_")
+            and not (k in _LATER_DEFAULTS and v == _LATER_DEFAULTS[k])}
+
+
+def trajectory_fingerprint(args: argparse.Namespace) -> str:
+    import hashlib
+
+    return hashlib.sha256(json.dumps(trajectory_config(args), sort_keys=True, default=str).encode()).hexdigest()
+
+
+def derive_seeds(seed: int | None, world: int) -> dict:
+    """由 --seed 派生每个 Worker 的数据增强、dropout 与 MixUp/CutMix 种子；不设 --seed 时增强沿用 42 + rank、
+    dropout 与混合用全局随机源（与旧版相同）。数据顺序由 epoch 决定，与 --seed 无关。"""
+    if seed is None:
+        return {"init": None, "augment": [42 + rank for rank in range(world)], "dropout": [None] * world,
+                "mix": [None] * world, "derived_from": None}
+
+    def stream(tag: int, rank: int) -> int:
+        return int(np.random.SeedSequence([int(seed), tag, rank]).generate_state(1)[0])
+
+    return {"init": int(seed), "augment": [stream(1, rank) for rank in range(world)],
+            "dropout": [stream(2, rank) for rank in range(world)], "mix": [stream(3, rank) for rank in range(world)],
+            "derived_from": "SeedSequence([seed, stream, rank])"}
+
+
 
 
 def _load_training_sample(sample: tuple[str, float, float, int, int, str]) -> tuple[np.ndarray, np.ndarray]:
@@ -194,6 +307,17 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--export-onnx", action="store_true", help="训练结束后导出 ONNX 推理图")
     ap.add_argument("--onnx-out", type=str, default=None, help="ONNX 输出路径，默认跟 --best-out 同名 .onnx")
     ap.add_argument("--stem", type=str, default="cifar", choices=("cifar", "imagenet"), help="小分辨率建议 cifar")
+    ap.add_argument("--arch", type=str, default="resnet18", choices=("resnet18", "mobilenet_v2", "alexnet"),
+                    help="网络结构；mobilenet_v2 / alexnet（以及带 --pretrained 的 resnet18）与 torchvision 结构一致")
+    ap.add_argument("--pretrained", type=str, default=None,
+                    help="ImageNet 预训练权重：imagenet = runs/pretrained/converted/<arch>.npz，或转换后的 .npz 路径；"
+                         "载入主干、替换回归头，结果里记录载入报告")
+    ap.add_argument("--freeze-stages", type=int, default=0,
+                    help="冻结前几个阶段（0..5；需 --pretrained）：参数不训练，BN 固定 running statistics 并保持 eval")
+    ap.add_argument("--image-size", type=str, default=None,
+                    help="输入尺寸 HxW（如 224x224）；默认与首帧一致")
+    ap.add_argument("--input-norm", type=str, default="auto", choices=("auto", "none", "imagenet"),
+                    help="输入归一化；auto = 有 --pretrained 时按 ImageNet 均值/标准差，否则不归一化")
     ap.add_argument("--base-width", type=int, default=64, help="ResNet-18 第一阶段通道数（后续阶段依次翻倍）；导出 ONNX 时沿用")
     ap.add_argument("--graph-opt", action="store_true", help="打开构图期优化(可能略快)")
     ap.add_argument(
@@ -289,8 +413,19 @@ def build_parser() -> argparse.ArgumentParser:
         "--run-dir",
         type=str,
         default=None,
-        help="可选：在该目录写 config.json 与逐步 metrics.jsonl，供训练控制台实时读取",
+        help="可选：在该目录写 config.json、逐步 metrics.jsonl 与结束时的 result.json，供训练控制台与 AutoPilot 读取",
     )
+    ap.add_argument("--phase-timing-every", type=int, default=20,
+                    help="每多少 step 用 CUDA event 分别记录前向/反向/优化器耗时（0=关闭）")
+    ap.add_argument("--gpu-lock-timeout", type=float, default=0.0,
+                    help="等待本机 GPU 锁的最长秒数（0=一直等）；环境变量 MYFLOWS_GPU_LOCK=off 关闭加锁")
+    ap.add_argument("--state-every", type=int, default=0,
+                    help="每多少 step 保存一次完整 TrainingState（另在每个 epoch 末保存；0=不保存）；只用于单进程训练，"
+                         "供 --resume-state 精确续训与 AutoPilot 回滚")
+    ap.add_argument("--state-dir", default=None, help="TrainingState 目录；默认 <run-dir>/states")
+    ap.add_argument("--keep-states", type=int, default=3, help="保留最近几个 TrainingState")
+    ap.add_argument("--resume-state", default=None,
+                    help="从这个 TrainingState 目录精确续训（与不中断的训练逐位一致）；除 --lr 外的训练配置必须与它相同")
     return ap
 
 
@@ -326,6 +461,16 @@ class TrainPlan:
     best_loss: float | None = None
     early_stopping_state: dict | None = None
     summary_path: str | None = None
+    seeds: dict = field(default_factory=dict)
+    data_hash: str | None = None
+    val_hash: str | None = None
+    split_file: str | None = None
+    # TrainingState (P9): where states go, the one to resume exactly from, and the epoch the run ends before
+    state_dir: str | None = None
+    resume_state: str | None = None
+    resume_meta: dict | None = None
+    end_epoch: int | None = None
+    fingerprint: str | None = None
 
     @property
     def world_size(self) -> int:
@@ -363,6 +508,100 @@ def _resume_position(args, out_base: Path, best_base: Path) -> dict:
                   f"从头重新训练 epoch {epoch + 1}")
             position["start_epoch"] = epoch
     return position
+
+
+def _apply_resume_state(args: argparse.Namespace, plan: "TrainPlan") -> None:
+    """Position of an exact resume: verify the state, compare the trajectory configuration, set the cursor."""
+    from MyFlows.utils.checkpoint import TrainingStateError, verify_training_state
+
+    path = Path(plan.resume_state)
+    try:
+        verify_training_state(path)
+    except TrainingStateError as exc:
+        raise SystemExit(f"[resume-state] {exc}") from exc
+    state = (read_checkpoint_metadata(path / "checkpoint") or {}).get("training") or {}
+    if state.get("fingerprint") != plan.fingerprint:
+        saved, now = state.get("config") or {}, trajectory_config(args)
+        changed = sorted(k for k in set(saved) | set(now) if saved.get(k) != now.get(k))
+        raise SystemExit("[resume-state] 训练配置与 TrainingState 不同，不能精确续训："
+                         + ", ".join(f"{k}: {saved.get(k)!r} → {now.get(k)!r}" for k in changed))
+    plan.resume_meta = state
+    plan.end_epoch = int(state["end_epoch"])
+    if state.get("epoch_complete"):
+        plan.start_epoch, plan.start_step = int(state["epoch"]) + 1, 0
+    else:
+        plan.start_epoch, plan.start_step = int(state["epoch"]), int(state["next_step"])
+        plan.resumed_loss_sum, plan.resumed_loss_count = float(state["loss_sum"]), int(state["loss_count"])
+    plan.start_global_step = int(state["global_step"])
+    plan.best_loss = state.get("best_loss")
+    plan.early_stopping_state = state.get("early_stopping")
+    plan.resume_found = True
+    lr_note = "" if float(state.get("lr", args.lr)) == float(args.lr) else f"，lr {state.get('lr')} → {args.lr}"
+    print(f"[resume-state] {path.name}：从 epoch {plan.start_epoch + 1} 第 {plan.start_step + 1} 步精确续训"
+          f"（已训练 {plan.start_global_step} 步{lr_note}）")
+
+
+def _rng_streams(train_transform, graph) -> dict:
+    """Every random stream a training step draws from (data order and MixUp/CutMix are functions of the epoch
+    and the global step): the augmentation transforms' and the dropout ops' generators."""
+    from MyFlows.ops.dropout import Dropout_Op
+
+    transforms = [t._rng for t in getattr(train_transform, "transforms", []) if getattr(t, "_rng", None) is not None]
+    dropout = [n._rng for n in getattr(graph, "nodes", []) if isinstance(n, Dropout_Op)]
+    return {"transforms": transforms, "dropout": dropout}
+
+
+def _rng_state(streams: dict) -> dict:
+    return {"transforms": [list(r.getstate()[1]) + [r.getstate()[0], r.getstate()[2]] for r in streams["transforms"]],
+            "dropout": [r.bit_generator.state if r is not None else None for r in streams["dropout"]],
+            "exact": all(r is not None for r in streams["dropout"])}
+
+
+def _restore_rng_state(streams: dict, saved: dict) -> None:
+    if len(saved.get("transforms") or []) != len(streams["transforms"]) or \
+            len(saved.get("dropout") or []) != len(streams["dropout"]):
+        raise SystemExit("[resume-state] 随机数流的数量与 TrainingState 不同")
+    for rng, values in zip(streams["transforms"], saved["transforms"]):
+        *internal, version, gauss = values
+        rng.setstate((version, tuple(internal), gauss))
+    for rng, value in zip(streams["dropout"], saved["dropout"]):
+        if rng is not None and value is not None:
+            rng.bit_generator.state = value
+
+
+def load_rows(args: argparse.Namespace, data_dir: Path) -> tuple[list, dict | None, Path | None]:
+    """The sample rows a run sees (catalog, the first or a seeded random ``--max-samples``) and their split.
+    Shared with apps.train.evaluate_donkey, which must select exactly the same rows."""
+    index = _load_donkey_index(
+        data_dir,
+        fixed_throttle=args.fixed_throttle,
+        angle_scale=args.angle_scale,
+        catalog_name=args.catalog,
+        force_fixed_throttle=bool(args.force_fixed_throttle),
+    )
+    if not index:
+        raise SystemExit("未找到训练样本：请确认 images/*.jpg 存在。")
+    if args.max_samples and args.max_samples > 0:
+        n_take = min(int(args.max_samples), len(index))
+        if args.sample_seed is not None:
+            rng = np.random.default_rng(int(args.sample_seed))
+            pick = rng.choice(len(index), size=n_take, replace=False)
+            index = [index[i] for i in pick]
+            print(f"[data] 随机子集: {n_take} 条 (seed={args.sample_seed})")
+        else:
+            index = index[:n_take]
+            print(f"[data] 取排序后前 {n_take} 条")
+    splits, split_path = resolve_splits(
+        index,
+        split_file=(ROOT / args.split_file).resolve() if args.split_file else None,
+        split_out=(ROOT / args.split_out).resolve() if getattr(args, "split_out", None) else None,
+        val_ratio=args.val_ratio,
+        test_ratio=args.test_ratio,
+        val_size=args.val_size,
+        test_size=args.test_size,
+        seed=args.split_seed,
+    )
+    return index, splits, split_path
 
 
 def prepare(args: argparse.Namespace) -> tuple[TrainPlan, TeeLogger]:
@@ -412,36 +651,7 @@ def prepare(args: argparse.Namespace) -> tuple[TrainPlan, TeeLogger]:
     sys.stdout = tee
     sys.stderr = tee
 
-    index = _load_donkey_index(
-        data_dir,
-        fixed_throttle=args.fixed_throttle,
-        angle_scale=args.angle_scale,
-        catalog_name=args.catalog,
-        force_fixed_throttle=bool(args.force_fixed_throttle),
-    )
-    if not index:
-        raise SystemExit("未找到训练样本：请确认 images/*.jpg 存在。")
-    if args.max_samples and args.max_samples > 0:
-        n_take = min(int(args.max_samples), len(index))
-        if args.sample_seed is not None:
-            rng = np.random.default_rng(int(args.sample_seed))
-            pick = rng.choice(len(index), size=n_take, replace=False)
-            index = [index[i] for i in pick]
-            print(f"[data] 随机子集: {n_take} 条 (seed={args.sample_seed})")
-        else:
-            index = index[:n_take]
-            print(f"[data] 取排序后前 {n_take} 条")
-
-    splits, split_path = resolve_splits(
-        index,
-        split_file=(ROOT / args.split_file).resolve() if args.split_file else None,
-        split_out=(ROOT / args.split_out).resolve() if args.split_out else None,
-        val_ratio=args.val_ratio,
-        test_ratio=args.test_ratio,
-        val_size=args.val_size,
-        test_size=args.test_size,
-        seed=args.split_seed,
-    )
+    index, splits, split_path = load_rows(args, data_dir)
     val_index = []
     if splits is not None:
         full_count = len(index)
@@ -461,8 +671,8 @@ def prepare(args: argparse.Namespace) -> tuple[TrainPlan, TeeLogger]:
     img0 = cv2.imread(str(first_p), cv2.IMREAD_COLOR)
     if img0 is None:
         raise SystemExit(f"首帧读取失败: {first_p}")
-    h, w = img0.shape[:2]
-    print(f"使用输入尺寸 H×W = {h}×{w} (与首帧一致)")
+    h, w = input_size(args, img0)
+    print(f"使用输入尺寸 H×W = {h}×{w}" + (" (与首帧一致)" if not args.image_size else " (--image-size)"))
 
     out_base = _checkpoint_stem((ROOT / args.out).resolve())
     best_base = _checkpoint_stem((ROOT / args.best_out).resolve())
@@ -478,8 +688,23 @@ def prepare(args: argparse.Namespace) -> tuple[TrainPlan, TeeLogger]:
         val_dataset=[(str(data_dir / rel), angle, throttle, w, h, args.dtype) for rel, angle, throttle in val_index],
         h=h, w=w, mode=args.distributed, transport=args.transport if distributed else "none",
         shard_sizes=split_global_batch(int(args.batch), int(args.workers) if distributed else 1),
+        data_hash=entries_hash(index), val_hash=entries_hash(val_index) if val_index else None,
+        split_file=str(split_path) if split_path is not None else None,
     )
-    if args.resume:
+    plan.seeds = derive_seeds(args.seed, plan.world_size)
+    plan.fingerprint = trajectory_fingerprint(args)
+    plan.end_epoch = int(args.epochs)
+    if args.state_every or args.resume_state:
+        if distributed:
+            raise SystemExit("TrainingState（--state-every / --resume-state）只用于单进程训练")
+        default_dir = Path(args.run_dir) / "states" if args.run_dir else out_base.parent / "states"
+        plan.state_dir = str(Path(args.state_dir).resolve() if args.state_dir else default_dir.resolve())
+    if args.resume_state:
+        if args.resume:
+            raise SystemExit("--resume 与 --resume-state 不能同时使用")
+        plan.resume_state = str(Path(args.resume_state).resolve())
+        _apply_resume_state(args, plan)
+    elif args.resume:
         for key, value in _resume_position(args, out_base, best_base).items():
             setattr(plan, key, value)
         if plan.resume_found:
@@ -509,6 +734,8 @@ def prepare(args: argparse.Namespace) -> tuple[TrainPlan, TeeLogger]:
             "stop_file": plan.stop_file, "started_unix_s": time.time(),
             "parallel": {"mode": plan.mode, "transport": plan.transport, "workers": plan.world_size,
                          "shard_sizes": plan.shard_sizes},
+            "seeds": plan.seeds, "data_hash": plan.data_hash, "val_hash": plan.val_hash,
+            "split_file": plan.split_file, "pid": os.getpid(),
         }
         (run_dir / "config.json").write_text(json.dumps(run_config, ensure_ascii=False, indent=2, default=str),
                                              encoding="utf-8")
@@ -516,20 +743,80 @@ def prepare(args: argparse.Namespace) -> tuple[TrainPlan, TeeLogger]:
     return plan, tee
 
 
-def _build_model(args, batch: int, h: int, w: int, dtype, conv_backend: str):
-    """构图（批大小固定为 batch）。输入与标签不需要梯度：stem 卷积因此跳过 dX 的 GEMM 与 col2im。"""
+def input_size(args, first_image) -> tuple[int, int]:
+    """(H, W)：--image-size 或首帧尺寸。"""
+    if args.image_size:
+        try:
+            h, w = (int(v) for v in str(args.image_size).lower().split("x"))
+        except ValueError:
+            raise SystemExit(f"--image-size 应为 HxW，例如 224x224：{args.image_size}") from None
+        if h < 32 or w < 32:
+            raise SystemExit("--image-size 的高和宽至少为 32")
+        return h, w
+    return tuple(first_image.shape[:2])
+
+
+def transfer_config(args) -> dict | None:
+    """--arch / --pretrained / --freeze-stages 的有效配置；默认的 MyFlows ResNet18（旧结构）返回 None。"""
+    if args.arch == "resnet18" and not args.pretrained:
+        if args.freeze_stages:
+            raise SystemExit("--freeze-stages 需要 --pretrained")
+        if args.input_norm == "imagenet":
+            raise SystemExit("--input-norm imagenet 只用于 torchvision 结构（--arch 或 --pretrained）")
+        return None
+    if args.freeze_stages and not args.pretrained:
+        raise SystemExit("--freeze-stages 需要 --pretrained")
+    if args.distributed != "none":
+        raise SystemExit("迁移训练（--arch / --pretrained）目前只支持单进程")
+    path = None
+    if args.pretrained:
+        path = (ROOT / "runs" / "pretrained" / "converted" / f"{args.arch}.npz" if args.pretrained == "imagenet"
+                else (ROOT / args.pretrained).resolve())
+        if not path.is_file():
+            raise SystemExit(f"预训练权重不存在：{path}（先运行 tools/convert_torchvision_weights.py）")
+    norm = args.input_norm if args.input_norm != "auto" else ("imagenet" if path else "none")
+    return {"arch": args.arch, "pretrained": str(path) if path else None, "freeze_stages": int(args.freeze_stages),
+            "input_norm": norm}
+
+
+def _build_model(args, batch: int, h: int, w: int, dtype, conv_backend: str, dropout_seed: int | None = None,
+                 load_pretrained: bool = True):
+    """构图（批大小固定为 batch）。输入与标签不需要梯度：stem 卷积因此跳过 dX 的 GEMM 与 col2im。
+
+    迁移训练（--arch / --pretrained）时按 torchvision 结构建模型，载入预训练主干、替换回归头并冻结前
+    --freeze-stages 个阶段；载入报告与冻结摘要挂在 ``model.transfer`` 上。续训与评估随后会用 checkpoint
+    覆盖参数，评估时传 load_pretrained=False 跳过载入。
+    """
     x_var = ms.Variable(np.zeros((batch, 3, h, w), dtype=dtype), name="X", requires_grad=False)
     y_var = ms.Variable(np.zeros((batch, 2), dtype=dtype), name="y", requires_grad=False)
-    model = ms.ResNet18(
-        in_channels=3,
-        output_dim=2,
-        stem=args.stem,
-        base_width=int(args.base_width),
-        name="resnet18_donkey",
-        dropout=args.dropout,
-        initializer=make_initializer(args.initializer, seed=args.seed) if args.seed is not None else args.initializer,
-        conv_backend=conv_backend,
-    )
+    initializer = make_initializer(args.initializer, seed=args.seed) if args.seed is not None else args.initializer
+    transfer = transfer_config(args)
+    if transfer is None:
+        model = ms.ResNet18(
+            in_channels=3,
+            output_dim=2,
+            stem=args.stem,
+            base_width=int(args.base_width),
+            name="resnet18_donkey",
+            dropout=args.dropout,
+            initializer=initializer,
+            conv_backend=conv_backend,
+            dropout_seed=dropout_seed,
+        )
+    else:
+        from MyFlows.utils import pretrained
+
+        model = pretrained.build_model(
+            transfer["arch"], 2, dropout=float(args.dropout or 0.0), initializer=initializer,
+            conv_backend=conv_backend, dropout_seed=dropout_seed,
+            input_norm=None if transfer["input_norm"] == "none" else transfer["input_norm"],
+            name=f"{transfer['arch']}_donkey")
+        report = None
+        if transfer["pretrained"] and load_pretrained:
+            report = pretrained.summarize_load_report(
+                pretrained.load_torchvision_weights(model, transfer["pretrained"], replace_head=True))
+        model.transfer = dict(transfer, load_report=report,
+                              freeze=pretrained.freeze_stages(model, transfer["freeze_stages"]))
     logits = model(x_var)
     loss_node = ms.MSELoss(logits, y_var, name="loss")
     graph = ms.Graph(loss_node, optimize=bool(args.graph_opt))
@@ -619,7 +906,9 @@ def train_rank(plan: TrainPlan, rank: int = 0, sync=None) -> dict:
         say(f"GPU 显存: {world} 个 Worker 共享，每个 Worker 的显存池上限 {limit / 2**20:.0f} MiB")
     say(f"计算 dtype: {args.dtype}, 卷积后端: {conv_backend}")
 
-    x_var, y_var, model, logits, loss_node, graph = _build_model(args, batch, h, w, dtype, conv_backend)
+    seeds = plan.seeds or derive_seeds(args.seed, world)
+    x_var, y_var, model, logits, loss_node, graph = _build_model(args, batch, h, w, dtype, conv_backend,
+                                                                 dropout_seed=seeds["dropout"][rank])
     opt = ms.Adam(graph, learning_rate=args.lr)
     reg_config = RegularizationConfig(
         l1=float(args.l1_coeff),
@@ -628,7 +917,12 @@ def train_rank(plan: TrainPlan, rank: int = 0, sync=None) -> dict:
     )
     out_base, best_base = Path(plan.out_base), Path(plan.best_base)
     stop_file = Path(plan.stop_file)
-    if plan.resume_found:
+    if plan.resume_state:
+        from MyFlows.utils.checkpoint import load_training_state
+
+        load_training_state(plan.resume_state, [model], opt)
+        opt.learning_rate = float(args.lr)  # the state carries the old rate; a rollback resumes with a smaller one
+    elif plan.resume_found:
         ms.load_checkpoint([model], opt, str(out_base))
     params, buffers = named_state(model)
     if sync is not None:
@@ -637,6 +931,16 @@ def train_rank(plan: TrainPlan, rank: int = 0, sync=None) -> dict:
         for name, node in params.items():
             node.value = xp.asarray(initial[name], dtype=node.value.dtype)
         _assign_buffers(buffers, initial)
+
+    transfer = getattr(model, "transfer", None)
+    if transfer is not None:
+        from MyFlows.utils.pretrained import frozen_fingerprint
+
+        transfer["frozen_before"] = frozen_fingerprint(model)
+        report = transfer.get("load_report") or {}
+        say(f"迁移训练: {transfer['arch']} · 预训练 {report.get('loaded', 0)}/{report.get('expected', 0)} 个张量 · "
+            f"冻结 {transfer['freeze']['frozen'] or '无'} · 可训练 {transfer['freeze']['trainable_values']:,} 个值 · "
+            f"输入归一化 {transfer['input_norm']}")
 
     best_tracker = BestScore()
     best_tracker.best = plan.best_loss
@@ -673,8 +977,9 @@ def train_rank(plan: TrainPlan, rank: int = 0, sync=None) -> dict:
                                         "workers": world, "distributed": plan.mode})
         labels = np.asarray([[angle, throttle] for _, angle, throttle, *_ in plan.dataset], dtype=np.float64)
         dashboard.log_dataset_summary(labels, task="regression")
-    # 各 Worker 的增强用不同种子，避免每个分片得到同样的随机变换
-    train_transform = default_train_transforms(seed=42 + rank) if args.augment else None
+    # 各 Worker 的增强用不同种子（由 --seed 派生），避免每个分片得到同样的随机变换
+    train_transform = default_train_transforms(seed=seeds["augment"][rank]) if args.augment else None
+    mix_seed = seeds["mix"][rank]
     if args.augment:
         say("数据增强: RandomCrop + RandomRotation + ColorJitter")
     if args.mixup:
@@ -689,6 +994,26 @@ def train_rank(plan: TrainPlan, rank: int = 0, sync=None) -> dict:
     inspect_done = False
     synced_params = None
     train_span = _DeviceSpan(device)
+    phases = _StepPhases(device, args.phase_timing_every)
+    epochs_completed = 0
+    validation_history: list[dict] = []
+    best_epoch = None
+    end_epoch = plan.end_epoch if plan.resume_state else plan.start_epoch + int(args.epochs)
+    rng_streams = _rng_streams(train_transform, graph)
+    resumed = plan.resume_meta or {}
+    first_loss = resumed.get("first_loss")
+    lr_history = list(resumed.get("lr_history") or [{"global_step": 0, "lr": float(args.lr)}])
+    if plan.resume_meta is not None:
+        # Everything the uninterrupted run would hold at this point, so the trajectory continues bit for bit
+        _restore_rng_state(rng_streams, resumed.get("rng") or {})
+        trained_samples = int(resumed.get("trained_samples", 0))
+        train_wall_s = float(resumed.get("train_wall_s", 0.0))
+        epochs_completed = int(resumed.get("epochs_completed", 0))
+        validation_history = list(resumed.get("validation_history") or [])
+        best_epoch = resumed.get("best_epoch")
+        last_mean_loss = resumed.get("last_mean_loss")
+        if float(resumed.get("lr", args.lr)) != float(args.lr):
+            lr_history.append({"global_step": plan.start_global_step, "lr": float(args.lr)})
     rank_steps = None
     if run_dir is not None and sync is not None:
         # 与分布式实验相同的 rank-*/ 记录：控制台据此显示拓扑、各 Rank 状态和 GPU 进程归属
@@ -708,11 +1033,34 @@ def train_rank(plan: TrainPlan, rank: int = 0, sync=None) -> dict:
             training["early_stopping"] = {"best": early_stopper.best, "bad_epochs": early_stopper.bad_epochs}
         return ms.save_checkpoint([model], opt, epoch, filepath=str(out_base), loss=loss, training=training)
 
+    def save_state(epoch, *, epoch_complete, samples, wall_s, next_step=0, loss_sum=0.0, loss_count=0,
+                   loss=None, running_loss=None):
+        """Full TrainingState (P9) of a single-process run; ``samples`` and ``wall_s`` include the open epoch."""
+        if not plan.state_dir or sync is not None:
+            return None
+        from MyFlows.utils.checkpoint import save_training_state
+
+        state = {
+            "epoch": epoch, "epoch_complete": epoch_complete, "next_step": next_step, "loss_sum": loss_sum,
+            "loss_count": loss_count, "global_step": global_step, "end_epoch": end_epoch,
+            "global_batch": plan.global_batch, "rng": _rng_state(rng_streams),
+            "early_stopping": {"best": early_stopper.best, "bad_epochs": early_stopper.bad_epochs}
+            if early_stopper is not None else None,
+            "best_loss": best_tracker.best, "best_epoch": best_epoch, "validation_history": validation_history,
+            "epochs_completed": epochs_completed, "trained_samples": samples, "train_wall_s": wall_s,
+            "last_mean_loss": last_mean_loss, "loss": loss, "running_loss": running_loss, "first_loss": first_loss,
+            "lr": float(opt.learning_rate), "lr_history": lr_history, "fingerprint": plan.fingerprint,
+            "config": trajectory_config(args), "seeds": plan.seeds, "data_hash": plan.data_hash,
+            "val_hash": plan.val_hash,
+        }
+        return save_training_state(plan.state_dir, [model], opt, global_step, state, keep=int(args.keep_states))
+
     def validation_loss(epoch):
-        """验证集按 Worker 交错切分，各自累加逐样本 MSE 再求和；补齐用的重复样本不计入。"""
+        """验证集按 Worker 交错切分，各自累加逐样本 MSE 与转向角绝对误差再求和；补齐用的重复样本不计入。
+        返回 (val_loss, val_angle_mae, 样本数)。"""
         if not plan.val_dataset:
-            return None, 0
-        squared, count = 0.0, 0
+            return None, None, 0
+        squared, angle_abs, count = 0.0, 0.0, 0
         model.eval()
         loader = MultiprocessDataLoader(plan.val_dataset[rank::world], batch, num_workers=0, shuffle=False,
                                         load_fn=_load_training_sample)
@@ -725,14 +1073,22 @@ def train_rank(plan: TrainPlan, rank: int = 0, sync=None) -> dict:
             y_var.value = y_batch
             graph.forward()
             pred = np.asarray(asnumpy(logits.value), dtype=np.float64)[:real]
-            squared += float(np.sum((pred - y_batch[:real].astype(np.float64)) ** 2)) / 2.0
+            target = y_batch[:real].astype(np.float64)
+            squared += float(np.sum((pred - target) ** 2)) / 2.0
+            angle_abs += float(np.sum(np.abs(pred[:, 0] - target[:, 0])))
             count += real
         if sync is not None:
-            totals = sync.reduce(f"val-{epoch}", {"squared": squared, "count": count})
-            squared, count = float(totals["squared"][0]), round(float(totals["count"][0]))
-        return (squared / count if count else None), count
+            totals = sync.reduce(f"val-{epoch}", {"squared": squared, "angle_abs": angle_abs, "count": count})
+            squared, angle_abs = float(totals["squared"][0]), float(totals["angle_abs"][0])
+            count = round(float(totals["count"][0]))
+        if not count:
+            return None, None, 0
+        return squared / count, angle_abs / count, count
 
-    for ep in range(plan.start_epoch, plan.start_epoch + args.epochs):
+    if lead and args.state_every and plan.resume_meta is None and global_step == 0:
+        # A too-large lr can blow up on the very first update: the initial weights are a rollback target too.
+        save_state(plan.start_epoch, epoch_complete=False, samples=0, wall_s=0.0)
+    for ep in range(plan.start_epoch, end_epoch):
         first_step = plan.start_step if ep == plan.start_epoch else 0
         total_loss = plan.resumed_loss_sum if first_step else 0.0
         count = plan.resumed_loss_count if first_step else 0
@@ -759,6 +1115,7 @@ def train_rank(plan: TrainPlan, rank: int = 0, sync=None) -> dict:
                     train_transform,
                     mixup=bool(args.mixup),
                     cutmix=bool(args.cutmix),
+                    mix_seed=None if mix_seed is None else mix_seed + global_step,
                 )
                 dashboard.log_augmentation(global_step, x_orig, x_batch, batch_size=batch)
 
@@ -766,8 +1123,9 @@ def train_rank(plan: TrainPlan, rank: int = 0, sync=None) -> dict:
             y_var.value = y_batch
 
             model.train(True)
+            phases.begin(global_step)
             train_span.start()
-            opt.one_step()
+            opt.one_step(phases)
             train_span.stop()
             if reg_config.enabled:
                 apply_regularization(opt, model.params, reg_config)
@@ -784,7 +1142,8 @@ def train_rank(plan: TrainPlan, rank: int = 0, sync=None) -> dict:
             dashboard.log_gradients(global_step, model)
             dashboard.log_parameters(global_step, model, args.lr)
             if sync is None:
-                opt.update()
+                with phases("optimizer"):
+                    opt.update()
                 # 每步只在这里读回一次 loss（同步点），之后再取 CUDA event 计时
                 step_loss = myflows_scalar_float(loss_node.value)
                 stop_now = stop_file.exists()
@@ -802,24 +1161,31 @@ def train_rank(plan: TrainPlan, rank: int = 0, sync=None) -> dict:
                 sync_start = time.perf_counter()
                 means, step_loss = sync.allreduce(local, batch, myflows_scalar_float(loss_node.value))
                 sync_s = time.perf_counter() - sync_start
-                opt.update({node: xp.asarray(means[name], dtype=node.value.dtype)
-                            for name, node in synced_params.items()})
+                with phases("optimizer"):
+                    opt.update({node: xp.asarray(means[name], dtype=node.value.dtype)
+                                for name, node in synced_params.items()})
                 _assign_buffers(buffers, means)
                 confirm_start = time.perf_counter()
                 stop_now = sync.commit(_fingerprint(params, buffers, opt), stop=stop_file.exists())
-                if rank_steps is not None:
-                    ended = time.perf_counter()
-                    rank_steps.write(json.dumps({
-                        "rank": rank, "epoch": ep, "step": global_step, "start_s": load_start, "end_s": ended,
-                        "step_wall_s": ended - load_start, "data_s": after_load - load_start,
-                        "gradient_sync_s": sync_s, "update_confirm_s": ended - confirm_start,
-                        "n_samples": batch, "loss": step_loss}) + "\n")
+            if not math.isfinite(step_loss):
+                # 不保存断点：最近一次断点仍是健康状态，回滚从那里继续
+                raise outcome.NonFiniteLossError(global_step + 1, ep + 1, step_loss)
+            phase_row = phases.row()
+            if sync is not None and rank_steps is not None:
+                ended = time.perf_counter()
+                rank_steps.write(json.dumps({
+                    "rank": rank, "epoch": ep, "step": global_step, "start_s": load_start, "end_s": ended,
+                    "step_wall_s": ended - load_start, "data_s": after_load - load_start,
+                    "gradient_sync_s": sync_s, "update_confirm_s": ended - confirm_start,
+                    "n_samples": batch, "loss": step_loss, **phase_row}) + "\n")
             step_elapsed_ms = (time.perf_counter() - after_load) * 1000.0
             train_elapsed_ms = train_span.elapsed_ms()
             data_load_ms = (after_load - load_start) * 1000.0
             total_loss += step_loss
             count += 1
             global_step += 1
+            if first_loss is None:
+                first_loss = step_loss
             history.record_step(global_step, step_loss)
             running_mean_loss = total_loss / count
             dashboard.log_train_step(
@@ -834,6 +1200,7 @@ def train_rank(plan: TrainPlan, rank: int = 0, sync=None) -> dict:
                 task="regression",
                 force=s == steps - 1,
                 epoch=ep + 1,
+                extra=phase_row,
             )
             dashboard.log_activations(global_step, getattr(model, "_last_feature_nodes", {}), preferred_last="layer4")
             if s % 10 == 0 or s == steps - 1:
@@ -863,6 +1230,11 @@ def train_rank(plan: TrainPlan, rank: int = 0, sync=None) -> dict:
                     f"(running_loss={running_mean_loss:.6f})"
                 )
                 dashboard.log_checkpoint("latest", f"step={global_step} epoch={ep+1} path={json_path} running_loss={running_mean_loss:.6f}", global_step)
+            if lead and args.state_every and global_step % int(args.state_every) == 0 and s != steps - 1:
+                save_state(ep, epoch_complete=False, next_step=s + 1, loss_sum=total_loss, loss_count=count,
+                           loss=step_loss, running_loss=running_mean_loss,
+                           samples=trained_samples + (count - (plan.resumed_loss_count if first_step else 0))
+                           * plan.global_batch, wall_s=train_wall_s + time.perf_counter() - epoch_start)
             load_start = time.perf_counter()
         # 训练吞吐只计前向、反向与同步，不含验证与保存断点
         epoch_train_s = time.perf_counter() - epoch_start
@@ -872,17 +1244,28 @@ def train_rank(plan: TrainPlan, rank: int = 0, sync=None) -> dict:
             last_epoch_train_s = epoch_train_s
             last_mean_loss = total_loss / count
             history.record_epoch(ep + 1, last_mean_loss)
-            validation, validation_count = validation_loss(ep)
+            validation, angle_mae, validation_count = validation_loss(ep)
+            if not math.isfinite(last_mean_loss) or (validation is not None and not math.isfinite(validation)):
+                raise outcome.NonFiniteLossError(global_step, ep + 1, validation if validation is not None
+                                                 else last_mean_loss)
+            epoch_extra = {"val_angle_mae": angle_mae, "val_samples": validation_count,
+                           "samples_per_sec": (count - (plan.resumed_loss_count if first_step else 0))
+                           * plan.global_batch / epoch_train_s if epoch_train_s else None}
             dashboard.log_epoch(
                 ep + 1,
                 loss=last_mean_loss,
                 validation_loss=validation,
                 learning_rate=args.lr,
                 epoch_time_s=time.perf_counter() - epoch_start,
+                extra=epoch_extra,
             )
+            epochs_completed += 1
+            validation_history.append({"epoch": ep + 1, "loss": last_mean_loss, "val_loss": validation,
+                                       "val_angle_mae": angle_mae})
             say(f"epoch {ep+1} mean loss: {last_mean_loss:.6f}")
             if validation is not None:
-                say(f"epoch {ep+1} val loss: {validation:.6f} ({validation_count} samples)")
+                say(f"epoch {ep+1} val loss: {validation:.6f} val angle MAE: {angle_mae:.6f} "
+                    f"({validation_count} samples)")
 
             # 每个 Worker 拿到相同的验证 loss，所以最佳模型与早停的判断处处一致
             score_for_best = float(validation if validation is not None else last_mean_loss)
@@ -901,6 +1284,7 @@ def train_rank(plan: TrainPlan, rank: int = 0, sync=None) -> dict:
                 dashboard.log_checkpoint("latest_epoch", f"epoch={ep+1} path={json_path} mean_loss={last_mean_loss:.6f}", ep + 1)
             if improved:
                 best_loss = float(best_tracker.best)
+                best_epoch = ep + 1
                 if lead:
                     best_json, best_npz = ms.save_checkpoint(
                         [model],
@@ -911,6 +1295,9 @@ def train_rank(plan: TrainPlan, rank: int = 0, sync=None) -> dict:
                     )
                     print(f"已保存最佳模型: {best_json} + {best_npz} (loss={best_loss:.6f})")
                     dashboard.log_checkpoint("best", f"epoch={ep+1} path={best_json} best_loss={best_loss:.6f}", ep + 1)
+            if lead and args.state_every:
+                save_state(ep, epoch_complete=True, loss=last_mean_loss, running_loss=last_mean_loss,
+                           samples=trained_samples, wall_s=train_wall_s)
         if should_stop:
             break
 
@@ -929,13 +1316,32 @@ def train_rank(plan: TrainPlan, rank: int = 0, sync=None) -> dict:
                 print(f"已保存训练曲线 PNG: {p}")
     if rank_steps is not None:
         rank_steps.close()
+    memory = phases.summary()
+    if run_dir is not None and sync is not None:
+        (run_dir / f"rank-{rank}" / "memory.json").write_text(json.dumps(memory), encoding="utf-8")
     if rank_tee is not None:
         rank_tee.close()
+    if transfer is not None:
+        from MyFlows.utils.pretrained import frozen_fingerprint
+
+        transfer["frozen_after"] = frozen_fingerprint(model)
+        transfer["frozen_unchanged"] = transfer["frozen_after"] == transfer["frozen_before"]
+        if not transfer["frozen_unchanged"]:
+            say("[迁移训练] 警告：冻结的参数或 BN buffer 在训练中被改动")
+    at_best = next((row for row in validation_history if row["epoch"] == best_epoch), None)
+    finals = validation_history[-1] if validation_history else {}
+    maes = [row["val_angle_mae"] for row in validation_history if row["val_angle_mae"] is not None]
     return {"steps": global_step - plan.start_global_step, "global_step": global_step,
             "last_mean_loss": last_mean_loss, "best_loss": best_loss,
             "stopped_early": bool(should_stop and not stopped_by_file), "stopped_by_file": stopped_by_file,
             "samples_per_s": trained_samples / train_wall_s if train_wall_s else None,
-            "epoch_train_wall_s": last_epoch_train_s}
+            "epoch_train_wall_s": last_epoch_train_s, "trained_samples": trained_samples,
+            "train_wall_s": train_wall_s, "epochs_completed": epochs_completed, "best_epoch": best_epoch,
+            "val_loss": finals.get("val_loss"), "val_angle_mae": finals.get("val_angle_mae"),
+            "best_val_angle_mae": min(maes) if maes else None,
+            "val_angle_mae_at_best": at_best.get("val_angle_mae") if at_best else None,
+            "epochs": validation_history, "memory": memory, "device": device, "transfer": transfer,
+            "conv_backend": ("numpy" if device == "cpu" else "cupy") if conv_backend == "auto" else conv_backend}
 
 
 def _rank_main(rank: int, sync, plan: TrainPlan) -> None:
@@ -996,68 +1402,180 @@ def run_distributed(plan: TrainPlan, tee: TeeLogger) -> tuple[dict, TeeLogger]:
                      shard_sizes=plan.shard_sizes, initial_state=initial_state, timeout=args.sync_timeout,
                      run_id=plan.run_id or plan.run_stamp) as run:
             run.start(_rank_main, (plan,))
-            outcome = run.wait()
+            finished = run.wait()
     except ValueError as exc:  # 启动前就能判断的配置问题，例如模型太大、Socket JSON 装不下
-        outcome = {"status": "failed", "error": str(exc)}
+        finished = {"status": "failed", "error": str(exc)}
     finally:
         initial_state.unlink(missing_ok=True)
         tee = TeeLogger(Path(plan.log_file))
         sys.stdout = tee
         sys.stderr = tee
     elapsed = time.perf_counter() - started
-    if outcome["status"] != "passed":
-        print(f"分布式训练失败（{elapsed:.1f} s）: {outcome['error']}")
-        if outcome.get("traceback"):
-            print(outcome["traceback"])
-        return {"status": "failed", "error": outcome["error"]}, tee
+    if finished["status"] != "passed":
+        print(f"分布式训练失败（{elapsed:.1f} s）: {finished['error']}")
+        if finished.get("traceback"):
+            print(finished["traceback"])
+        return {"status": "failed", "error": finished["error"],
+                "failure_kind": outcome.classify(f"{finished['error']}\n{finished.get('traceback') or ''}")}, tee
     summary_path = Path(plan.summary_path)
     summary = json.loads(summary_path.read_text(encoding="utf-8"))
     summary_path.unlink(missing_ok=True)
+    if plan.run_dir is not None:
+        ranks = [json.loads(p.read_text(encoding="utf-8")) for p in sorted(Path(plan.run_dir).glob("rank-*/memory.json"))]
+        if ranks and all(r.get("source") for r in ranks):
+            summary["memory"] = {"source": "cupy_memory_pool", "per_rank": ranks,
+                                 "peak_used_mb": sum(r["peak_used_mb"] for r in ranks),
+                                 "peak_pool_mb": sum(r["peak_pool_mb"] for r in ranks),
+                                 "device_total_mb": ranks[0]["device_total_mb"]}
     print(f"分布式训练完成: {plan.world_size} 个 Worker，{summary['steps']} 步，用时 {elapsed:.1f} s")
     return dict(summary, status="passed"), tee
 
 
+def _uses_gpu(args) -> bool:
+    return args.device == "cuda" or (args.device == "auto" and cuda_available())
+
+
+def _result(args, plan: TrainPlan | None, summary: dict, *, started_unix_s: float, lock: GpuLock | None,
+            failure: dict | None, exit_code: int) -> dict:
+    """result.json：Executor 与 Verifier 读取的结束记录（指标、吞吐、显存峰值、样本数、后端、等锁时间）。"""
+    finished = time.time()
+    acquired = lock.acquired_unix_s if lock is not None else None
+    status = "failed" if failure else ("stopped" if summary.get("stopped_by_file") else "succeeded")
+    at_best, final = summary.get("val_angle_mae_at_best"), summary.get("val_angle_mae")
+    result = {
+        "status": status, "exit_code": exit_code, "failure": failure, "task": "donkey_resnet18_single",
+        "config": {key: getattr(args, key) for key in ("lr", "batch", "num_workers", "epochs", "max_samples",
+                                                       "seed", "dtype", "device", "conv_backend", "distributed",
+                                                       "workers", "transport", "base_width", "stem", "weight_decay",
+                                                       "dropout", "augment", "val_size", "split_seed", "arch",
+                                                       "pretrained", "freeze_stages", "image_size", "input_norm")},
+        "metrics": {"val_angle_mae": at_best if at_best is not None else final, "val_angle_mae_final": final,
+                    "best_val_angle_mae": summary.get("best_val_angle_mae"), "val_loss": summary.get("val_loss"),
+                    "best_loss": summary.get("best_loss"), "last_train_loss": summary.get("last_mean_loss"),
+                    "best_epoch": summary.get("best_epoch")},
+        "epochs": summary.get("epochs", []),
+        "throughput": {"samples_per_s": summary.get("samples_per_s"),
+                       "epoch_train_wall_s": summary.get("epoch_train_wall_s"),
+                       "train_wall_s": summary.get("train_wall_s")},
+        "memory": summary.get("memory") or {"source": None},
+        "steps": summary.get("steps"), "global_step": summary.get("global_step"),
+        "epochs_completed": summary.get("epochs_completed"),
+        "stopped_early": bool(summary.get("stopped_early")), "stopped_by_file": bool(summary.get("stopped_by_file")),
+        "transfer": summary.get("transfer"),
+        "backend": {"requested": args.conv_backend, "actual": summary.get("conv_backend"),
+                    "device": summary.get("device"), "dtype": args.dtype},
+        "timing": {"started_unix_s": started_unix_s, "lock_wait_s": lock.wait_s if lock is not None else None,
+                   "lock_acquired_unix_s": acquired, "finished_unix_s": finished,
+                   "wall_s": finished - started_unix_s, "run_s": finished - acquired if acquired else None},
+    }
+    if plan is not None:
+        expected = None
+        if plan.resume_state:
+            # An exact resume reports the whole trajectory, the steps before the state included
+            expected = int(plan.end_epoch) * plan.steps_per_epoch * plan.global_batch
+            meta = plan.resume_meta or {}
+            result["resume"] = {"state": plan.resume_state, "from_global_step": meta.get("global_step"),
+                                "lr_before": meta.get("lr"), "lr": float(args.lr)}
+        elif not plan.resume_found:
+            expected = int(args.epochs) * plan.steps_per_epoch * plan.global_batch
+        result.update(
+            samples={"train": len(plan.dataset), "val": len(plan.val_dataset),
+                     "trained": summary.get("trained_samples"), "expected_trained": expected},
+            data={"data_hash": plan.data_hash, "val_hash": plan.val_hash, "split_file": plan.split_file},
+            seeds=plan.seeds,
+            parallel={"mode": plan.mode, "transport": plan.transport, "workers": plan.world_size,
+                      "shard_sizes": plan.shard_sizes},
+            paths={"checkpoint": plan.out_base, "best": plan.best_base, "log": plan.log_file,
+                   "states": plan.state_dir})
+    return result
+
+
 def main() -> None:
     args = build_parser().parse_args()
-    plan, tee = prepare(args)
-    if plan.mode == "none":
-        summary = dict(train_rank(plan), status="passed")
-    else:
-        summary, tee = run_distributed(plan, tee)
-
-    if summary["status"] == "passed" and args.export_onnx:
-        best_base = Path(plan.best_base)
-        if best_base.with_suffix(".json").exists():
-            onnx_path = (ROOT / args.onnx_out).resolve() if args.onnx_out else best_base.with_suffix(".onnx")
-            export_resnet18_onnx(
-                best_base,
-                output=onnx_path,
-                batch_size=1,
-                image_w=plan.w,
-                image_h=plan.h,
-                stem=args.stem,
-                device=args.device,
-                graph_opt=bool(args.graph_opt),
-                base_width=int(args.base_width),
-            )
-            print(f"已导出 ONNX: {onnx_path} (batch=1)")
+    started_unix_s = time.time()
+    run_dir = (ROOT / args.run_dir).resolve() if args.run_dir else None
+    plan = tee = lock = None
+    summary: dict = {}
+    failure, exit_code = None, outcome.EXIT_OK
+    try:
+        plan, tee = prepare(args)
+        if _uses_gpu(args):
+            lock = GpuLock(label=f"apps.train {plan.run_id or plan.run_stamp}", run_dir=run_dir, say=print)
+            lock.acquire(timeout_s=args.gpu_lock_timeout or None)
+        if plan.mode == "none":
+            summary = dict(train_rank(plan), status="passed")
         else:
-            print(f"还没有最佳模型（第一个 epoch 结束前就停止了），跳过 ONNX 导出: {best_base}")
+            summary, tee = run_distributed(plan, tee)
+            if summary["status"] != "passed":
+                kind = summary.get("failure_kind", "error")
+                failure, exit_code = {"kind": kind, "message": summary.get("error")}, outcome.FAILURE_EXIT_CODES[kind]
+        if summary["status"] == "passed" and args.export_onnx:
+            _export_onnx(args, plan)
+    except outcome.NonFiniteLossError as exc:
+        print(f"训练终止: {exc}")
+        failure = {"kind": "nan", "message": str(exc), "step": exc.step, "epoch": exc.epoch, "loss": str(exc.loss)}
+        exit_code = outcome.EXIT_NONFINITE
+    except SystemExit as exc:
+        if exc.code in (None, 0):
+            raise
+        failure = {"kind": "error", "message": str(exc.code)}
+        exit_code = exc.code if isinstance(exc.code, int) else outcome.EXIT_ERROR
+        if not isinstance(exc.code, int):
+            print(exc.code)
+    except BaseException as exc:  # 包括 KeyboardInterrupt：同样留下 result.json 再退出
+        traceback.print_exc()
+        kind = outcome.classify(exc)
+        failure = {"kind": kind, "message": f"{type(exc).__name__}: {exc}"}
+        exit_code = outcome.FAILURE_EXIT_CODES[kind]
+    finally:
+        if lock is not None:
+            lock.release()
 
-    if plan.run_dir is not None:
-        result = {"status": summary["status"], "finished_unix_s": time.time(), "steps": summary.get("steps"),
-                  "last_mean_loss": summary.get("last_mean_loss"), "best_loss": summary.get("best_loss"),
-                  "stopped_early": bool(summary.get("stopped_early")),
+    if run_dir is not None:
+        result = _result(args, plan, summary, started_unix_s=started_unix_s, lock=lock, failure=failure,
+                         exit_code=exit_code)
+        outcome.write_result(run_dir, result)
+        # results.json 是控制台运行列表沿用的旧格式
+        legacy = {"status": "passed" if failure is None else "failed", "finished_unix_s": time.time(),
+                  "steps": summary.get("steps"), "last_mean_loss": summary.get("last_mean_loss"),
+                  "best_loss": summary.get("best_loss"), "stopped_early": bool(summary.get("stopped_early")),
                   "stopped_by_file": bool(summary.get("stopped_by_file")),
-                  "samples_per_s": summary.get("samples_per_s"), "epoch_train_wall_s": summary.get("epoch_train_wall_s"),
-                  "workers": plan.world_size, "distributed": plan.mode}
-        if summary["status"] != "passed":
-            result["error"] = summary.get("error")
-        (Path(plan.run_dir) / "results.json").write_text(json.dumps(result, ensure_ascii=False, indent=2),
-                                                         encoding="utf-8")
-    tee.close()
-    if summary["status"] != "passed":
-        raise SystemExit(1)
+                  "samples_per_s": summary.get("samples_per_s"),
+                  "epoch_train_wall_s": summary.get("epoch_train_wall_s"),
+                  "val_angle_mae": result["metrics"]["val_angle_mae"],
+                  "workers": plan.world_size if plan else None, "distributed": args.distributed}
+        if failure is not None:
+            legacy["error"] = failure["message"]
+            legacy["failure_kind"] = failure["kind"]
+        run_dir.mkdir(parents=True, exist_ok=True)
+        (run_dir / "results.json").write_text(json.dumps(legacy, ensure_ascii=False, indent=2), encoding="utf-8")
+    if tee is not None:
+        tee.close()
+    if exit_code != outcome.EXIT_OK:
+        raise SystemExit(exit_code)
+
+
+def _export_onnx(args, plan: TrainPlan) -> None:
+    if transfer_config(args) is not None:
+        print("ONNX 导出目前只支持默认的 MyFlows ResNet18 结构，跳过")
+        return
+    best_base = Path(plan.best_base)
+    if not best_base.with_suffix(".json").exists():
+        print(f"还没有最佳模型（第一个 epoch 结束前就停止了），跳过 ONNX 导出: {best_base}")
+        return
+    onnx_path = (ROOT / args.onnx_out).resolve() if args.onnx_out else best_base.with_suffix(".onnx")
+    export_resnet18_onnx(
+        best_base,
+        output=onnx_path,
+        batch_size=1,
+        image_w=plan.w,
+        image_h=plan.h,
+        stem=args.stem,
+        device=args.device,
+        graph_opt=bool(args.graph_opt),
+        base_width=int(args.base_width),
+    )
+    print(f"已导出 ONNX: {onnx_path} (batch=1)")
 
 
 if __name__ == "__main__":

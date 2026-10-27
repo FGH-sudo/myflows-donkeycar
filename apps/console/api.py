@@ -23,7 +23,7 @@ from .presets import (
     distributed_presets,
     modes,
     native_library,
-    single_cli_args,
+    single_job,
     single_presets,
     validate_distributed,
     validate_single,
@@ -260,17 +260,7 @@ def build_router(*, registry: RunRegistry, jobs: JobManager, live, sampler, repo
                                    config=config)
             if job_type == "single":
                 args = validate_single(body.get("args") or {}, repo_root)
-                parallel = ("单进程" if args["distributed"] == "none" else
-                            f"{MODE_LABELS.get((args['distributed'], args['transport']), args['distributed'])}"
-                            f" · {args['workers']}w")
-                label = body.get("label") or f"ResNet18 · {parallel} · {args.get('max_samples') or '全部'} 样本"
-                command = [python, "-m", "apps.train.train_myflows_donkey", *single_cli_args(args),
-                           "--run-dir", "{run_dir}", "--log-dir", "{run_dir}", "--log-file", "{run_dir}/train.log",
-                           "--logdir", "{run_dir}/tensorboard", "--out", "{run_dir}/checkpoints/checkpoint",
-                           "--best-out", "{run_dir}/checkpoints/best", "--stop-file", "{run_dir}/STOP_TRAINING"]
-                return jobs.submit(job_type="single", label=label, task="donkey_resnet18_single", command=command,
-                                   config={"kind": "single", "task": "donkey_resnet18_single", "args": args},
-                                   extra={"record_resources": True, "stop_file": "{run_dir}/STOP_TRAINING"})
+                return jobs.submit(**single_job(args, python, label=body.get("label")))
         except ValidationError as exc:
             raise HTTPException(422, str(exc))
         raise HTTPException(422, "type 必须是 distributed 或 single")

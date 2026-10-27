@@ -16,7 +16,36 @@ export const STATUS_META: Record<string, { color: string; label: string }> = {
   cancelled: { color: 'default', label: '已取消' },
   incomplete: { color: 'warning', label: '不完整' },
   error: { color: 'error', label: '读取错误' },
+  // AutoPilot campaigns, trials and pending confirmations
+  draft: { color: 'default', label: '草稿' },
+  pausing: { color: 'warning', label: '暂停中' },
+  paused: { color: 'warning', label: '已暂停' },
+  finishing: { color: 'processing', label: '生成报告' },
+  completed: { color: 'success', label: '已完成' },
+  stopped: { color: 'default', label: '已停止' },
+  queued: { color: 'default', label: '排队中' },
+  skipped: { color: 'default', label: '已跳过' },
+  done: { color: 'success', label: '已结束' },
+  valid: { color: 'success', label: '有效' },
+  invalid: { color: 'warning', label: '无效' },
+  pending_confirmation: { color: 'warning', label: '待确认' },
+  confirmed: { color: 'success', label: '已确认' },
+  rejected: { color: 'default', label: '已拒绝' },
+  expired: { color: 'default', label: '已过期' },
 }
+
+export const PHASE_TEXT: Record<string, string> = {
+  baseline: '基线',
+  explore: '探索',
+  exploit: '利用',
+  confirm: '确认',
+  done: '完成',
+}
+
+export const ACTIVE_CAMPAIGN = ['running', 'pausing', 'stopping', 'finishing']
+
+export const fmtShare = (value?: number | null) =>
+  value === null || value === undefined || !Number.isFinite(value) ? '—' : `${(value * 100).toFixed(0)}%`
 
 export const MODE_TEXT: Record<string, string> = {
   single: '单进程',
@@ -100,3 +129,5 @@ export const RANK_COLORS = ['#3b6fd8', '#d4892a', '#2f9e7a', '#8866d6', '#cf5a80
 export const shortGpuName = (name: string) => name.replace(/^NVIDIA\s+(GeForce\s+)?/i, '')
 
 export const rankColor = (rank: number | string) => RANK_COLORS[Number(rank) % RANK_COLORS.length]
+
+export const campaignPath = (cid: string) => `/autopilot/c/${encodeURIComponent(cid)}`

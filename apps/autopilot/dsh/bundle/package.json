@@ -1,0 +1,24 @@
+{
+  "name": "@myflows/dsh-autopilot",
+  "description": "MyFlows AutoPilot patch layer for the pinned DeepSeek Harness clone: AutoPilot tools only, permission-aware guard, Chinese advisor persona",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "license": "MIT",
+  "exports": {
+    "./guard": "./guard.js",
+    "./cordis.patch.yml": "./cordis.patch.yml",
+    "./package.json": "./package.json"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "engines": {
+    "dsh": "0.2.1-rc.2"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/dsh-scope": "*"
+  }
+}
