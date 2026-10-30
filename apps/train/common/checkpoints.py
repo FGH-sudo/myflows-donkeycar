@@ -31,6 +31,4 @@ def checkpoint_score_to_loss(score: float | None) -> float | None:
     if score is None:
         return None
     value = float(score)
-    if value == 0.0:
-        return None
     return -value if value < 0.0 else value

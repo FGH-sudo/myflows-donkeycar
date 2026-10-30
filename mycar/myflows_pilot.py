@@ -15,6 +15,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 import MyFlows as ms  # noqa: E402
+from MyFlows.core.device import asnumpy
 from tools.device_runtime import create_ort_inference_session, print_ort_device, resolve_myflows_device
 
 
@@ -113,7 +114,7 @@ class MyFlowsResNet18Pilot:
             self.x.value = x.astype(np.float32, copy=False)
             self.model.eval()
             self.graph.forward()
-            pred = np.asarray(self.out.value).reshape(-1)
+            pred = asnumpy(self.out.value).reshape(-1)
         elapsed = time.time() - start
 
         angle = float(np.clip(float(pred[0]) * self.steering_scale, -1.0, 1.0))

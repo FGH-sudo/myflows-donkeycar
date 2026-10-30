@@ -47,8 +47,9 @@ class SafeJSONResponse(JSONResponse):
         return json.dumps(_clean(content), ensure_ascii=False, separators=(",", ":")).encode("utf-8")
 
 
-def _sse(event: str, data: Any) -> str:
-    return f"event: {event}\ndata: {json.dumps(_clean(data), ensure_ascii=False, separators=(',', ':'))}\n\n"
+def _sse(event: str, data: Any, event_id: str | None = None) -> str:
+    prefix = f"id: {event_id}\n" if event_id is not None else ""
+    return prefix + f"event: {event}\ndata: {json.dumps(_clean(data), ensure_ascii=False, separators=(',', ':'))}\n\n"
 
 
 def _parse_cursor(raw: str | None) -> dict:
@@ -60,6 +61,8 @@ def _parse_cursor(raw: str | None) -> dict:
         raise HTTPException(400, "cursor 必须是 JSON 对象")
     if not isinstance(value, dict):
         raise HTTPException(400, "cursor 必须是 JSON 对象")
+    if any(type(v) is not int or v < 0 for v in value.values()):
+        raise HTTPException(400, "cursor 的值必须是非负整数")
     return value
 
 
@@ -188,7 +191,7 @@ def build_router(*, registry: RunRegistry, jobs: JobManager, live, sampler, repo
     async def run_stream(run_id: str, request: Request, cursor: str | None = None, fields: str | None = None,
                          interval_s: float = Query(1.0, ge=0.2, le=30)):
         ref = ref_or_404(run_id)
-        state = {"cursor": _parse_cursor(cursor)}
+        state = {"cursor": _parse_cursor(request.headers.get("last-event-id") or cursor)}
         field_list = _csv(fields)
 
         def collect():
@@ -212,11 +215,15 @@ def build_router(*, registry: RunRegistry, jobs: JobManager, live, sampler, repo
 
         async def gen():
             last_status = None
+            sent_cursor = dict(state["cursor"])
             while not await request.is_disconnected():
                 update = await asyncio.to_thread(collect)
                 for key in ("steps", "epochs", "resources"):
                     if update[key] is not None:
-                        yield _sse(key, update[key])
+                        # A reconnect may happen between event types; acknowledge
+                        # only rows already sent to the browser.
+                        sent_cursor.update(update[key]["cursor"])
+                        yield _sse(key, update[key], json.dumps(sent_cursor, separators=(",", ":")))
                 status = json.dumps(_clean(update["status"]), sort_keys=True, default=str)
                 if status != last_status:
                     last_status = status

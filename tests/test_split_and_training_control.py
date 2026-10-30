@@ -1,8 +1,15 @@
+import json
 import tempfile
 import unittest
 from pathlib import Path
 
-from apps.common.splits import build_split, load_split, save_split, select_split
+from apps.common.splits import (
+    build_split,
+    load_split,
+    resolve_splits,
+    save_split,
+    select_split,
+)
 from apps.train.common.training_control import EarlyStopping
 
 
@@ -42,6 +49,27 @@ class SplitAndTrainingControlTest(unittest.TestCase):
         improved = stopper.update(0.80)
         self.assertTrue(improved.improved)
         self.assertFalse(improved.should_stop)
+
+    def test_loaded_splits_reject_overlap_duplicates_and_invalid_indices(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "split.json"
+            for splits in (
+                {"train": [0, 1], "val": [1]},
+                {"train": [0], "val": [1], "test": [0]},
+                {"train": [0, 0], "val": [1]},
+                {"train": [-1], "val": [1]},
+                {"train": [4], "val": [1]},
+                {"train": [0.5], "val": [1]},
+                {"train": [True], "val": [1]},
+            ):
+                with self.subTest(splits=splits):
+                    path.write_text(json.dumps({"version": 1, "source_count": 4, "splits": splits}), encoding="utf-8")
+                    with self.assertRaises(ValueError):
+                        load_split(path)
+            save_split(path, {"train": [0, 1], "val": [2]}, source_count=4, seed=0)
+            self.assertEqual(load_split(path, source_count=4)["splits"]["train"], [0, 1])
+            with self.assertRaisesRegex(ValueError, "source_count"):
+                resolve_splits(list(range(5)), split_file=path)
 
 
 if __name__ == "__main__":

@@ -1,0 +1,3 @@
+[submodule "MyFlows"]
+	path = MyFlows
+	url = https://github.com/FGH-sudo/MyFlows.git

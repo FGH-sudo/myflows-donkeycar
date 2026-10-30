@@ -10,6 +10,7 @@ from pathlib import Path
 
 import numpy as np
 
+from apps.autopilot.verifier import OnlineMonitor
 from apps.common.gpu_lock import read_events
 from apps.train.common import outcome
 from tests.test_train_distributed import _tub
@@ -84,6 +85,11 @@ class TrainOutcomeTest(unittest.TestCase):
         self.assertEqual(result["samples"], {"train": 15, "val": 5, "trained": 36, "expected_trained": 36})
         self.assertEqual(result["epochs_completed"], 2)
         self.assertEqual(result["backend"]["actual"], "numpy")
+        self.assertGreater(result["timing"]["run_s"], 0)
+        self.assertEqual([e["event"] for e in read_events(out / "run")], ["disabled"])
+        monitor = OnlineMonitor(out / "run", {"hang_timeout_s": 1000000, "window_steps": 10}, 1,
+                                clock=lambda: result["timing"]["finished_unix_s"] + 100)
+        self.assertEqual(monitor.check().kind, "timeout")
         self.assertIsNotNone(result["data"]["val_hash"])
         maes = [row["val_angle_mae"] for row in result["epochs"]]
         self.assertEqual(result["metrics"]["best_val_angle_mae"], min(maes))

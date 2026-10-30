@@ -49,8 +49,8 @@ def ensure_split(repo_root: Path, splits_dir: Path, *, max_samples: int, val_siz
     else:
         raise ValueError(f"未知的划分方式：{kind}")
     if path.exists():
-        saved = load_split(path)
-        if saved["splits"] != splits or int(saved.get("source_count", -1)) != len(index):
+        saved = load_split(path, source_count=len(index))
+        if saved["splits"] != splits:
             raise ValueError(f"已有划分文件 {path} 与当前数据不一致；请换 split_seed 或删除旧文件")
     else:
         save_split(path, splits, source_count=len(index), seed=split_seed, kind=kind, meta=meta)
@@ -65,9 +65,9 @@ def describe_split(repo_root: Path, split_file: str, *, index: list | None = Non
                    max_samples: int = 0) -> dict:
     path = Path(split_file)
     path = path if path.is_absolute() else Path(repo_root) / path
-    payload = load_split(path)
     if index is None:
         index = load_index(repo_root, max_samples)
+    payload = load_split(path, source_count=len(index))
     val = select_split(index, payload["splits"], "val")
     train = select_split(index, payload["splits"], "train")
     test = select_split(index, payload["splits"], "test")

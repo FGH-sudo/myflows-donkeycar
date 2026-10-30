@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import copy
 import itertools
+import math
 import re
 import time
 from pathlib import Path
@@ -103,8 +104,10 @@ def _number(value, name: str, *, kind=float, minimum=None, maximum=None, allow_n
         raise SpecError(f"{name} 必须是数值")
     try:
         out = kind(value)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         raise SpecError(f"{name} 必须是{'整数' if kind is int else '数值'}：{value!r}") from None
+    if not math.isfinite(out):
+        raise SpecError(f"{name} 必须是有限数值：{value!r}")
     if kind is int and float(value) != out:
         raise SpecError(f"{name} 必须是整数：{value!r}")
     if minimum is not None and out < minimum:

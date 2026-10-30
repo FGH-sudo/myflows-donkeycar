@@ -1,3 +1,5 @@
+import base64
+import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -35,6 +37,19 @@ class _FakePredictor:
 
 
 class FastApiPredictUploadTest(unittest.TestCase):
+    def test_json_prediction_and_openapi_resolve_the_request_body(self):
+        ok, encoded = cv2.imencode(".png", np.full((12, 16, 3), 127, dtype=np.uint8))
+        self.assertTrue(ok)
+        with tempfile.TemporaryDirectory() as tmp, patch.object(serve_fastapi, "OnnxPredictor", _FakePredictor):
+            client = TestClient(serve_fastapi.create_app(Path("fake.onnx"), log_file=Path(tmp) / "serve.jsonl"))
+            response = client.post("/predict_json", json={"image_b64": base64.b64encode(encoded).decode(),
+                                                         "width": 16, "height": 12})
+            self.assertEqual(response.status_code, 200, response.text)
+            self.assertEqual(response.json()["outputs"], [0.1, 0.2])
+            schema = client.get("/openapi.json")
+            self.assertEqual(schema.status_code, 200, schema.text)
+            self.assertIn("requestBody", schema.json()["paths"]["/predict_json"]["post"])
+
     def test_predict_accepts_multipart_upload(self):
         image = np.full((12, 16, 3), 127, dtype=np.uint8)
         ok, encoded = cv2.imencode(".jpg", image)

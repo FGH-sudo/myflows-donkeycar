@@ -525,6 +525,13 @@ def _apply_resume_state(args: argparse.Namespace, plan: "TrainPlan") -> None:
         changed = sorted(k for k in set(saved) | set(now) if saved.get(k) != now.get(k))
         raise SystemExit("[resume-state] 训练配置与 TrainingState 不同，不能精确续训："
                          + ", ".join(f"{k}: {saved.get(k)!r} → {now.get(k)!r}" for k in changed))
+    if state.get("data_hash") != plan.data_hash or state.get("val_hash") != plan.val_hash:
+        raise SystemExit("[resume-state] 训练集或验证集的样本、标签已变化，不能精确续训")
+    saved_seeds = state.get("seeds") or {}
+    if (args.dropout and not (state.get("rng") or {}).get("exact")) or \
+            ((args.mixup or args.cutmix) and any(s is None for s in saved_seeds.get("mix", [None]))):
+        raise SystemExit("[resume-state] 旧 TrainingState 未保存完整随机数状态，不能精确续训")
+    plan.seeds = saved_seeds or plan.seeds
     plan.resume_meta = state
     plan.end_epoch = int(state["end_epoch"])
     if state.get("epoch_complete"):
@@ -692,6 +699,10 @@ def prepare(args: argparse.Namespace) -> tuple[TrainPlan, TeeLogger]:
         split_file=str(split_path) if split_path is not None else None,
     )
     plan.seeds = derive_seeds(args.seed, plan.world_size)
+    if args.seed is None and (args.state_every or args.resume_state):
+        # Even an unseeded run needs private, saved streams for exact resume.
+        streams = derive_seeds(random.getrandbits(32), plan.world_size)
+        plan.seeds.update(dropout=streams["dropout"], mix=streams["mix"])
     plan.fingerprint = trajectory_fingerprint(args)
     plan.end_epoch = int(args.epochs)
     if args.state_every or args.resume_state:
@@ -920,7 +931,7 @@ def train_rank(plan: TrainPlan, rank: int = 0, sync=None) -> dict:
     if plan.resume_state:
         from MyFlows.utils.checkpoint import load_training_state
 
-        load_training_state(plan.resume_state, [model], opt)
+        load_training_state(plan.resume_state, [model], opt, best_filepath=best_base)
         opt.learning_rate = float(args.lr)  # the state carries the old rate; a rollback resumes with a smaller one
     elif plan.resume_found:
         ms.load_checkpoint([model], opt, str(out_base))
@@ -1053,7 +1064,8 @@ def train_rank(plan: TrainPlan, rank: int = 0, sync=None) -> dict:
             "config": trajectory_config(args), "seeds": plan.seeds, "data_hash": plan.data_hash,
             "val_hash": plan.val_hash,
         }
-        return save_training_state(plan.state_dir, [model], opt, global_step, state, keep=int(args.keep_states))
+        return save_training_state(plan.state_dir, [model], opt, global_step, state, keep=int(args.keep_states),
+                                   best_filepath=best_base if best_tracker.best is not None else None)
 
     def validation_loss(epoch):
         """验证集按 Worker 交错切分，各自累加逐样本 MSE 与转向角绝对误差再求和；补齐用的重复样本不计入。
@@ -1301,6 +1313,9 @@ def train_rank(plan: TrainPlan, rank: int = 0, sync=None) -> dict:
         if should_stop:
             break
 
+    if lead and plan.resume_state and global_step == plan.start_global_step:
+        save_training_checkpoint(plan.start_epoch - 1, loss=last_mean_loss, epoch_complete=True)
+
     if lead:
         log_dir = Path(plan.log_dir)
         history_json = history.save_json(log_dir / f"{plan.plot_prefix}_history.json")
@@ -1499,9 +1514,9 @@ def main() -> None:
     failure, exit_code = None, outcome.EXIT_OK
     try:
         plan, tee = prepare(args)
-        if _uses_gpu(args):
-            lock = GpuLock(label=f"apps.train {plan.run_id or plan.run_stamp}", run_dir=run_dir, say=print)
-            lock.acquire(timeout_s=args.gpu_lock_timeout or None)
+        lock = GpuLock(label=f"apps.train {plan.run_id or plan.run_stamp}", run_dir=run_dir, say=print,
+                       enabled=_uses_gpu(args))
+        lock.acquire(timeout_s=args.gpu_lock_timeout or None)
         if plan.mode == "none":
             summary = dict(train_rank(plan), status="passed")
         else:

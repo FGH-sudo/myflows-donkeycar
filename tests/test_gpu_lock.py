@@ -112,6 +112,14 @@ class GpuLockTest(unittest.TestCase):
             lock.release()
         self.assertIsNotNone(acquired_unix_s(self.root / "run"))
 
+    def test_cpu_start_is_recorded_without_taking_the_gpu_lock(self):
+        with GpuLock(self.path, label="GPU holder"), \
+                GpuLock(self.path, enabled=False, run_dir=self.root / "cpu") as lock:
+            self.assertFalse(lock.enabled)
+            self.assertEqual(read_holder(self.path)["label"], "GPU holder")
+        self.assertEqual([e["event"] for e in read_events(self.root / "cpu")], ["disabled"])
+        self.assertIsNotNone(acquired_unix_s(self.root / "cpu"))
+
 
 def threading_timer(delay, fn):
     import threading

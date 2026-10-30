@@ -34,6 +34,10 @@ const tabLabel = (icon: ReactNode, text: string) => (
 export default function RunDetailPage() {
   const params = useParams()
   const runId = params['*'] ?? ''
+  return <RunDetail key={runId} runId={runId} />
+}
+
+function RunDetail({ runId }: { runId: string }) {
   const navigate = useNavigate()
   const [searchParams, setSearchParams] = useSearchParams()
   const activeTab = searchParams.get('tab') || 'curves'

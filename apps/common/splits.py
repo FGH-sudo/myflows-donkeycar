@@ -155,14 +155,27 @@ def save_split(
     return out
 
 
-def load_split(path: str | Path) -> dict[str, Any]:
+def load_split(path: str | Path, *, source_count: int | None = None) -> dict[str, Any]:
     payload = json.loads(Path(path).read_text(encoding="utf-8"))
     if int(payload.get("version", 0)) != 1:
         raise ValueError("unsupported split file version")
     splits = payload.get("splits")
     if not isinstance(splits, dict):
         raise ValueError("split file missing splits")
-    payload["splits"] = {name: list(map(int, splits.get(name, []))) for name in SPLIT_NAMES}
+    total = payload.get("source_count")
+    if type(total) is not int or total < 0:
+        raise ValueError("split source_count must be a non-negative integer")
+    if source_count is not None and total != source_count:
+        raise ValueError(f"split source_count {total} does not match dataset size {source_count}")
+    seen = set()
+    for name in SPLIT_NAMES:
+        indices = splits.get(name, [])
+        if not isinstance(indices, list) or any(type(i) is not int or not 0 <= i < total for i in indices):
+            raise ValueError(f"split {name} must contain integer indices within [0, {total})")
+        if len(set(indices)) != len(indices) or seen.intersection(indices):
+            raise ValueError(f"split {name} contains duplicate or overlapping indices")
+        seen.update(indices)
+    payload["splits"] = {name: splits.get(name, []) for name in SPLIT_NAMES}
     return payload
 
 
@@ -195,7 +208,7 @@ def resolve_splits(
     """Load or build splits if requested; otherwise return ``(None, None)``."""
 
     if split_file:
-        payload = load_split(split_file)
+        payload = load_split(split_file, source_count=len(rows))
         return payload["splits"], Path(split_file)
     if not split_enabled(
         val_ratio=val_ratio,

@@ -16,6 +16,7 @@
 | [原生 cuBLAS 路径报告](experiments/semester_2026_fall/stage1/native_cublas_report.md) | C/C++ DLL 调度 im2col/col2im 与 cuBLAS GEMM 的实测 | 2026-09-06，当前卷积后端 |
 | [原生池化对照报告](experiments/semester_2026_fall/stage1/native_pool_report.md) | 原生 C/C++ 调度最大池化与 CuPy 对照 | 2026-09-06 |
 | [CUDA 第 19 讲实验报告](experiments/semester_2026_fall/cuda_lecture19/README.md) | 按 CUDA 编程课件修正数值实现（Adam、默认 dtype、BN、交叉熵、FP64 规约）；矩阵乘 kernel 精度/性能与 Nsight Compute；与修改前代码的算子精度、ResNet18 梯度与每步耗时对照；寄存器分块 GEMM 接入原生卷积（与 cuBLAS 并列，默认寄存器分块）；Triton 决定不做 | 2026-10-22 |
+| [autopilot_agent_spec.md](autopilot_agent_spec.md) | AutoPilot Agent 开发 Spec：规则内核（六组件、五个子 Agent）、控制台集成、DeepSeek Harness 接入（含最小验证结论与权限设计）、测试与里程碑 | v0.3（2026-10-23）待定项已确认，未实现 |
 | [system_design.md](system_design.md) | 当前系统结构，不包含尚未实现的能力 | 当前有效（2026-09-23） |
 | [module_design.md](module_design.md) | 当前有效模块和运行入口 | 当前有效（2026-09-23） |
 | [development_environment.md](development_environment.md) | Python、CUDA、Nsight、控制台前端 Node 工程与依赖锁定 | 当前有效（2026-09-23） |
@@ -28,7 +29,7 @@
 
 - PDF 说明课程希望完成什么。
 - semester_spec.md 说明本组准备怎么做，审核通过后再作为开发依据。
-- stage1_cuda_ps_spec.md 与 stage1_distributed_gpu_spec.md 是已交付阶段的实现约定与验收记录；Agent 后续设计暂缓，阶段产物不代表学期全部目标完成。
+- stage1_cuda_ps_spec.md 与 stage1_distributed_gpu_spec.md 是已交付阶段的实现约定与验收记录；Agent 设计见 autopilot_agent_spec.md（v0.3，未实现），阶段产物不代表学期全部目标完成。
 - system_design.md 和 module_design.md 只记录当前代码事实，不能提前写成“已经实现”。
 - 按用户确认，之前学期目标已完成；缺失的往期交付材料不列为本学期待办。本学期新增功能与改进结论使用对应代码重新验证。
 - 新实验报告统一放到 docs/experiments/semester_2026_fall/，并记录代码版本、命令、环境、输入数据和原始结果。

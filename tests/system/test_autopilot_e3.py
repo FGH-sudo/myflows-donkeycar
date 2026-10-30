@@ -6,11 +6,13 @@ from __future__ import annotations
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from apps.autopilot.evidence import Evidence
+from apps.autopilot.service import CampaignError
 from apps.autopilot.spec import default_spec, in_space, validate_spec
 from apps.autopilot.strategies.tpe import TPEStrategy
-from apps.common.splits import build_time_block_split, frame_numbers
+from apps.common.splits import build_time_block_split, frame_numbers, save_split
 from tests.system.harness import Harness
 
 ROLLBACK = {"enabled": True, "state_every": 1, "max_rollbacks": 2, "lr_factor": 0.5}
@@ -63,6 +65,36 @@ class RollbackTest(unittest.TestCase):
         self.assertEqual((trial["verdict"]["status"], trial["verdict"]["kind"]), ("failed", "nan"))
         skipped = h.service.events("bounded", kinds=("rollback_skipped",))
         self.assertIn("上限", skipped[-1]["reason"])
+
+    def test_recovered_rollback_keeps_its_state_and_lr_on_infrastructure_retry(self):
+        h = self.harness([])
+        cid = "recovered-rollback"
+        h.service.create_campaign(h.spec(campaign_id=cid))
+        queued = h.service.submit_trials(cid, [{"delta": {"lr": 0.001, "batch": 2}}], source="user")[0]
+        self.assertTrue(queued["queued"], queued)
+        store = h.service.store(cid)
+        trial = store.load_trial(queued["trial_id"])
+        overrides = {"resume_state": "healthy-state", "lr": 0.0005}
+        trial.update(status="running", attempts=[{
+            "attempt": 1, "status": "running", "cause": "rollback", "overrides": overrides,
+            "run_dir": str(store.attempt_dir(trial["trial_id"], 1))}])
+        store.save_trial(trial)
+
+        def fail(_store, _trial, attempt, _spec, **_kwargs):
+            attempt.update(status="failed", failure={"kind": "crash", "message": "injected crash"}, run_s=0.1)
+            return attempt
+
+        def submit(_store, record, no, *, cause, overrides):
+            attempt = {"attempt": no, "cause": cause, "overrides": overrides, "status": "running",
+                       "run_dir": str(store.attempt_dir(record["trial_id"], no))}
+            record["attempts"].append(attempt)
+            return attempt
+
+        with mock.patch.object(h.service.executor, "wait", side_effect=fail), \
+                mock.patch.object(h.service.executor, "submit", side_effect=submit) as dispatched:
+            h.service._run_trial(store, store.load_trial(trial["trial_id"]))
+        self.assertEqual(dispatched.call_count, 1)
+        self.assertEqual(dispatched.call_args.kwargs, {"cause": "retry", "overrides": overrides})
 
     def test_divergence_rolls_back_before_the_rise(self):
         h = self.harness([{"when": {"lr": 0.004}, "behavior": "diverge"}])
@@ -166,6 +198,38 @@ class TPECampaignTest(unittest.TestCase):
 
 
 class TimeBlockSplitTest(unittest.TestCase):
+    def test_formal_campaign_checks_the_actual_external_split(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            h = Harness(Path(tmp))
+            try:
+                for kind, test in (("random", list(range(30, 40))), ("time_block", [])):
+                    path = h.repo / f"{kind}.json"
+                    save_split(path, {"train": list(range(20)), "val": list(range(20, 30)), "test": test},
+                               source_count=40, seed=42, kind=kind)
+                    spec = h.spec(campaign_id=f"formal-{kind}", mode="formal", baseline={"seeds": [1, 2, 3]},
+                                  fixed={"split_file": str(path), "split_kind": "time_block", "test_size": 10})
+                    with self.assertRaisesRegex(CampaignError, "实际划分"):
+                        h.service.create_campaign(spec)
+                path = h.repo / "random.json"
+                h.service.create_campaign(h.spec(campaign_id="change-mode", baseline={"seeds": [1, 2, 3]},
+                                                 fixed={"split_file": str(path), "split_kind": "time_block",
+                                                        "test_size": 10}))
+                with self.assertRaisesRegex(CampaignError, "实际划分"):
+                    h.service.update_campaign("change-mode", {"mode": "formal"})
+                store = h.service.store("change-mode")
+                legacy = store.load()
+                legacy["spec"]["mode"] = "formal"
+                store.save(legacy)
+                with self.assertRaisesRegex(CampaignError, "实际划分"):
+                    h.service.start_campaign("change-mode")
+                store.update_state(lambda state: state.update(status="running"))
+                with mock.patch.object(h.service.executor, "submit") as dispatched:
+                    h.service._drive_safe("change-mode")
+                dispatched.assert_not_called()
+                self.assertEqual(h.service.get_campaign("change-mode")["status"], "failed")
+            finally:
+                h.close()
+
     def test_blocks_keep_neighbours_apart(self):
         frames = frame_numbers([f"{i}_0.1.jpg" for i in (5, 3, 1, 4, 2)] + ["x.jpg"])
         self.assertEqual(frames, [5, 3, 1, 4, 2, 5])

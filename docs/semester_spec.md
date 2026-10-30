@@ -328,7 +328,7 @@ All-Reduce 在 Parameter Server 正确后实现；已于 2026-09-19 随分布式
 
 这里的 AutoPilot Agent 是训练调优程序，不是 DonkeyCar 驾驶控制器。
 
-本节保留 v0.2 的候选范围供后续讨论，当前不继续细化或实现。待 CUDA/PS/Nsight 有实际接口和结果后，第八次课前再审定 Agent 设计；本节内容不阻塞第一阶段。
+本节保留 v0.2 的候选范围供后续讨论。CUDA/PS/Nsight 已有实际接口和结果，细化设计见 [autopilot_agent_spec.md](autopilot_agent_spec.md)（v0.3 开发 Spec，2026-10-23，待定项已确认）；两者冲突时以该设计稿为准，本节的验收口径不变。
 
 第一版完成 PDF 中要求的六部分：
 

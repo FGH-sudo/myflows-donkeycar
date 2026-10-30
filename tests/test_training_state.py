@@ -37,8 +37,11 @@ class TrainingStateTest(unittest.TestCase):
         self.assertEqual(latest["step"], self.states[-1]["step"])
         for item in self.states:
             manifest = verify_training_state(item["path"])
-            self.assertEqual(set(manifest["files"]), {"checkpoint.json", "checkpoint.npz"})
             state = item["state"]
+            files = {"checkpoint.json", "checkpoint.npz"}
+            if state["best_loss"] is not None:
+                files.update(("best.json", "best.npz"))
+            self.assertEqual(set(manifest["files"]), files)
             self.assertEqual(len(state["rng"]["transforms"]), 3)
             self.assertTrue(state["rng"]["exact"])
             self.assertEqual(state["global_step"], item["step"])
@@ -66,6 +69,19 @@ class TrainingStateTest(unittest.TestCase):
             self.assertEqual(report["samples"]["expected_trained"], original["samples"]["expected_trained"])
             self.assertEqual(report["metrics"]["val_angle_mae"], original["metrics"]["val_angle_mae"])
             self.assertEqual(report["resume"]["from_global_step"], state["step"])
+
+    def test_resume_from_finished_state_restores_both_model_artifacts(self):
+        result, out = self.resume("from-finished", self.states[-1])
+        self.assertEqual(result.returncode, 0, result.stdout[-3000:] + result.stderr[-3000:])
+        resumed = _params(out)
+        for key, value in _params(self.full).items():
+            np.testing.assert_array_equal(resumed[key], value)
+        with np.load(self.full / "best.npz") as expected, np.load(out / "best.npz") as restored:
+            self.assertEqual(set(expected.files), set(restored.files))
+            for key in expected.files:
+                np.testing.assert_array_equal(restored[key], expected[key])
+        report = json.loads((out / "run" / "result.json").read_text(encoding="utf-8"))
+        self.assertEqual((report["status"], report["steps"]), ("succeeded", 0))
 
     def test_config_change_and_corruption_are_refused(self):
         state = self.states[0]

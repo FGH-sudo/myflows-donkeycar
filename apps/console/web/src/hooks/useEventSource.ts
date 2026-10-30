@@ -28,7 +28,10 @@ export function useEventSource(url: string | null, handlers: SseHandlers): { con
         } catch {
           /* malformed event: ignore */
         }
-        if (name === 'end') source.close()
+        if (name === 'end') {
+          source.close()
+          setConnected(false)
+        }
       }
       source.addEventListener(name, listener as EventListener)
       return [name, listener] as const

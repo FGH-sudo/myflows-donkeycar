@@ -61,6 +61,13 @@ class CampaignError(Exception):
         self.status = status
 
 
+def _check_split(spec: dict, split: dict) -> None:
+    if not split.get("train_count") or not split.get("val_count"):
+        raise CampaignError("训练集与验证集不能为空", 422)
+    if spec["mode"] == "formal" and (split.get("kind") != "time_block" or not split.get("test_count")):
+        raise CampaignError("正式 campaign 的实际划分必须为 time_block，且包含独立测试集", 422)
+
+
 def initial_state() -> dict:
     return {"status": "draft", "phase": "baseline", "created_unix_s": time.time(), "started_unix_s": None,
             "finished_unix_s": None, "stop_requested": False, "pause_requested": False, "stop_reason": None,
@@ -233,6 +240,7 @@ class AutoPilotService:
                 fixed["split_file"] = split["split_file"]
         except (OSError, ValueError) as exc:
             raise CampaignError(f"无法准备数据划分：{exc}", 422) from exc
+        _check_split(spec, split)
         state = initial_state()
         state["provenance"]["split"] = split
         if not spec["llm"]["enabled"]:
@@ -268,6 +276,7 @@ class AutoPilotService:
             raise CampaignError(str(exc), 422) from exc
         if spec["fixed"] != doc["spec"]["fixed"]:
             raise CampaignError("修改数据或固定参数请新建 campaign", 422)
+        _check_split(spec, doc["state"]["provenance"].get("split") or {})
         doc = store.load()
         doc["spec"] = spec
         store.save(doc)
@@ -282,6 +291,7 @@ class AutoPilotService:
             return self.get_campaign(cid)
         if status not in ("draft", "paused") and status not in ACTIVE:
             raise CampaignError(f"campaign 已结束（{status}），不能再启动")
+        _check_split(doc["spec"], doc["state"]["provenance"].get("split") or {})
 
         def mark(state):
             state.update(status="running", stop_requested=False, pause_requested=False)
@@ -557,6 +567,7 @@ class AutoPilotService:
     def _drive(self, store: CampaignStore) -> None:
         doc = store.load()
         spec = doc["spec"]
+        _check_split(spec, doc["state"]["provenance"].get("split") or {})
         specialists = build_specialists(spec["specialists"], repo_root=self.repo_root)
         tpe = None
         if spec["strategy"]["name"] == "tpe":
@@ -668,7 +679,7 @@ class AutoPilotService:
                     and not should_stop():
                 store.event("retry", trial_id=trial["trial_id"], attempt=attempt["attempt"],
                             kind=failure.get("kind"), message=failure.get("message"))
-                next_attempt = {"cause": "retry", "overrides": next_attempt["overrides"]}
+                next_attempt = {"cause": "retry", "overrides": attempt.get("overrides")}
                 continue
             if attempt["status"] == "failed" and failure.get("kind") in rollback.ROLLBACK_KINDS and not should_stop():
                 plan, why = rollback.plan(trial, attempt, spec)

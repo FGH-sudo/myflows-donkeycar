@@ -66,8 +66,8 @@ class GpuLock:
     """Hold the machine-wide GPU lock; use as a context manager or call acquire()/release()."""
 
     def __init__(self, path: Path | None = None, *, label: str = "", run_dir: str | Path | None = None,
-                 poll_s: float = 0.5, say=None):
-        self.path = default_path() if path is None else Path(path)
+                 poll_s: float = 0.5, say=None, enabled: bool = True):
+        self.path = (default_path() if path is None else Path(path)) if enabled else None
         self.label = label
         self.run_dir = Path(run_dir) if run_dir else None
         self.poll_s = float(poll_s)

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+import math
 from pathlib import Path
 
 from MyFlows.distributed.constants import KNOWN_TASKS, LEGAL_MODES
@@ -210,8 +211,10 @@ def validate_single(args: dict, repo_root: Path) -> dict:
             continue
         try:
             out[key] = bool(value) if caster is bool else caster(value)
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, OverflowError):
             raise ValidationError(f"参数 {key} 的值无效：{value}")
+        if caster is float and not math.isfinite(out[key]):
+            raise ValidationError(f"参数 {key} 必须是有限数值：{value}")
     if out.get("device", "auto") not in ("auto", "cpu", "cuda"):
         raise ValidationError("device 只能是 auto、cpu 或 cuda")
     if out.get("dtype", "float32") not in ("float32", "float64"):

@@ -164,6 +164,7 @@ def main(argv=None) -> int:
         global_step = 0
         started = time.time()
         for epoch in range(args.epochs):
+            epoch_start_step = len(step_losses)
             loader = MultiprocessDataLoader(train_s, args.batch, num_workers=args.num_workers, shuffle=True,
                                             seed=args.seed * 1000 + epoch, load_fn=_load)
             for x_items, y_items in loader:
@@ -185,7 +186,7 @@ def main(argv=None) -> int:
                           f"({np.median(step_ms[-20:]):.0f} ms/step)", flush=True)
             val = evaluate(graph, x_var, y_var, logits, model, val_s, args.batch, xp)
             history.append({"epoch": epoch + 1, "step": global_step, **{f"val_{k}": v for k, v in val.items()},
-                            "train_loss_epoch_mean": float(np.mean(step_losses[-len(train_s) // args.batch:]))})
+                            "train_loss_epoch_mean": float(np.mean(step_losses[epoch_start_step:]))})
             print(f"[val] epoch {epoch + 1}: loss={val['loss']:.4f} acc={val['accuracy']:.3f}", flush=True)
         train_s_elapsed = time.time() - started
         test = evaluate(graph, x_var, y_var, logits, model, test_s, args.batch, xp)

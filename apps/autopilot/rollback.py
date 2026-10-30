@@ -94,7 +94,8 @@ def plan(trial: dict, attempt: dict, spec: dict) -> tuple[dict | None, str]:
         return None, why
     if not verify(state["path"]):
         return None, f"第 {state['step']} 步的 TrainingState 校验失败，放弃回滚"
-    lr_before = float(state["state"].get("lr") or trial["resolved_args"]["lr"])
+    lr_before = float((attempt.get("overrides") or {}).get("lr")
+                      or state["state"].get("lr") or trial["resolved_args"]["lr"])
     lr = lr_before * float(cfg["lr_factor"])
     return {"resume_state": str(state["path"]), "lr": lr, "from_step": state["step"],
             "from_attempt": state["attempt"], "lr_before": lr_before, "kind": kind, "reason": why}, why
