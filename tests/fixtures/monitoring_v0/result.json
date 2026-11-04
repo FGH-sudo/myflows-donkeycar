@@ -1,0 +1,35 @@
+{
+  "schema_version": 1,
+  "written_unix_s": 1793031792.053179,
+  "status": "succeeded",
+  "exit_code": 0,
+  "failure": null,
+  "metrics": {
+    "val_angle_mae": 0.05013815446197987,
+    "val_angle_mae_final": 0.2045590846054256,
+    "best_val_angle_mae": 0.05013815446197987,
+    "val_loss": 0.027004175601644278,
+    "best_loss": 0.002426880632675137,
+    "last_train_loss": 0.0046562229949405065,
+    "best_epoch": 2
+  },
+  "throughput": {
+    "samples_per_s": 31.167423503448614,
+    "epoch_train_wall_s": 248.27734259999852,
+    "train_wall_s": 739.2333856999976
+  },
+  "memory": {
+    "source": "cupy_memory_pool",
+    "peak_used_mb": 1356.7197265625,
+    "peak_pool_mb": 1694.25634765625,
+    "device_total_mb": 8187.5
+  },
+  "backend": {
+    "requested": "cuda_native_register",
+    "actual": "cuda_native_register",
+    "device": "cuda",
+    "dtype": "float32"
+  },
+  "steps": 11520,
+  "epochs_completed": 3
+}

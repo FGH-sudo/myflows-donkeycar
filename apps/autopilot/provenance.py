@@ -4,10 +4,10 @@ from __future__ import annotations
 
 import hashlib
 import json
-import platform
 import subprocess
-import sys
 from pathlib import Path
+
+from apps.common.environment import environment  # compatibility export
 
 CODE_SUFFIXES = (".py", ".cu", ".cuh", ".cpp", ".h", ".proto", ".js", ".mjs")
 
@@ -78,22 +78,3 @@ def data_hash(data_dir: Path, catalog: str = "catalog_generated.catalog") -> str
             return None
         return sha256_bytes("\n".join(images).encode("utf-8"))
     return sha256_bytes(canonical(parts).encode("utf-8"))
-
-
-def environment() -> dict:
-    packages = {}
-    from importlib.metadata import PackageNotFoundError, version
-
-    for name in ("numpy", "cupy-cuda12x", "optuna", "fastapi"):
-        try:
-            packages[name] = version(name)
-        except PackageNotFoundError:
-            packages[name] = None
-    gpu = None
-    try:
-        result = subprocess.run(["nvidia-smi", "--query-gpu=name,driver_version,memory.total", "--format=csv,noheader"],
-                                capture_output=True, text=True, timeout=15, check=False)
-        gpu = result.stdout.strip() or None
-    except (OSError, subprocess.TimeoutExpired):
-        pass
-    return {"python": sys.version.split()[0], "platform": platform.platform(), "packages": packages, "gpu": gpu}

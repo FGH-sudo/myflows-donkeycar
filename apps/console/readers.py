@@ -131,6 +131,10 @@ def columns(rows: list[dict], fields: Iterable[str], indices: list[int] | None =
 
 
 TB_STEP_TAGS = {
+    "train/step_total_ms": "step_total_ms",
+    "train/samples_per_sec_total": "samples_per_sec_total",
+    "train/forward_ms": "forward_ms", "train/backward_ms": "backward_ms", "train/optimizer_ms": "optimizer_ms",
+    "resources/cupy_pool_used_mib": "cupy_pool_used_mib", "resources/cupy_pool_total_mib": "cupy_pool_total_mib",
     "train/loss_step": "loss",
     "train/loss_running_mean": "running_loss",
     "train/accuracy_step": "accuracy",

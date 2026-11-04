@@ -259,6 +259,10 @@ class JobManager:
     def _launch(self, job: dict) -> None:
         log = open(job["log_path"], "ab")
         env = dict(os.environ, PYTHONUNBUFFERED="1", PYTHONIOENCODING="utf-8")
+        if self.resource_recorder_factory and job.get("record_resources"):
+            from MyFlows.monitoring.schema import EXTERNAL_MONITOR_ENV
+
+            env[EXTERNAL_MONITOR_ENV] = "1"
         try:
             proc = subprocess.Popen(job["command"], cwd=str(self.repo_root), stdout=log, stderr=subprocess.STDOUT,
                                     stdin=subprocess.DEVNULL, env=env, creationflags=NEW_GROUP)

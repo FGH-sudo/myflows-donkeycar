@@ -1,0 +1,23 @@
+{
+  "kind": "single",
+  "task": "donkey_resnet18_single",
+  "samples": 7680,
+  "val_samples": 1000,
+  "input_h": 120,
+  "input_w": 160,
+  "steps_per_epoch": 3840,
+  "started_unix_s": 1793030995.7478523,
+  "parallel": {
+    "mode": "none",
+    "transport": "none",
+    "workers": 1,
+    "shard_sizes": [
+      2
+    ]
+  },
+  "args": {
+    "device": "cuda",
+    "batch": 2,
+    "epochs": 3
+  }
+}

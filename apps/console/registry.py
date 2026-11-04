@@ -31,6 +31,8 @@ EPOCH_FIELDS = (
     "optimizer_gpu_s", "request_bytes", "response_bytes", "outgoing_gradient_bytes",
 )
 RESOURCE_FIELDS = (
+    "schema_version", "sampling_status", "missing", "gpu_device_memory_mib", "gpu_device_memory_peak_mib",
+    "gpu_power_limit_w", "process_rss_total_bytes", "interval_s", "root_pid",
     "monotonic_s", "unix_s", "cpu_utilization_pct", "ram_used_bytes", "gpu_utilization_pct", "gpu_memory_mib",
     "gpu_temperature_c", "gpu_power_w", "process_rss_bytes", "sampling_error",
 )

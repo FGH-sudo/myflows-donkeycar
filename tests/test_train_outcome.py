@@ -14,6 +14,7 @@ from apps.autopilot.verifier import OnlineMonitor
 from apps.common.gpu_lock import read_events
 from apps.train.common import outcome
 from tests.test_train_distributed import _tub
+from tools.check_run_format import check_run
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -82,6 +83,10 @@ class TrainOutcomeTest(unittest.TestCase):
         out, result = self.ok("result", "--seed", "3", "--phase-timing-every", "2")
         self.assertEqual((result["status"], result["exit_code"], result["failure"]), ("succeeded", 0, None))
         self.assertEqual(result["schema_version"], outcome.RESULT_SCHEMA_VERSION)
+        checked = check_run(out / "run")
+        self.assertTrue(checked["valid"], checked["errors"])
+        self.assertTrue(checked["files"]["resources.jsonl"]["records"])
+        self.assertIn("native_source_sha256", result["environment"])
         self.assertEqual(result["samples"], {"train": 15, "val": 5, "trained": 36, "expected_trained": 36})
         self.assertEqual(result["epochs_completed"], 2)
         self.assertEqual(result["backend"]["actual"], "numpy")
@@ -119,6 +124,8 @@ class TrainOutcomeTest(unittest.TestCase):
         self.assertIsNotNone(payload["metrics"]["val_angle_mae"])
         rank_rows = _rows(out / "run" / "rank-1" / "steps.jsonl")
         self.assertTrue(all("forward_ms" in r and "optimizer_ms" in r for r in rank_rows))
+        checked = check_run(out / "run")
+        self.assertTrue(checked["valid"], checked["errors"])
         result, out = _train(self.work, "ring-nan", "--distributed", "ring", "--workers", "2", "--lr", "1e30")
         self.assertEqual(result.returncode, outcome.EXIT_NONFINITE, result.stdout[-3000:] + result.stderr[-3000:])
         payload = json.loads((out / "run" / "result.json").read_text(encoding="utf-8"))
@@ -143,6 +150,8 @@ class TrainOutcomeTest(unittest.TestCase):
         self.assertIsNotNone(payload["timing"]["lock_acquired_unix_s"])
         steps = [r for r in _rows(out / "run" / "metrics.jsonl") if r["kind"] == "step"]
         self.assertTrue(all("gpu_mem_used_mb" in r and "forward_ms" in r for r in steps))
+        checked = check_run(out / "run")
+        self.assertTrue(checked["valid"], checked["errors"])
 
 
 class ClassifyTest(unittest.TestCase):

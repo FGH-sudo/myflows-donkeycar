@@ -11,6 +11,8 @@
 | MyFlows/ops/fused.py | 融合 kernel 与同算法 NumPy 回退：BatchNorm2d（FP64 平移统计、均值 hi/lo 双 float、反向重算 x̂）、softmax 交叉熵（FP64 log-sum-exp）、Adam（逐步显式舍入，CPU/GPU 逐位一致）、ReLU/LeakyReLU 反向累加、FP64 全局梯度范数 |
 | MyFlows/ops/cuda_native/ | 原生 C/C++ 调度自写 FP32 Conv/Pool kernel，GEMM 引擎为第 19 讲的寄存器分块 kernel（NN/NT/TN，五种 tile，长 K 小输出按 K 切分后 FP64 归约，`native.gemm`）或 cuBLAS；严格数组 wrapper 和运行时库管理（Windows 加载 DLL，Linux 加载 .so；`build.py` 在库缺失或与源码不一致时用 CMake 自动构建，文件锁保证多进程只构建一次）；NVRTC 按设备架构生成 SASS 并缓存到 `build/native-cuda/kernel-cache`；卷积尾处理融合 NHWC→NCHW 转置、bias 与 ReLU/LeakyReLU，bias 梯度 FP64；第 19 讲 basic/tiled/shared/register（寄存器分块）矩阵乘（fp32/kahan/dot2 累加）经 `native.matmul` 暴露；错误信息含源码行号与 CUDA/cuBLAS 错误名，`MYFLOWS_NATIVE_SYNC=1` 或 `set_debug_sync` 逐 kernel 同步 |
 | MyFlows/distributed/ | 单机回环同步 PS（Socket JSON / gRPC）与 Ring AllReduce；Worker 本地优化器更新，PS 只聚合梯度 |
+| MyFlows/monitoring/schema.py、record.py、gpu.py | v1 记录与增量 JSONL 游标；NVML/nvidia-smi/主机资源采样；训练 PID 生命周期绑定的独立采样进程，正常与异常退出清理 |
+| MyFlows/utils/training_dashboard.py、tensorboard_logger.py | 逐 step/epoch 的 v1 JSONL，增量读取资源曲线；直接写 TensorBoard 事件，不导入 torch，支持标量、文本、图像与直方图 |
 | MyFlows/distributed/sync.py | 供任意训练循环使用的同步层：`SyncRun` 在主进程启动 PS 进程或 Ring 元数据屏障与各 rank 进程，rank 内的 `PsSync` / `RingSync` 提供 `initialize`（统一初始状态）、`allreduce`（按样本数加权平均）、`commit`（核对状态指纹并汇总停止请求）、`reduce`（验证集等求和）；任一 rank 失败时整次运行失败 |
 | MyFlows/distributed/launcher.py | `run_training(**config)`：配置规范化、端口分配、spawn 启动、事件收集与清理 |
 | MyFlows/distributed/ps.py、engine.py | PS 进程入口与同步轮次状态机：加权聚合、心跳与存活检查、重复/陈旧消息拒绝、停止请求汇总与小张量求和（`reduce`） |
@@ -37,6 +39,9 @@
 | apps/common/ | DonkeyCar 数据索引、划分和图像预处理 |
 | apps/train/train_myflows_donkey.py | ResNet18 正式训练入口：单进程与 `--distributed ps|ring --workers N` 数据并行共用同一个训练循环（`train_rank`）；断点记录续训位置（epoch、step、早停计数），验证集 loss 按真实样本精确计算，分布式时验证集按 Worker 切分后汇总 |
 | apps/train/common/ | 验证、早停、checkpoint 路径和训练日志 |
+| apps/train/__main__.py | `python -m apps.train` 的短入口，等价调用 train_myflows_donkey |
+| apps/common/environment.py | GPU/驱动、CUDA/NVRTC、依赖 metadata 和原生源码哈希；AutoPilot provenance 保留兼容导出 |
+| tools/check_run_format.py | 校验 config、metrics、resources、rank steps 和 result 的 v1 格式，并兼容旧运行；字段口径见 monitoring_format.md |
 | apps/eval/eval_myflows_donkey.py | MyFlows checkpoint 评估 |
 | apps/eval/eval_myflows_donkey_onnx.py | ONNX 模型评估 |
 | apps/serve/ | ONNX predictor、gRPC、FastAPI 和客户端 |

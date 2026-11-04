@@ -85,6 +85,9 @@ from MyFlows.utils.training_observer import global_gradient_norm
 from MyFlows.utils.training_dashboard import TrainingDashboard
 from MyFlows.utils.transforms import augment_chw_batch, default_train_transforms
 from MyFlows.utils.viz import TrainingHistory, plot_training_curves
+from MyFlows.monitoring.record import MonitorProcess, monitoring_enabled
+from MyFlows.monitoring.schema import EXTERNAL_MONITOR_ENV, record
+from apps.common.environment import environment
 
 # 并行方式 -> 可用的通信方式；Ring AllReduce 只有 gRPC 实现
 DISTRIBUTED_TRANSPORTS = {"ps": ("grpc_proto", "socket_json"), "ring": ("grpc_proto",)}
@@ -177,19 +180,27 @@ class _StepPhases:
 
     def row(self) -> dict:
         """写进本步 step 行的字段（读 event 时间要在步末的同步点之后调用），并开始新的显存区间。"""
-        row = {}
+        row = {"phase_sampled": self.timing, "missing": {}}
         if self.timing:
             row.update({f"{phase}_ms": self.spans[phase].elapsed_ms() for phase in PHASES})
+        else:
+            row["missing"].update({f"{phase}_ms": "not scheduled on this step" for phase in PHASES})
         if self.pool is not None:
             row.update(gpu_mem_used_mb=self.interval_used / 2**20, gpu_mem_pool_mb=self.pool.total_bytes() / 2**20)
+            row.update(cupy_pool_used_mib=row["gpu_mem_used_mb"], cupy_pool_total_mib=row["gpu_mem_pool_mb"])
             self.interval_used = 0
+        else:
+            row.update(cupy_pool_used_mib=None, cupy_pool_total_mib=None)
+            row["missing"].update({key: "CPU run has no CuPy pool" for key in ("cupy_pool_used_mib", "cupy_pool_total_mib")})
         return row
 
     def summary(self) -> dict:
         if self.pool is None:
-            return {"source": None}
+            return {"source": None, "cupy_pool_peak_used_mib": None, "cupy_pool_peak_total_mib": None,
+                    "missing": {key: "CPU run has no CuPy pool" for key in ("source", "cupy_pool_peak_used_mib", "cupy_pool_peak_total_mib")}}
         return {"source": "cupy_memory_pool", "peak_used_mb": self.peak_used / 2**20,
-                "peak_pool_mb": self.peak_pool / 2**20, "device_total_mb": self.device_total_bytes / 2**20}
+                "peak_pool_mb": self.peak_pool / 2**20, "device_total_mb": self.device_total_bytes / 2**20,
+                "cupy_pool_peak_used_mib": self.peak_used / 2**20, "cupy_pool_peak_total_mib": self.peak_pool / 2**20}
 
 
 # Arguments that do not change the numbers of a training trajectory: paths, logging, checkpoint cadence, data
@@ -200,7 +211,7 @@ _NON_TRAJECTORY_ARGS = {
     "keep_states", "checkpoint_every", "unique_run", "run_id", "export_onnx", "onnx_out", "no_tensorboard",
     "save_png_plots", "summary_once", "check_shape", "check_content", "num_workers", "gpu_lock_timeout",
     "phase_timing_every", "sync_timeout", "worker_memory_mb", "epochs", "lr", "log_dir", "logdir", "plot_prefix",
-    "split_out",
+    "split_out", "monitor", "monitor_interval_s",
 }
 
 
@@ -417,6 +428,9 @@ def build_parser() -> argparse.ArgumentParser:
     )
     ap.add_argument("--phase-timing-every", type=int, default=20,
                     help="每多少 step 用 CUDA event 分别记录前向/反向/优化器耗时（0=关闭）")
+    ap.add_argument("--monitor", choices=("auto", "on", "off"), default="auto",
+                    help="资源采样：有 run-dir 时 auto 开启；控制台已有采样器时不重复采样")
+    ap.add_argument("--monitor-interval-s", type=float, default=0.5, help="独立采样进程的采样间隔（秒）")
     ap.add_argument("--gpu-lock-timeout", type=float, default=0.0,
                     help="等待本机 GPU 锁的最长秒数（0=一直等）；环境变量 MYFLOWS_GPU_LOCK=off 关闭加锁")
     ap.add_argument("--state-every", type=int, default=0,
@@ -744,8 +758,12 @@ def prepare(args: argparse.Namespace) -> tuple[TrainPlan, TeeLogger]:
                          "shard_sizes": plan.shard_sizes},
             "seeds": plan.seeds, "data_hash": plan.data_hash, "val_hash": plan.val_hash,
             "split_file": plan.split_file, "pid": os.getpid(),
+            "monitoring": {"requested": args.monitor, "interval_s": args.monitor_interval_s,
+                           "external": os.environ.get(EXTERNAL_MONITOR_ENV) == "1",
+                           "enabled": monitoring_enabled(args.monitor, plan.run_dir) or os.environ.get(EXTERNAL_MONITOR_ENV) == "1"},
+            "phase_timing_every": args.phase_timing_every,
         }
-        (run_dir / "config.json").write_text(json.dumps(run_config, ensure_ascii=False, indent=2, default=str),
+        (run_dir / "config.json").write_text(json.dumps(record(run_config, clocks=True), ensure_ascii=False, indent=2, default=str),
                                              encoding="utf-8")
         print(f"控制台运行目录: {run_dir}")
     return plan, tee
@@ -977,6 +995,7 @@ def train_rank(plan: TrainPlan, rank: int = 0, sync=None) -> dict:
         max_hist_params=args.tb_max_hist_params,
         feature_channels=args.tb_feature_channels,
         jsonl_path=run_dir / "metrics.jsonl" if run_dir is not None and lead else None,
+        resources_path=run_dir / "resources.jsonl" if run_dir is not None and lead else None,
     )
     if dashboard.active:
         print(f"TensorBoard 日志: {tb_logdir}")
@@ -1182,11 +1201,11 @@ def train_rank(plan: TrainPlan, rank: int = 0, sync=None) -> dict:
             phase_row = phases.row()
             if sync is not None and rank_steps is not None:
                 ended = time.perf_counter()
-                rank_steps.write(json.dumps({
+                rank_steps.write(json.dumps(record({
                     "rank": rank, "epoch": ep, "step": global_step, "start_s": load_start, "end_s": ended,
                     "step_wall_s": ended - load_start, "data_s": after_load - load_start,
                     "gradient_sync_s": sync_s, "update_confirm_s": ended - confirm_start,
-                    "n_samples": batch, "loss": step_loss, **phase_row}) + "\n")
+                    "n_samples": batch, "loss": step_loss, **phase_row}, clocks=True)) + "\n")
             step_elapsed_ms = (time.perf_counter() - after_load) * 1000.0
             train_elapsed_ms = train_span.elapsed_ms()
             data_load_ms = (after_load - load_start) * 1000.0
@@ -1438,6 +1457,8 @@ def run_distributed(plan: TrainPlan, tee: TeeLogger) -> tuple[dict, TeeLogger]:
             summary["memory"] = {"source": "cupy_memory_pool", "per_rank": ranks,
                                  "peak_used_mb": sum(r["peak_used_mb"] for r in ranks),
                                  "peak_pool_mb": sum(r["peak_pool_mb"] for r in ranks),
+                                 "cupy_pool_peak_used_mib": sum(r["peak_used_mb"] for r in ranks),
+                                 "cupy_pool_peak_total_mib": sum(r["peak_pool_mb"] for r in ranks),
                                  "device_total_mb": ranks[0]["device_total_mb"]}
     print(f"分布式训练完成: {plan.world_size} 个 Worker，{summary['steps']} 步，用时 {elapsed:.1f} s")
     return dict(summary, status="passed"), tee
@@ -1506,14 +1527,20 @@ def main() -> None:
     args = build_parser().parse_args()
     started_unix_s = time.time()
     run_dir = (ROOT / args.run_dir).resolve() if args.run_dir else None
-    plan = tee = lock = None
+    plan = tee = lock = monitor = None
     summary: dict = {}
     failure, exit_code = None, outcome.EXIT_OK
     try:
+        if not math.isfinite(args.monitor_interval_s) or args.monitor_interval_s <= 0:
+            raise ValueError("--monitor-interval-s must be finite and positive")
+        if args.monitor == "on" and run_dir is None:
+            raise ValueError("--monitor on requires --run-dir")
         plan, tee = prepare(args)
         lock = GpuLock(label=f"apps.train {plan.run_id or plan.run_stamp}", run_dir=run_dir, say=print,
                        enabled=_uses_gpu(args))
         lock.acquire(timeout_s=args.gpu_lock_timeout or None)
+        if monitoring_enabled(args.monitor, run_dir):
+            monitor = MonitorProcess(run_dir, args.monitor_interval_s).start()
         if plan.mode == "none":
             summary = dict(train_rank(plan), status="passed")
         else:
@@ -1540,12 +1567,15 @@ def main() -> None:
         failure = {"kind": kind, "message": f"{type(exc).__name__}: {exc}"}
         exit_code = outcome.FAILURE_EXIT_CODES[kind]
     finally:
+        if monitor is not None:
+            monitor.stop()
         if lock is not None:
             lock.release()
 
     if run_dir is not None:
         result = _result(args, plan, summary, started_unix_s=started_unix_s, lock=lock, failure=failure,
                          exit_code=exit_code)
+        result["environment"] = environment(include_cuda=summary.get("device") == "cuda")
         outcome.write_result(run_dir, result)
         # results.json 是控制台运行列表沿用的旧格式
         legacy = {"status": "passed" if failure is None else "failed", "finished_unix_s": time.time(),

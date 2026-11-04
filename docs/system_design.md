@@ -178,3 +178,11 @@ flowchart LR
 - 训练入口：`apps/train` 按 `--dtype` 设置默认 dtype，`--conv-backend auto` 在 CUDA + float32 时选 `cuda_native_register`（`cuda_native_cublas` 可显式指定，控制台“新建训练”页同样提供这两项）；输入与标签不求梯度；全局梯度范数只在需要记录时计算；`train_step_ms` 改用 CUDA event，每步只在读回 loss 时同步一次。
 - 确定性：原生路径与 CuPy 的 col2im（改为 gather kernel，不再用原子加的 `add.at`）结果逐位可复现。
 - GEMM 引擎：第 19 讲的寄存器分块 kernel 推广为 NN/NT/TN 三种布局、五种 tile，输出小而 K 长时按 K 切分，再在 FP64 中归约（`native.gemm`）。`cuda_native_register` 后端用它做卷积与 `Dense` 的 GEMM，`cuda_native_cublas` 则调用 cuBLAS，两者的 ResNet18 每步耗时相同。Triton 扩展决定不做。
+
+### 训练监控记录（2026-11-05）
+
+`python -m apps.train --run-dir <目录>` 默认启动独立资源采样进程，每 0.5 s 写 resources.jsonl；控制台/AutoPilot 已有记录器时通过环境标记避免重复写入。采样进程校验训练 PID 的创建时间，训练异常消失后自动退出。`--monitor off` 关闭训练自身采样，`--monitor-interval-s` 调整间隔。
+
+训练按 v1 写 config、metrics、rank steps 与 result；资源记录也带版本和缺测原因。旧字段继续保留，新字段明确区分整卡显存、CuPy 池和进程 RSS，并补充含数据读取的 step_total_ms 与同分母吞吐。result.environment 保存依赖、设备、驱动、CUDA/NVRTC 与原生源码哈希。格式和时钟定义见 [monitoring_format.md](monitoring_format.md)。
+
+TensorBoard 直接写事件 protobuf，训练进程不再为日志加载 torch；资源曲线增量读取 JSONL，不再次采硬件。当前小规模 CUDA 训练已验证事件回读；监控开销、时间线与优化闭环的阶段验收继续见 [stage3_progress.md](stage3_progress.md)。
