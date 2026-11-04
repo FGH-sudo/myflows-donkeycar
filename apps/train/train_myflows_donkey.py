@@ -66,8 +66,8 @@ from apps.train.common import outcome
 from apps.train.common.checkpoints import (
     DEFAULT_RESNET_BEST_OUT,
     DEFAULT_RESNET_CHECKPOINT_OUT,
-    checkpoint_score_to_loss,
     checkpoint_stem as _checkpoint_stem,
+    saved_best_loss,
     with_run_id as _with_run_id,
 )
 from apps.train.common.training_control import BestScore, EarlyStopping
@@ -492,11 +492,8 @@ def _resume_position(args, out_base: Path, best_base: Path) -> dict:
         return {"resume_found": False}
     epoch = int(meta.get("epoch", -1))
     training = meta.get("training") or {}
-    best_meta = read_checkpoint_metadata(best_base)
-    # 最佳 loss 取最佳模型自己的分数；断点里的是当时的训练 loss，不能拿来和验证 loss 比较
-    best = checkpoint_score_to_loss(best_meta.get("score_value", best_meta.get("best_loss"))) if best_meta else None
     position = {"resume_found": True, "start_epoch": epoch + 1, "start_step": 0,
-                "start_global_step": int(training.get("global_step", 0)), "best_loss": best,
+                "start_global_step": int(training.get("global_step", 0)), "best_loss": saved_best_loss(best_base),
                 "early_stopping_state": training.get("early_stopping")}
     if training and not training.get("epoch_complete", True):
         if int(training.get("global_batch", 0)) == int(args.batch):

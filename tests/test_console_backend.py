@@ -335,6 +335,22 @@ class JobManagerTest(unittest.TestCase):
         self.assertEqual(job["status"], "failed")
         self.assertIn("控制台重启", job["error"])
 
+    def test_recover_keeps_the_queue_but_never_starts_it_at_boot(self):
+        jobs_root = self.root / "jobs"
+        jobs_root.mkdir()
+        for job_id, created in (("before-boot", psutil.boot_time() - 60), ("after-boot", time.time())):
+            (jobs_root / f"{job_id}.job.json").write_text(json.dumps({
+                "id": job_id, "type": "single", "label": job_id, "task": "t", "status": "pending",
+                "created_unix_s": created, "pid": None, "pid_create_time": None, "stop_requested": False,
+                "run_dir": str(jobs_root / job_id), "log_path": str(jobs_root / f"{job_id}.log"),
+                "command": _py("print('trained')")}), encoding="utf-8")
+        manager = self.manager()
+        self.assertTrue(_wait(self.finished(manager, "after-boot")))
+        self.assertEqual(manager.get("after-boot")["status"], "succeeded")
+        job = manager.get("before-boot")
+        self.assertEqual((job["status"], job["pid"]), ("failed", None))
+        self.assertIn("机器重启", job["error"])
+
 
 class _FakeSampler:
     backend_name = "fake"

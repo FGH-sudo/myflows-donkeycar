@@ -40,7 +40,7 @@ from MyFlows.utils.training_dashboard import TrainingDashboard
 from MyFlows.utils.training_observer import global_gradient_norm
 from MyFlows.utils.transforms import augment_chw_batch, default_train_transforms
 from MyFlows.utils.viz import TrainingHistory
-from apps.train.common.checkpoints import checkpoint_score_to_loss, checkpoint_stem
+from apps.train.common.checkpoints import checkpoint_stem, saved_best_loss
 from apps.train.common.logging import TeeLogger
 from tools.export_resnet_onnx import export_vgg11_onnx
 
@@ -212,9 +212,10 @@ def main() -> None:
     start_epoch = 0
     best_loss = None
     if args.resume:
-        loaded_epoch, saved_score = ms.load_checkpoint([model], opt, str(out_base))
+        loaded_epoch, _ = ms.load_checkpoint([model], opt, str(out_base))
         start_epoch = max(0, int(loaded_epoch) + 1)
-        best_loss = checkpoint_score_to_loss(saved_score)
+        if loaded_epoch >= 0:
+            best_loss = saved_best_loss(best_base)
     best_tracker = BestScore()
     best_tracker.best = best_loss
     early_stopper = EarlyStopping(args.patience, args.min_delta) if args.early_stopping else None

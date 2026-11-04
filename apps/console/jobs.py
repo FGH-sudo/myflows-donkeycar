@@ -6,6 +6,9 @@ Layout under ``root`` (same pattern as ``benchmark.distributed_suite``)::
     <job_id>.config.json  distributed config handed to benchmark.distributed_experiment
     <job_id>.log          stdout + stderr
     <job_id>/             run artifacts
+
+A console restart re-attaches to running jobs and keeps the queue; after a machine restart nothing starts on
+its own: jobs queued before the boot end as failed, like the running ones the reboot ended.
 """
 
 from __future__ import annotations
@@ -94,6 +97,7 @@ class JobManager:
         _write_json(self._job_path(job["id"]), job)
 
     def _recover(self) -> None:
+        boot = psutil.boot_time()
         for path in sorted(self.root.glob("*.job.json")):
             job = _read_json(path)
             if not job or "id" not in job:
@@ -105,6 +109,9 @@ class JobManager:
                     self._procs[job["id"]] = proc
                 else:
                     self._finalize(job, None, note="控制台重启时进程已不存在")
+            elif job["status"] == "pending" and (job.get("created_unix_s") or 0) < boot:
+                # Like the running jobs the reboot ended: a queue from before it never starts training at boot
+                self._finalize(job, None, note="机器重启前排队的任务开机后不自动启动，需要时请重新提交")
 
     @staticmethod
     def _attach(job: dict) -> psutil.Process | None:
