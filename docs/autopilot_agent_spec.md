@@ -1,9 +1,10 @@
 # MyFlows AutoPilot Agent Spec
 
-- 状态：v0.3 开发 Spec，未实现。第 16 节列出的待定项已于 2026-10-23 逐项确认。v0.1（2026-10-22）为初版设计稿，v0.2 加入了 dsh 最小验证的结论
-- 日期：2026-10-23
+- 状态：v0.3 开发 Spec，已实现：M0–M6 于 2026-10-27 全部完成，各里程碑的完成情况见第 14 节。第 16 节列出的待定项已于 2026-10-23 逐项确认。v0.1（2026-10-22）为初版设计稿，v0.2 加入了 dsh 最小验证的结论
+- 日期：2026-10-23（2026-11-04 补记实施状态）
 - 依据：[深度学习框架-16 综合项目III.pdf](<深度学习框架-16 综合项目III.pdf>) 第 2、4、5、8、9、10、11 页；[semester_spec.md](semester_spec.md) 第 4.0、4.7、4.10、9 节（W7、E3）
-- 代码基线：根仓库 80d02af，MyFlows ffb3378；DeepSeek Harness（下称 dsh）0.2.1-rc.2，上游提交 687f282e86
+- 代码基线：根仓库 80d02af，MyFlows ffb3378；DeepSeek Harness（下称 dsh）0.2.1-rc.2，上游提交 687f282e86。实现完成于根仓库 5aeb3ab、MyFlows f19ef79（2026-10-27）
+- 后续增量：Transfer Learning 子 Agent 的策略先验、报告中区分平台原因与代码原因的失败归类，见 [stage3_plan.md](stage3_plan.md)
 - 范围：细化 semester_spec 第 4.7 节；B1/B5 的验收口径不变
 
 ## 1. 定位与已确定的决策
@@ -542,15 +543,15 @@ tests/system/  fixtures/fake_train.py  fixtures/fake_dsh.py  test_autopilot_*.py
 
 所有开发目标都要完成，不按汇报节点裁剪。
 
-| 里程碑 | 内容 | 退出检查 |
-| --- | --- | --- |
-| M0 | P1～P8 | 同一 seed 两次训练逐位一致；单进程和分布式训练都产出 `result.json`、阶段耗时和显存峰值；GPU 锁测试通过；现有回归测试通过 |
-| M1 | `apps/autopilot` 规则内核，`fake_train` 系统测试 | 第一层中与 LLM 无关的测试全部通过 |
-| M2 | 控制台集成（服务、接口、页面）、GPU Monitor、Benchmark、Reporter；第一个小规模真实 campaign（只用规则） | GPU 验收第 1～3 项 |
-| M3 | dsh 接入：先做方案 B 的 spike（外部 bundle 能否装进 AutoPilot 专用 profile、两个 profile 的组合、网页能否嵌入、权限判定），再实现 DshHost、工具服务、守卫插件、助手页和待确认页 | 第一层、第二层全部通过；第三层跑通一次 |
-| M4 | Operator Optimization、PS Training；完善报告 | 课件第 9 页的对比表由 Agent 生成；PS 结论自动得出 |
-| M5（E3） | P9、TPE、精确回滚；正式 campaign 前补上按时间段划分和测试集 | E3 测试通过；回滚实机演示；正式 campaign 经用户同意后完成 |
-| M6（E2 之后） | Transfer Learning | 冻结阶段的搜索能够运行 |
+| 里程碑 | 内容 | 退出检查 | 状态（2026-11-04） |
+| --- | --- | --- | --- |
+| M0 | P1～P8 | 同一 seed 两次训练逐位一致；单进程和分布式训练都产出 `result.json`、阶段耗时和显存峰值；GPU 锁测试通过；现有回归测试通过 | 已完成（2026-10-23） |
+| M1 | `apps/autopilot` 规则内核，`fake_train` 系统测试 | 第一层中与 LLM 无关的测试全部通过 | 已完成（2026-10-23） |
+| M2 | 控制台集成（服务、接口、页面）、GPU Monitor、Benchmark、Reporter；第一个小规模真实 campaign（只用规则） | GPU 验收第 1～3 项 | 已完成（2026-10-24）：冒烟 200 样本 3 个 trial；1000 样本 campaign；显存换页诊断（batch 48 每步 3406 ms → 建议 batch 24，每步 128 ms） |
+| M3 | dsh 接入：先做方案 B 的 spike（外部 bundle 能否装进 AutoPilot 专用 profile、两个 profile 的组合、网页能否嵌入、权限判定），再实现 DshHost、工具服务、守卫插件、助手页和待确认页 | 第一层、第二层全部通过；第三层跑通一次 | 已完成：第一、二层 2026-10-23；第三层 2026-10-26，用 DeepSeek 账号登录（无 API Key）完成 |
+| M4 | Operator Optimization、PS Training；完善报告 | 课件第 9 页的对比表由 Agent 生成；PS 结论自动得出 | 已完成（2026-10-24）：PS 演示的 10 种并行布局都慢于单进程，结论为保持单进程 |
+| M5（E3） | P9、TPE、精确回滚；正式 campaign 前补上按时间段划分和测试集 | E3 测试通过；回滚实机演示；正式 campaign 经用户同意后完成 | 已完成：E3 测试与回滚演示 2026-10-24；正式 campaign formal-full-002 于 2026-10-27 完成，结论为人工基线未被超越 |
+| M6（E2 之后） | Transfer Learning | 冻结阶段的搜索能够运行 | 已完成（2026-10-26），GPU 演示为小规模单 seed |
 
 M3 的 spike 不依赖训练入口的改动，可以与 M0、M1 并行。
 
@@ -597,6 +598,8 @@ M3 的 spike 不依赖训练入口的改动，可以与 M0、M1 并行。
 - token 上限的具体数值。
 
 以上事项都在 M3 的 spike 或第一次真实验收中确定。
+
+确定结果：外部 bundle 以目录链接的方式装进 AutoPilot 专用 profile 的 `node_modules`；dsh 网页可以嵌入控制台（同一主机、不同端口）；第三层验收后，每个 campaign 的 token 上限定为 414,000（`apps/autopilot/spec.py` 的 `DEFAULT_MAX_TOTAL_TOKENS`）。
 
 ## 附录 A：PoC 实现要点
 
