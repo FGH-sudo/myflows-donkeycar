@@ -541,7 +541,7 @@ DonkeyCar 分两步处理。
 
 ### 4.10 系统测试
 
-现状（2026-11-04）：统一入口 `tools/run_tests.py` 覆盖框架、应用与 `tests/system/`（AutoPilot 的预算、恢复、异常识别、回滚、TPE、dsh 守卫等），共 446 项。未完成：图像分类系统测试（2026-11-05 已获准下载 CIFAR-10）、模拟器闭环测试、新增算子的性能回归门槛、成文的测试计划与定期执行（没有 CI；2026-11-05 决定接入只跑 CPU 测试的 GitHub Actions）。
+现状（2026-11-04）：统一入口 `tools/run_tests.py` 覆盖框架、应用与 `tests/system/`（AutoPilot 的预算、恢复、异常识别、回滚、TPE、dsh 守卫等），共 446 项。未完成：图像分类系统测试（CIFAR-10 已于 2026-11-05 下载并校验）、模拟器闭环测试、新增算子的性能回归门槛、成文的测试计划与定期执行（没有 CI；2026-11-05 决定接入只跑 CPU 测试的 GitHub Actions）。
 
 测试分为以下几类：
 
@@ -643,7 +643,7 @@ PDF 第 7 页分别写第 4 次课、第 8 次课和第 12 次周；这里保留
 | CUDA 接入 | 原生 C/C++ DLL：Driver API 加载 NVRTC 编译的自写 kernel；GEMM 默认用自写寄存器分块引擎，cuBLAS 可选 | 已实施（2026-09-06；寄存器分块引擎 2026-10-22）；Triton 不做 |
 | 数值 | 默认 float32；Adam 为教科书形式；规约在 FP64 中按固定顺序累加，结果逐位可复现 | 已实施（2026-10-22） |
 | 数据并行的 BN | 各 Worker 用本地 batch 统计量，running statistics 每步跨 Worker 平均 | 已实施（2026-10-23）；没有 SyncBN |
-| 分类 | CIFAR-10 为阶段任务，digits 为 smoke | 已确定（2026-11-05）：下载 CIFAR-10 的官方二进制版本（不用 pickle 版本），存放在 `runs/datasets/cifar10/` |
+| 分类 | CIFAR-10 为阶段任务，digits 为 smoke | 已确定（2026-11-05）：CIFAR-10 的官方二进制版本（不用 pickle 版本）已下载并校验 MD5，存放在 `runs/datasets/cifar10/` |
 | 跨框架比较 | 只比较 MyFlows 与 PyTorch | 已确定（2026-11-05）：不安装 PaddlePaddle；旧的 VGG 脚本删除 |
 | 拓展范围 | 第三阶段的拓展项（LoRA、GEMM 自动调优、TF32 与混合精度、Winograd）全部纳入 | 已确定（2026-11-05） |
 | CI | GitHub Actions 只跑 CPU 测试（GitHub 托管的 Linux 机器，不用自托管 runner） | 已确定（2026-11-05）；GPU 测试继续在本地运行 |

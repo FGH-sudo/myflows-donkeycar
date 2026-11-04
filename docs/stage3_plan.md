@@ -16,7 +16,7 @@
 | S4 | 迁移学习实验：分类递进实验、DonkeyCar 主任务正式对照 | E2；第 24 讲第 23–42 页 | 拓展 | S3 |
 | S5 | 跨框架同条件比较（MyFlows 与 PyTorch，ResNet18） | B4；semester_spec 4.9 | 基础 | S1.1（记录格式） |
 | S6 | DonkeyCar 闭环评估 | B4；semester_spec 4.8 | 基础 | 无（S4.2 的模型可后加） |
-| S7 | 图像分类系统测试（CIFAR-10） | B5；semester_spec 4.10 | 基础 | 无（数据集已获准下载，见 S7） |
+| S7 | 图像分类系统测试（CIFAR-10） | B5；semester_spec 4.10 | 基础 | 无（数据集已下载，见 S7） |
 | S8 | 算子与显存优化 | 第 19 讲（下）第 55–78 页 | 基础 + 拓展 | S2 之后串行 |
 | S9 | 测试计划、性能门槛与 CI | B5；第 16 讲第 6 页 | 基础 | 无 |
 | S10 | AutoPilot 增量：失败归类、算子瓶颈分类、迁移策略先验 | B1 增量 | 拓展 | S1.4、S3 |
@@ -397,7 +397,8 @@
 ### S7 图像分类系统测试（B5，semester_spec 4.10）
 
 - 数据（2026-11-05 获准下载）：
-  - 来源：官方二进制版本 `cifar-10-binary.tar.gz`（https://www.cs.toronto.edu/~kriz/cifar-10.html，162 MB，官方 MD5 `c32a1d4ab5d03f1284b67883e8d87530`），存放在 `runs/datasets/cifar10/`（不纳入 Git），下载与校验结果见第 8 节。
+  - 来源：官方二进制版本 `cifar-10-binary.tar.gz`（官方页面 https://www.cs.toronto.edu/~kriz/cifar-10.html，170,052,171 字节，官方 MD5 `c32a1d4ab5d03f1284b67883e8d87530`）。官方站点在国内只有约 60 KB/s，2026-11-05 改从华为云上 MindSpore 教程使用的镜像下载（https://mindspore-website.obs.cn-north-4.myhuaweicloud.com/notebook/datasets/cifar-10-binary.tar.gz），MD5 与官方一致。
+  - 位置：已解压到 `runs/datasets/cifar10/cifar-10-batches-bin/`（不纳入 Git），压缩包保留在 `runs/datasets/cifar10/`。核对结果：训练集 50,000 条（每类 5,000），测试集 10,000 条（每类 1,000），共 10 个类别。
   - 不用 python 版本：它是 pickle 文件，反序列化来自网络的数据有执行代码的风险。
   - 格式：`data_batch_1.bin`–`data_batch_5.bin` 与 `test_batch.bin` 各 10,000 条记录，每条 3073 字节（1 字节标签 + 3×32×32 像素，按通道排列）；类别名在 `batches.meta.txt`。
 - 读取与划分：
@@ -581,7 +582,7 @@
 | 事项 | 影响 | 决定（2026-11-05） |
 | --- | --- | --- |
 | 是否安装 PaddlePaddle | S5 | 不安装，只比较 MyFlows 与 PyTorch |
-| 是否下载 CIFAR-10 | S7、S4.1 | 下载（官方二进制版本，见 S7） |
+| 是否下载 CIFAR-10 | S7、S4.1 | 下载；2026-11-05 已下载并校验（见 S7） |
 | 全量运行与模拟器的时段 | S4、S5、S6、S7 | 第三阶段期间电脑全程空闲，可以直接运行（2.4 节） |
 | 拓展项是否纳入 | S3.6、S8.6–S8.8 | 全部纳入 |
 | 旧的 VGG 跨框架脚本 | S5 | 删除（2026-11-05 已删除脚本与测试） |
@@ -606,7 +607,7 @@
 
 | 日期 | 工作包 | 提交（根仓库 / MyFlows） | 结论 | 证据 |
 | --- | --- | --- | --- | --- |
-| — | — | — | — | — |
+| 2026-11-05 | S7 准备 | — | CIFAR-10 二进制版本已下载并解压；MD5 与官方一致；训练集每类 5,000 条、测试集每类 1,000 条 | `runs/datasets/cifar10/` |
 
 ## 9. 风险
 
