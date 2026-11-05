@@ -140,4 +140,4 @@ environment 包含 `python`、`platform`（string），`packages`（包名 → �
 | 数据读取 | metrics.data_load_ms | loader 等待 wall time |
 | samples/sec | metrics.samples_per_sec_total | 与 step_total_ms 同分母；完整训练另看 result.throughput |
 
-监控开销和频率是否可用于正式计时，需以 `monitoring/overhead-001/report.md` 的交替测量为准。格式本身不声称默认采样开销已达标。
+9 次交替测量中，默认 0.5 s 档的配对开销中位数为 0.601%，通过 5% 门槛。首个关闭档的功耗状态和单步耗时与其余重复相差较大，逐轮数据与离散度见[开销报告](experiments/semester_2026_fall/monitoring/overhead-001/report.md)。
