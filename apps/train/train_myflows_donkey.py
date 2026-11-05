@@ -86,6 +86,7 @@ from MyFlows.utils.training_dashboard import TrainingDashboard
 from MyFlows.utils.transforms import augment_chw_batch, default_train_transforms
 from MyFlows.utils.viz import TrainingHistory, plot_training_curves
 from MyFlows.monitoring.record import MonitorProcess, monitoring_enabled
+from MyFlows.monitoring.nvtx import TrainingProfiler
 from MyFlows.monitoring.schema import EXTERNAL_MONITOR_ENV, record
 from apps.common.environment import environment
 
@@ -146,8 +147,9 @@ class _StepPhases:
     本进程的 CuPy 显存池为准：used 是张量实际占用，pool 是显存池向驱动申请的总量（训练中只增不减）。
     """
 
-    def __init__(self, device: str, every: int):
+    def __init__(self, device: str, every: int, profiler=None):
         self.every = max(0, int(every))
+        self.profiler = profiler
         self.spans = {phase: _DeviceSpan(device) for phase in PHASES}
         self.pool = xp.get_default_memory_pool() if device == "cuda" else None
         self.device_total_bytes = None
@@ -172,7 +174,11 @@ class _StepPhases:
         if self.timing:
             self.spans[phase].start()
         try:
-            yield
+            if self.profiler is not None and self.profiler.enabled:
+                with self.profiler.range(phase):
+                    yield
+            else:
+                yield
         finally:
             if self.timing:
                 self.spans[phase].stop()
@@ -211,7 +217,7 @@ _NON_TRAJECTORY_ARGS = {
     "keep_states", "checkpoint_every", "unique_run", "run_id", "export_onnx", "onnx_out", "no_tensorboard",
     "save_png_plots", "summary_once", "check_shape", "check_content", "num_workers", "gpu_lock_timeout",
     "phase_timing_every", "sync_timeout", "worker_memory_mb", "epochs", "lr", "log_dir", "logdir", "plot_prefix",
-    "split_out", "monitor", "monitor_interval_s",
+    "split_out", "monitor", "monitor_interval_s", "nvtx", "nvtx_nodes", "profile_steps",
 }
 
 
@@ -431,6 +437,9 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--monitor", choices=("auto", "on", "off"), default="auto",
                     help="资源采样：有 run-dir 时 auto 开启；控制台已有采样器时不重复采样")
     ap.add_argument("--monitor-interval-s", type=float, default=0.5, help="独立采样进程的采样间隔（秒）")
+    ap.add_argument("--nvtx", action="store_true", help="在 CUDA 训练路径标注 step 与阶段的 NVTX 区间")
+    ap.add_argument("--nvtx-nodes", action="store_true", help="标注各计算图节点并写 nvtx_map.json")
+    ap.add_argument("--profile-steps", metavar="A:B", help="仅在第 A 至 B 个全局训练步启用 cudaProfilerApi，从 1 开始，包含两端")
     ap.add_argument("--gpu-lock-timeout", type=float, default=0.0,
                     help="等待本机 GPU 锁的最长秒数（0=一直等）；环境变量 MYFLOWS_GPU_LOCK=off 关闭加锁")
     ap.add_argument("--state-every", type=int, default=0,
@@ -906,6 +915,19 @@ def _epoch_samples(dataset: list, epoch: int, shard_sizes: list, rank: int) -> l
 
 
 def train_rank(plan: TrainPlan, rank: int = 0, sync=None) -> dict:
+    device = resolve_myflows_device(plan.args.device)
+    directory = Path(plan.run_dir or plan.log_dir)
+    if rank:
+        directory = directory / f"rank-{rank}"
+    profiler = TrainingProfiler(enabled=plan.args.nvtx, nodes=plan.args.nvtx_nodes,
+                                capture_steps=plan.args.profile_steps, device=device, output=directory / "nvtx_map.json")
+    try:
+        return _train_rank(plan, rank, sync, device, profiler)
+    finally:
+        profiler.close()
+
+
+def _train_rank(plan: TrainPlan, rank, sync, device, profiler) -> dict:
     """训练循环。单进程时 rank=0、sync=None；分布式时每个 Worker 进程各跑一份，经 sync 同步梯度与 BN 统计量。"""
     args = plan.args
     lead = rank == 0
@@ -921,7 +943,6 @@ def train_rank(plan: TrainPlan, rank: int = 0, sync=None) -> dict:
     world = plan.world_size
     h, w = plan.h, plan.w
     steps = plan.steps_per_epoch
-    device = resolve_myflows_device(args.device)
     if lead:
         print_myflows_device(device, args.device)
     # 层参数按全局默认 dtype 创建：必须与输入一致，否则 float32 输入会和 float64 权重混算成 float64
@@ -936,6 +957,7 @@ def train_rank(plan: TrainPlan, rank: int = 0, sync=None) -> dict:
     x_var, y_var, model, logits, loss_node, graph = _build_model(args, batch, h, w, dtype, conv_backend,
                                                                  dropout_seed=seeds["dropout"][rank])
     opt = ms.Adam(graph, learning_rate=args.lr)
+    profiler.bind_graph(graph)
     reg_config = RegularizationConfig(
         l1=float(args.l1_coeff),
         l2=float(args.weight_decay),
@@ -1021,7 +1043,7 @@ def train_rank(plan: TrainPlan, rank: int = 0, sync=None) -> dict:
     inspect_done = False
     synced_params = None
     train_span = _DeviceSpan(device)
-    phases = _StepPhases(device, args.phase_timing_every)
+    phases = _StepPhases(device, args.phase_timing_every, profiler=profiler)
     epochs_completed = 0
     validation_history: list[dict] = []
     best_epoch = None
@@ -1050,6 +1072,7 @@ def train_rank(plan: TrainPlan, rank: int = 0, sync=None) -> dict:
                                                encoding="utf-8")
         rank_steps = (rank_dir / "steps.jsonl").open("a", encoding="utf-8", buffering=1)
 
+    @profiler.annotate("checkpoint")
     def save_training_checkpoint(epoch, *, loss, epoch_complete, next_step=0, loss_sum=0.0, loss_count=0):
         """训练断点只由 rank 0 写（各 Worker 状态相同），元数据记下续训位置与早停计数。"""
         training = {"global_step": global_step, "global_batch": plan.global_batch, "epoch_complete": epoch_complete,
@@ -1060,6 +1083,7 @@ def train_rank(plan: TrainPlan, rank: int = 0, sync=None) -> dict:
             training["early_stopping"] = {"best": early_stopper.best, "bad_epochs": early_stopper.bad_epochs}
         return ms.save_checkpoint([model], opt, epoch, filepath=str(out_base), loss=loss, training=training)
 
+    @profiler.annotate("checkpoint")
     def save_state(epoch, *, epoch_complete, samples, wall_s, next_step=0, loss_sum=0.0, loss_count=0,
                    loss=None, running_loss=None):
         """Full TrainingState (P9) of a single-process run; ``samples`` and ``wall_s`` include the open epoch."""
@@ -1083,6 +1107,7 @@ def train_rank(plan: TrainPlan, rank: int = 0, sync=None) -> dict:
         return save_training_state(plan.state_dir, [model], opt, global_step, state, keep=int(args.keep_states),
                                    best_filepath=best_base if best_tracker.best is not None else None)
 
+    @profiler.annotate("validation")
     def validation_loss(epoch):
         """验证集按 Worker 交错切分，各自累加逐样本 MSE 与转向角绝对误差再求和；补齐用的重复样本不计入。
         返回 (val_loss, val_angle_mae, 样本数)。"""
@@ -1113,6 +1138,19 @@ def train_rank(plan: TrainPlan, rank: int = 0, sync=None) -> dict:
             return None, None, 0
         return squared / count, angle_abs / count, count
 
+    @profiler.annotate("data_prepare")
+    def prepare_batch(x_items, y_items, step):
+        x_batch = np.asarray(x_items, dtype=dtype)
+        y_batch = np.asarray(y_items, dtype=dtype).reshape(-1, 2)
+        if train_transform is not None or args.mixup or args.cutmix:
+            original = x_batch.copy()
+            augment_chw_batch(x_batch, y_batch, train_transform, mixup=bool(args.mixup), cutmix=bool(args.cutmix),
+                              mix_seed=None if mix_seed is None else mix_seed + step)
+            dashboard.log_augmentation(step, original, x_batch, batch_size=batch)
+        x_var.value = x_batch
+        y_var.value = y_batch
+        return y_batch
+
     if lead and args.state_every and plan.resume_meta is None and global_step == 0:
         # A too-large lr can blow up on the very first update: the initial weights are a rollback target too.
         save_state(plan.start_epoch, epoch_complete=False, samples=0, wall_s=0.0)
@@ -1130,25 +1168,9 @@ def train_rank(plan: TrainPlan, rank: int = 0, sync=None) -> dict:
         )
         epoch_interrupted = False
         load_start = time.perf_counter()
-        for s, (x_items, y_items) in enumerate(loader, start=first_step):
+        for s, (x_items, y_items) in enumerate(profiler.batches(loader, start_step=global_step + 1), start=first_step):
             after_load = time.perf_counter()
-            x_batch = np.asarray(x_items, dtype=dtype)
-            y_batch = np.asarray(y_items, dtype=dtype).reshape(-1, 2)
-
-            if train_transform is not None or args.mixup or args.cutmix:
-                x_orig = x_batch.copy()
-                augment_chw_batch(
-                    x_batch,
-                    y_batch,
-                    train_transform,
-                    mixup=bool(args.mixup),
-                    cutmix=bool(args.cutmix),
-                    mix_seed=None if mix_seed is None else mix_seed + global_step,
-                )
-                dashboard.log_augmentation(global_step, x_orig, x_batch, batch_size=batch)
-
-            x_var.value = x_batch
-            y_var.value = y_batch
+            y_batch = prepare_batch(x_items, y_items, global_step)
 
             model.train(True)
             phases.begin(global_step)
@@ -1187,14 +1209,16 @@ def train_rank(plan: TrainPlan, rank: int = 0, sync=None) -> dict:
                          else np.zeros(node.value.shape, np.float32) for name, node in params.items()}
                 local.update({name: asnumpy(getattr(layer, attr)) for name, (layer, attr) in buffers.items()})
                 sync_start = time.perf_counter()
-                means, step_loss = sync.allreduce(local, batch, myflows_scalar_float(loss_node.value))
+                with profiler.range("sync"):
+                    means, step_loss = sync.allreduce(local, batch, myflows_scalar_float(loss_node.value))
                 sync_s = time.perf_counter() - sync_start
                 with phases("optimizer"):
                     opt.update({node: xp.asarray(means[name], dtype=node.value.dtype)
                                 for name, node in synced_params.items()})
                 _assign_buffers(buffers, means)
                 confirm_start = time.perf_counter()
-                stop_now = sync.commit(_fingerprint(params, buffers, opt), stop=stop_file.exists())
+                with profiler.range("sync"):
+                    stop_now = sync.commit(_fingerprint(params, buffers, opt), stop=stop_file.exists())
             if not math.isfinite(step_loss):
                 # 不保存断点：最近一次断点仍是健康状态，回滚从那里继续
                 raise outcome.NonFiniteLossError(global_step + 1, ep + 1, step_loss)
@@ -1314,13 +1338,8 @@ def train_rank(plan: TrainPlan, rank: int = 0, sync=None) -> dict:
                 best_loss = float(best_tracker.best)
                 best_epoch = ep + 1
                 if lead:
-                    best_json, best_npz = ms.save_checkpoint(
-                        [model],
-                        None,
-                        ep,
-                        filepath=str(best_base),
-                        loss=best_loss,
-                    )
+                    with profiler.range("checkpoint"):
+                        best_json, best_npz = ms.save_checkpoint([model], None, ep, filepath=str(best_base), loss=best_loss)
                     print(f"已保存最佳模型: {best_json} + {best_npz} (loss={best_loss:.6f})")
                     dashboard.log_checkpoint("best", f"epoch={ep+1} path={best_json} best_loss={best_loss:.6f}", ep + 1)
             if lead and args.state_every:
