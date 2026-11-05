@@ -1,8 +1,8 @@
 # 当前系统设计
 
-更新时间：2026-10-22。
+更新时间为 2026-11-05。
 
-本文只说明仓库当前已经存在的系统。第一阶段已实现 CUDA C/C++ Conv/Pool 与 Nsight 实验入口；分布式阶段已按 [stage1_distributed_gpu_spec.md](stage1_distributed_gpu_spec.md) 实现 GPU Worker 的同步 PS（Socket JSON / gRPC）与 Ring AllReduce。训练控制台（第 8 节）已把运行记录、实时曲线、GPU 占用和任务启停集中到一个 Web 界面。AutoPilot Agent、完整 GPU 监控和预训练模型库继续按 [semester_spec.md](semester_spec.md) 推进。
+本文只说明仓库当前已经存在的系统。第一阶段已实现 CUDA C/C++ Conv/Pool 与 Nsight 实验入口；分布式阶段已按 [stage1_distributed_gpu_spec.md](stage1_distributed_gpu_spec.md) 实现 GPU Worker 的同步 PS（Socket JSON / gRPC）与 Ring AllReduce。训练控制台（第 8 节）已把运行记录、实时曲线、GPU 占用和任务启停集中到一个 Web 界面。训练控制台也承担 AutoPilot 任务调度。训练入口支持 ImageNet 参数迁移、精确恢复、资源采样与 NVTX 诊断。
 
 ## 1. 项目边界
 
@@ -11,7 +11,7 @@
 - MyFlows/ 是自研深度学习框架。
 - 根仓库是 DonkeyCar 应用、训练评估入口、部署和课程实验。
 
-根仓库把 MyFlows/ 记录为独立 Git 仓库。阶段实验同时记录两个仓库的 HEAD、dirty/diff、源码 hash，并保存实际源码快照；恢复工具支持无 Git 历史的源码包。长期远程子仓库引用方式仍需在学期协作前统一。
+根仓库把 MyFlows/ 记录为独立 Git 仓库。阶段实验同时记录两个仓库的 HEAD、dirty/diff、源码 hash，并保存实际源码快照；恢复工具支持无 Git 历史的源码包。根仓库通过 .gitmodules 固定 MyFlows 子模块引用。
 
 ## 2. 当前结构
 
@@ -65,7 +65,7 @@ PS 模式和 Ring 模式二选一；Ring 模式没有 PS 进程。所有进程�
 5. 训练脚本保存 checkpoint，并可导出 ONNX。
 6. TensorBoard 当前可以记录 loss、梯度、参数、数据读取时间、单步训练时间和吞吐量。
 
-当前计时只覆盖了部分训练阶段，也没有完整的 GPU 硬件指标。本学期会按照 Spec 补齐。
+训练每步记录数据读取和计算墙钟，在指定步使用 CUDA Event 记录前向、反向与优化器时间，并通过独立采样器记录 GPU、CPU 与 RSS。字段见 [监控格式](monitoring_format.md)。
 
 ## 4. 当前推理过程
 
@@ -154,15 +154,19 @@ flowchart LR
 - Worker 视图：分布式实验按 rank 显示曲线、阶段耗时占比、最新 step 与梯度同步占比；各 rank 在 `prepare.json` 中记录 PID，控制台据此把 GPU 进程和进程内存对应到 rank。多 Worker 的正式训练也写 `rank-*/prepare.json` 与 `steps.jsonl`，拓扑页显示各 Worker 的 step 耗时与同步占比，曲线仍取 rank 0 的 `metrics.jsonl`。
 - 单进程训练：`TrainingDashboard` 在 `--run-dir` 下同时写 `metrics.jsonl`，与 TensorBoard 记录内容一致。
 
+### AutoPilot、迁移训练与恢复
+
+控制台将 campaign 交给 AutoPilot 服务。Planner 生成配置，Executor 通过 JobManager 串行执行 trial，Verifier 读取运行证据与在线异常，Scheduler 管理预算和恢复。Reporter 汇总人工基线、配对种子和独立测试集结果。持久化的 campaign、trial 和 attempt 记录支持重启后接续。TPE 使用已验证的历史结果搜索，回滚从通过校验的 TrainingState 恢复。[AutoPilot 规格](autopilot_agent_spec.md)
+
+ResNet18、MobileNetV2 与 AlexNet 可读取按 torchvision 名称保存的 NPZ 权重。载入时核验骨干名称和形状并记录任务头替换。冻结阶段同时控制参数和 BN 统计量。分类验证使用转向分档任务，主任务使用 DonkeyCar 回归和固定划分。训练结果记录来源哈希、冻结等级与冻结前后指纹。
+
 ## 9. 当前限制
 
 - CUDA C 暂不支持 FP64、分组/空洞卷积和带 padding 的 Pool；这些高级卷积功能继续走原后端。当前原生路径限定 groups=1、dilation=1。
 - 分布式训练只支持单机回环；所有 Worker 共享一张 GPU，没有多 GPU、多机或 NCCL 实验，也不能按 Worker 指定设备。分布式实验中 ResNet18 独立整批与分片轨迹的逐步梯度等价未通过。正式训练的多 Worker BN 用各 Worker 本地 batch 的统计量，没有 SyncBN。
-- 没有训练调优 AutoPilot Agent。
-- GPU 监控仍不完整：`MyFlows/monitoring` 已支持 NVML 多卡采样，并由控制台接入分布式与单进程任务，但 `distributed_experiment` 内部的采样仍是 nvidia-smi 且只读第一张卡，资源曲线也没有写入 TensorBoard。Windows WDDM 驱动下读不到单个进程的显存，只能显示整卡显存和各进程 RSS。
-- 没有预训练参数导入和冻结训练功能。
+- 在 WDDM 上，NVML 设备采样、CuPy 池统计和进程 RSS 分列展示。历史 distributed_experiment 自身的 nvidia-smi 采样只覆盖第一张卡。
 - 当前跨框架性能测试的方法需要重做，旧结果不能直接用于本学期结论。
-- 通用模型状态与 checkpoint 精确恢复仍待后续完成：`apps/train` 的断点已记录续训位置（epoch、step、本 epoch 累计 loss 与早停计数），但数据增强与 Dropout 的随机数状态不保存，续训后的增强序列与不中断时不同（`apps/train` 的完整 ResNet 已于 2026-10-22 接入原生 CUDA 后端，见第 10 节）。
+- 普通 checkpoint 保存模型、BN buffer 和优化器状态。单进程精确续训使用 TrainingState，另存数据游标、增强与 dropout RNG、最佳模型、早停历史和指纹。多 Worker 继续使用普通 checkpoint。
 - GPU 上的端到端梯度误差由卷积 GEMM 的 float32 累加决定（ResNet18 单步梯度相对 FP64 的中位误差 3e-6–4e-6）。自写的寄存器分块 GEMM 是原生卷积与 `Dense` 的默认引擎，cuBLAS 可选：ResNet18 每步耗时两者相同，寄存器分块的梯度中位误差高约 5%，在窄输出的前向 GEMM 上误差最多为 cuBLAS 的 6.3 倍。补偿累加（kahan/dot2）只作为实验后端，没有接入卷积。
 - 计算图每步为所有节点分配并清零梯度，再以 `+=` 累加，比首次写入直接赋值多一次全张量读写。
 

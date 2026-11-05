@@ -22,12 +22,12 @@
 | MyFlows/distributed/measurement.py、monitor.py、metrics_reduce.py | 逐 rank 的 steps/epochs JSONL 与状态快照、CUDA Event 计时、流量统计、事件上报、指标归约 |
 | MyFlows/distributed/tasks/ | synthetic、mnist_mlp、donkey_cnn、donkey_resnet18 任务适配与预处理数据读取 |
 | MyFlows/examples/stage1_cnn.py | 同 seed、全链路 FP32 的 32 样本 CNN 训练 fixture |
-| MyFlows/layers/resnet.py | 当前主模型 ResNet18 |
+| MyFlows/layers/resnet.py、mobilenet.py | ResNet18、MobileNetV2、AlexNet 的 torchvision 兼容结构、张量名称与阶段划分 |
+| MyFlows/utils/pretrained.py | 校验并载入转换后的 ImageNet 权重，构建任务头，冻结阶段参数与 BN，生成冻结张量指纹 |
+| MyFlows/monitoring/nvtx.py | 按全局 step 控制 cudaProfilerApi，标注训练阶段与节点，保存相对源码位置 |
 | MyFlows/train/ | SGD、Momentum、AdaGrad、RMSProp、Adam 和正则化；Adam 为标准实现（零初始化矩估计 + 偏差修正，2026-10-22 起），每个参数一次融合更新 |
 | MyFlows/utils/checkpoint.py | JSON + NPZ checkpoint 保存和恢复；参数与优化器状态按当前模型的 dtype 恢复 |
 | MyFlows/utils/onnx_exporter.py | ONNX 导出 |
-| MyFlows/utils/training_dashboard.py | TensorBoard 训练指标记录；可选同时逐行写 metrics.jsonl 供控制台增量读取 |
-| MyFlows/monitoring/gpu.py | `GpuSampler`（NVML 优先、nvidia-smi 兜底，缺测字段为 null 并记录原因）与 `ResourceRecorder`（后台线程，内存环形历史 + 可选 JSONL） |
 | MyFlows/utils/metrics_core/ | 分类、回归和 DonkeyCar 指标 |
 | MyFlows/data/pipeline.py | 多进程图片读取，固定整批任务并按顺序返回；独立于 PS 训练 |
 | MyFlows/tests/ | 框架单元测试和小型集成测试 |
@@ -38,6 +38,10 @@
 | --- | --- |
 | apps/common/ | DonkeyCar 数据索引、划分和图像预处理 |
 | apps/train/train_myflows_donkey.py | ResNet18 正式训练入口：单进程与 `--distributed ps|ring --workers N` 数据并行共用同一个训练循环（`train_rank`）；断点记录续训位置（epoch、step、早停计数），验证集 loss 按真实样本精确计算，分布式时验证集按 Worker 切分后汇总 |
+| apps/autopilot/ | campaign、trial、attempt 持久状态，规划、调度、执行、验证、证据与报告，TPE 条件搜索与 TrainingState 回滚 |
+| apps/autopilot/agents/、dsh/ | GPU、算子、数据并行、基准与迁移规则，以及可选 dsh 工具适配 |
+| apps/common/splits.py | 时间段或随机划分、样本指纹、固定划分文件的创建和验证 |
+| apps/train/transfer_classify.py、evaluate_donkey.py | 转向分档分类迁移实验与固定测试集上的回归模型评估 |
 | apps/train/common/ | 验证、早停、checkpoint 路径和训练日志 |
 | apps/train/__main__.py | `python -m apps.train` 的短入口，等价调用 train_myflows_donkey |
 | apps/common/environment.py | GPU/驱动、CUDA/NVRTC、依赖 metadata 和原生源码哈希；AutoPilot provenance 保留兼容导出 |
@@ -75,22 +79,11 @@
 | benchmark/nsight.py | 按平台查找 nsys/ncu：显式路径、`MF_NSYS`/`MF_NCU`、PATH，最后是 Windows / Linux 默认安装目录中的最新版本 |
 | benchmark/stage1_common.py | 配置、环境、双仓库源码快照、错误状态与产物校验和 |
 | benchmark/stage1_regression.py | 三个独立进程的完整回归与日志归档 |
+| benchmark/monitor_overhead.py、profile_train.py | 训练资源监控的交替开销对照，以及指定步段的 Nsight Systems 采集与 SQLite 导出 |
+| tools/timeline_gaps.py | 合并同设备各 stream 上的 kernel/拷贝/清零忙区间，将空闲段按 CPU NVTX 来源拆分，输出图表和分阶段占比 |
 | tools/run_tests.py | 同时收集 unittest 和函数式测试的统一入口 |
 | tools/restore_stage1_source.py | 按运行 manifest 校验并恢复实际源码，不覆盖现有目录 |
 | tools/build_native_cuda.py | 手动构建原生 CUDA 库（调用 `MyFlows/ops/cuda_native/build.py`）：Windows 用 MSVC 生成 `native_cublas.dll`，Linux 用 GCC/Clang 生成 `native_cublas.so`；`--if-needed` 只在缺失或过期时构建 |
 | tools/generate_distributed_proto.py | 从 proto/ 生成 generated/grpc/ 下的 gRPC 代码 |
 | proto/、generated/grpc/ | PS、Ring、推理服务的 protobuf 定义与生成代码 |
 | tests/ | 根仓库应用层测试 |
-
-## 本学期预计新增位置
-
-以下只是建议位置，需在 Spec 审核后再创建：
-
-| 建议路径 | 计划内容 |
-| --- | --- |
-| MyFlows/layers/ | 补充 MobileNetV2、AlexNet，并继续使用现有 ResNet18 |
-| MyFlows/utils/pretrained.py | 导入预训练参数、检查匹配情况、冻结和解冻参数 |
-| apps/autopilot/ | 自动安排训练、选择参数、检查异常和生成报告 |
-| tests/system/ | Agent、分布式训练、预训练和图像分类系统测试 |
-
-这些目录名称可以在审核时调整。真正实现后再把本文件中的“预计新增”改成“当前已有”。
