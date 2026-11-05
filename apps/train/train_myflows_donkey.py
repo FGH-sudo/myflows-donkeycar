@@ -494,6 +494,7 @@ class TrainPlan:
     resume_meta: dict | None = None
     end_epoch: int | None = None
     fingerprint: str | None = None
+    fixed_state: str | None = None
 
     @property
     def world_size(self) -> int:
@@ -864,6 +865,13 @@ def _state_arrays(params: dict, buffers: dict) -> dict:
     return arrays
 
 
+def _distributed_parameters(model_params, graph):
+    reachable = set(graph.nodes)
+    updated = {name: p for name, p in model_params.items() if p.trainable and p in reachable}
+    fixed = {name: p for name, p in model_params.items() if name not in updated}
+    return updated, fixed
+
+
 def _assign_buffers(buffers: dict, arrays: dict) -> None:
     for name, (layer, attr) in buffers.items():
         target = getattr(layer, attr)  # BN 算子持有同一个数组，只能原地写
@@ -973,10 +981,23 @@ def _train_rank(plan: TrainPlan, rank, sync, device, profiler) -> dict:
     elif plan.resume_found:
         ms.load_checkpoint([model], opt, str(out_base))
     params, buffers = named_state(model)
+    synced_params = {}
     if sync is not None:
         # 所有 Worker 从同一份初始状态出发：主进程生成，续训时就是断点里的参数与 BN 统计量
-        initial = sync.initialize(_state_arrays(params, buffers))
-        for name, node in params.items():
+        synced_params, fixed = _distributed_parameters(params, graph)
+        if fixed:
+            if not plan.fixed_state:
+                raise RuntimeError("fixed parameter initial state is missing")
+            with np.load(plan.fixed_state, allow_pickle=False) as saved:
+                if set(saved.files) != set(fixed):
+                    raise RuntimeError("fixed parameter names differ between the launcher and worker")
+                for name, node in fixed.items():
+                    value = saved[name]
+                    if value.shape != node.value.shape or value.dtype != node.value.dtype:
+                        raise RuntimeError(f"fixed parameter shape or dtype mismatch: {name}")
+                    node.value = xp.asarray(value)
+        initial = sync.initialize(_state_arrays(synced_params, buffers))
+        for name, node in synced_params.items():
             node.value = xp.asarray(initial[name], dtype=node.value.dtype)
         _assign_buffers(buffers, initial)
 
@@ -1041,7 +1062,7 @@ def _train_rank(plan: TrainPlan, rank, sync, device, profiler) -> dict:
     history = TrainingHistory()
     global_step = plan.start_global_step
     inspect_done = False
-    synced_params = None
+    sync_verified = False
     train_span = _DeviceSpan(device)
     phases = _StepPhases(device, args.phase_timing_every, profiler=profiler)
     epochs_completed = 0
@@ -1198,15 +1219,12 @@ def _train_rank(plan: TrainPlan, rank, sync, device, profiler) -> dict:
                 step_loss = myflows_scalar_float(loss_node.value)
                 stop_now = stop_file.exists()
             else:
-                if synced_params is None:
-                    # 第一步核对：所有带梯度的节点都在同步范围内，否则各 Worker 会悄悄分叉
-                    unknown = set(opt.acc_gradient) - set(params.values())
-                    if unknown:
-                        raise RuntimeError(f"{len(unknown)} 个可训练节点不在模型参数表里，无法同步")
-                    synced_params = {name: node for name, node in params.items() if node in opt.acc_gradient}
+                if not sync_verified:
+                    if set(opt.acc_gradient) != set(synced_params.values()):
+                        raise RuntimeError("worker gradient names differ from the trainable parameter schema")
+                    sync_verified = True
                 # 本分片梯度（已含正则项）与前向更新过的 BN 统计量，按样本数加权平均后所有 Worker 相同
-                local = {name: asnumpy(opt.get_gradient(node)) if name in synced_params
-                         else np.zeros(node.value.shape, np.float32) for name, node in params.items()}
+                local = {name: asnumpy(opt.get_gradient(node)) for name, node in synced_params.items()}
                 local.update({name: asnumpy(getattr(layer, attr)) for name, (layer, attr) in buffers.items()})
                 sync_start = time.perf_counter()
                 with profiler.range("sync"):
@@ -1414,11 +1432,17 @@ def _write_initial_state(plan: TrainPlan, path: Path) -> None:
     args = plan.args
     set_device("cpu")
     ms.set_default_dtype(np.float32)
-    _, _, model, _, _, _ = _build_model(args, plan.shard_sizes[0], plan.h, plan.w, np.float32, "auto")
+    _, _, model, _, _, graph = _build_model(args, plan.shard_sizes[0], plan.h, plan.w, np.float32, "auto")
     if plan.resume_found:
         ms.load_checkpoint([model], None, plan.out_base)
     params, buffers = named_state(model)
-    save_state(path, _state_arrays(params, buffers))
+    updated, fixed = _distributed_parameters(params, graph)
+    save_state(path, _state_arrays(updated, buffers))
+    if fixed:
+        # Give every rank identical fixed tensors once without transmitting zero gradients each step.
+        fixed_path = path.with_suffix(".fixed.npz")
+        np.savez(fixed_path, **{name: asnumpy(node.value) for name, node in fixed.items()})
+        plan.fixed_state = str(fixed_path)
 
 
 def _prebuild_native(args) -> None:
@@ -1457,6 +1481,8 @@ def run_distributed(plan: TrainPlan, tee: TeeLogger) -> tuple[dict, TeeLogger]:
         finished = {"status": "failed", "error": str(exc)}
     finally:
         initial_state.unlink(missing_ok=True)
+        if plan.fixed_state:
+            Path(plan.fixed_state).unlink(missing_ok=True)
         tee = TeeLogger(Path(plan.log_file))
         sys.stdout = tee
         sys.stderr = tee
