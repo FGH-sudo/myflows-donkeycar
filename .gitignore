@@ -56,6 +56,7 @@ docs/experiments/**/*.jpeg
 docs/experiments/**/*.json
 docs/experiments/**/*.csv
 docs/experiments/**/*.jsonl
+docs/experiments/**/*.npy
 docs/experiments/**/*.nsys-rep
 docs/experiments/**/*.ncu-rep
 docs/experiments/**/*.sqlite
