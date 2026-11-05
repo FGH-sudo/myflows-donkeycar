@@ -172,9 +172,71 @@ def speed(args, out):
                     write(out / "speed.json", rows)
 
 
+def report(out):
+    checks, rows = read(out / "numerical-checks.json"), read(out / "speed.json")
+    speed_manifest = read(out / "speed-manifest.json")
+    if len(checks) != 40 or any(row["errors"] for row in checks):
+        raise ValueError("expected the full passing numerical matrix")
+    repeats = speed_manifest["repeats"]
+    if repeats < 2 or len(rows) != 2 * 5 * 2 * repeats:
+        raise ValueError("expected repeated A/B measurements at both sizes and five freeze levels")
+    lines = ["# 冻结阶段反向截断的数值与性能对照", "",
+             f"40 组同后端逐字节比较通过，覆盖 {sum(row['trainable_tensors'] for row in checks):,} 组可训练参数。"
+             "每组核对输入、初值、logits、loss、全部可训练梯度、一步 Adam 后的可训练参数、BN buffer 和冻结指纹。"
+             "截断后的冻结参数梯度均为 null。", "",
+             "| 模型 | 冻结级别 | 对比后端 | 输入 |",
+             "| --- | --- | --- | --- |",
+             "| torchvision ResNet18 | 0–5 | NumPy、CuPy、register、cuBLAS | 2×3×32×32 |",
+             "| MobileNetV2 | 0、3 | 同上 | 2×3×32×32 |",
+             "| AlexNet | 0、5 | 同上 | 2×3×64×64 |", "",
+             "比较使用相同的转换权重、确定性初始化与批次。每次在独立进程导入指定代码树，原生路径分别使用该树编译的库。"
+             "numeric/before 与 numeric/after 含每个张量的类型、形状和原始字节组成的 SHA-256。", "",
+             f"实际计时使用 apps.train、w64 torchvision ResNet18、batch 2、register、FP32、同一批 {speed_manifest['samples']} 条真实图像。"
+             f"每轮去除前 {speed_manifest['warmup']} 步，CUDA Event 每步计时，资源每 0.5 s 采样。每个配置按旧版/新版交替 {repeats} 轮。"
+             "表中为各轮稳态中位数的中位数，括号为重复间总体标准差。显存为 CuPy 池的申请峰值。", "",
+             "| 输入 | 冻结段 | 反向 ms 旧→新 | 单步总 ms 旧→新 | samples/s 旧→新 | 池峰值 MiB 旧→新 | 配对反向耗时降低 |",
+             "| --- | --- | --- | --- | --- | --- | --- |"]
+    def values(group, key):
+        return [row[key] for row in group]
+    for size in ("120x160", "224x224"):
+        for level in (0, 2, 3, 4, 5):
+            before, after = [sorted((row for row in rows if row["size"] == size and row["level"] == level and row["side"] == side),
+                                   key=lambda row: row["repeat"]) for side in ("before", "after")]
+            if len(before) != repeats or len(after) != repeats or any(a["loss"] != b["loss"] for a, b in zip(before, after)):
+                raise ValueError(f"unpaired or divergent training run: {size} k{level}")
+            def pair(key, *, spread=False):
+                entries = []
+                for group in (before, after):
+                    vals = values(group, key)
+                    entries.append(f"{statistics.median(vals):.2f}" + (f" ({statistics.pstdev(vals):.2f})" if spread else ""))
+                return " → ".join(entries)
+            reduction = statistics.median(1 - b["backward_ms"]/a["backward_ms"] for a, b in zip(before, after))
+            lines.append(f"| {size} | {level} | {pair('backward_ms', spread=True)} | {pair('step_total_ms', spread=True)} | "
+                         f"{pair('samples_per_sec_total')} | {pair('pool_peak_mib')} | {reduction:.1%} |")
+    old = speed_manifest["old"]["repos"]
+    new = speed_manifest["current"]["repos"]
+    lines += ["", "初始时间线中，冻结前三段后，首层卷积在 5 个捕获步中仍调用 5 次 backward。"
+              "Graph.backward 的全节点清零与反向循环，以及 Conv2D_Op.backward 的无条件 dW，保留了冻结前缀的工作。"
+              "新实现由可训练叶子与显式保留的中间节点计算梯度需求，再分配梯度和选择 dX/dW/db。"
+              "前向同时释放对应的 im2col 缓冲。", "",
+              "规划中冻结 3 / 4 段的约 55% / 77% 是按阶段计算量得到的估算。实测还包含梯度清零与累加、"
+              "不同规模 GEMM 的执行效率以及主机发射开销。CPU 读取和 H2D 也计入单步总时长，因此整步收益和反向收益分别报告。", "",
+              f"旧代码根仓库 / MyFlows 为 `{old['root']['head'][:8]}` / `{old['MyFlows']['head'][:8]}`，"
+              f"正式计时代码为 `{new['root']['head'][:8]}` / `{new['MyFlows']['head'][:8]}`。"
+              "原始文件在本报告同目录，speed.json 保存全部运行及功耗墙比例，speed/ 含每步指标、资源与命令。", "",
+              "使用独立的旧代码树并初始化其 MyFlows 子模块，在新目录按序运行：", "", "```powershell",
+              "python -m benchmark.freeze_before_after --part reference --old <旧代码树> --out runs/stage3/freeze-repro",
+              "python -m benchmark.freeze_before_after --part verify --old <旧代码树> --out runs/stage3/freeze-repro",
+              "python -m benchmark.freeze_before_after --part speed --old <旧代码树> --out runs/stage3/freeze-repro",
+              "python -m benchmark.freeze_before_after --part report --out runs/stage3/freeze-repro", "```", ""]
+    for name in ("speed.json", "numerical-checks.json", "speed-manifest.json"):
+        lines.append(f"- `{name}` SHA-256 `{hashlib.sha256((out / name).read_bytes()).hexdigest()}`")
+    (out / "report.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--part", choices=("reference", "verify", "speed"))
+    parser.add_argument("--part", choices=("reference", "verify", "speed", "report"))
     parser.add_argument("--old", type=Path)
     parser.add_argument("--out", type=Path, default=Path("docs/experiments/semester_2026_fall/monitoring/freeze-001"))
     parser.add_argument("--smoke", action="store_true")
@@ -190,6 +252,9 @@ def main(argv=None):
     args = parser.parse_args(argv)
     if args.worker:
         numeric_worker(args)
+        return
+    if args.part == "report":
+        report((ROOT / args.out).resolve())
         return
     if not args.part or not args.old or args.repeats < 1 or args.warmup < 0 or args.samples <= 2 * args.warmup:
         parser.error("requires --part, --old and a valid measurement budget")
