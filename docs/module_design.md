@@ -46,6 +46,7 @@
 | apps/train/__main__.py | `python -m apps.train` 的短入口，等价调用 train_myflows_donkey |
 | apps/common/environment.py | GPU/驱动、CUDA/NVRTC、依赖 metadata 和原生源码哈希；AutoPilot provenance 保留兼容导出 |
 | tools/check_run_format.py | 校验 config、metrics、resources、rank steps 和 result 的 v1 格式，并兼容旧运行；字段口径见 monitoring_format.md |
+| apps/eval/simulator.py、sim_probe.py、closed_loop.py | 管理本地 Unity 会话，核对实际发送的遥测字段，按锁定的阈值、去抖与场景清单配对评估 checkpoint 和 ONNX |
 | apps/eval/eval_myflows_donkey.py | MyFlows checkpoint 评估 |
 | apps/eval/eval_myflows_donkey_onnx.py | ONNX 模型评估 |
 | apps/serve/ | ONNX predictor、gRPC、FastAPI 和客户端 |

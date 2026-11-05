@@ -83,7 +83,7 @@ PS 模式和 Ring 模式二选一；Ring 模式没有 PS 进程。所有进程�
 - 当前数据的油门标签全部为 0.5，不具备变速学习条件。
 - 当前驾驶代码使用固定油门，主要学习转向。
 - 当前配置使用 donkey-generated-roads-v0 场景。
-- 当前没有自动运行多次模拟驾驶并统计 CTE、出界次数和完成情况的工具。
+- 闭环评估通过 apps.eval.closed_loop 在相同场景清单下轮换 checkpoint 与 ONNX 模型，记录 CTE、出界事件、碰撞、距离、存活和推理时间，标定协议见 [遥测报告](experiments/semester_2026_fall/closed_loop/probe-001/report.md)。
 
 因此，本学期首先建立固定油门下的闭环评估，再决定是否采集变速数据。
 
@@ -168,7 +168,7 @@ ResNet18、MobileNetV2 与 AlexNet 可读取按 torchvision 名称保存的 NPZ 
 - 当前跨框架性能测试的方法需要重做，旧结果不能直接用于本学期结论。
 - 普通 checkpoint 保存模型、BN buffer 和优化器状态。单进程精确续训使用 TrainingState，另存数据游标、增强与 dropout RNG、最佳模型、早停历史和指纹。多 Worker 继续使用普通 checkpoint。
 - GPU 上的端到端梯度误差由卷积 GEMM 的 float32 累加决定（ResNet18 单步梯度相对 FP64 的中位误差 3e-6–4e-6）。自写的寄存器分块 GEMM 是原生卷积与 `Dense` 的默认引擎，cuBLAS 可选：ResNet18 每步耗时两者相同，寄存器分块的梯度中位误差高约 5%，在窄输出的前向 GEMM 上误差最多为 cuBLAS 的 6.3 倍。补偿累加（kahan/dot2）只作为实验后端，没有接入卷积。
-- 计算图每步为所有节点分配并清零梯度，再以 `+=` 累加，比首次写入直接赋值多一次全张量读写。
+- 计算图缓存梯度需求，仅对可训练路径和显式保留的中间梯度清零并反向。活跃节点仍先清零再累加，后续的按需分配与提前释放由 S8 单独测量。
 
 ## 10. 数值精度与 CUDA 第 19 讲改进（2026-10-22）
 
