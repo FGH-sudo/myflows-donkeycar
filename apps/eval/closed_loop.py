@@ -202,8 +202,8 @@ def _report(out, models, result):
              "| 模型 | 次数 | 碰撞次数 | 平均 / 最差存活秒 | 平均 / 最差距离 | 平均 / 最差绝对 CTE | "
              "平均 / 最差最大绝对 CTE | 平均 / 最差出界数 | 全部帧 P50 / P95 推理 ms |",
              "| --- | --- | --- | --- | --- | --- | --- | --- | --- |"]
-    def display(value):
-        return "缺测" if value is None else f"{value:.3f}"
+    def display(value, digits=3):
+        return "缺测" if value is None else f"{value:.{digits}f}"
     for model in models:
         name = model["id"]
         row = result["models"][name]
@@ -218,7 +218,7 @@ def _report(out, models, result):
     for model in models:
         name = model["id"]
         pairs = result["models"][name]["paired_difference_from_baseline"]
-        lines.append(f"| {name} | {display(model.get('offline_angle_mae'))} | " +
+        lines.append(f"| {name} | {display(model.get('offline_angle_mae'), 5)} | " +
                      " | ".join(display(pairs[k]["mean"]) for k in ("survival_s", "distance_units", "mean_abs_cte", "excursions")) + " |")
     lines += ["", "manifest.json 记录规则、场景、模型来源和 SHA-256。frames.jsonl 保存逐帧遥测，episodes.jsonl 保存各次 reset 起点与结局，"
               "result.json 保存平均、最差和配对差异。Unity 场景随机种子和任意起点坐标无法通过当前接口指定。"]
@@ -256,9 +256,10 @@ def main(argv=None):
         guarded_worker("apps.eval.closed_loop", argv, timeout, out)
         return
     from apps.common.gpu_lock import GpuLock
+    from apps.autopilot.provenance import code_state
 
     manifest = {"schema_version": 1, "protocol": protocol, "models": [dict(m, sha256=_fingerprints(m)) for m in models],
-                "device": args.device}
+                "device": args.device, "code": code_state(ROOT)}
     write_json(out / "manifest.json", manifest)
     rows = []
     with GpuLock(label="closed-loop evaluation", run_dir=out), session(out, executable=args.sim, port=args.port) as (stream, metadata):
