@@ -1,0 +1,18 @@
+[
+  {
+    "id": "current-pilot",
+    "path": "mycar/models/myflow_resnet18_best.onnx"
+  },
+  {
+    "id": "manual-t002",
+    "path": "runs/autopilot/formal-full-002/trials/t002/attempt-1/checkpoints/best",
+    "config": "runs/autopilot/formal-full-002/trials/t002/attempt-1/config.json",
+    "offline_angle_mae": 0.022111520662670955
+  },
+  {
+    "id": "candidate-t012",
+    "path": "runs/autopilot/formal-full-002/trials/t012/attempt-1/checkpoints/best",
+    "config": "runs/autopilot/formal-full-002/trials/t012/attempt-1/config.json",
+    "offline_angle_mae": 0.021696293447981588
+  }
+]

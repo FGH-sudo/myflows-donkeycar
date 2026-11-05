@@ -1,0 +1,76 @@
+{
+  "schema_version": 1,
+  "environment": "donkey-generated-roads-v0",
+  "fixed_throttle": 0.2,
+  "calibration": "docs/experiments/semester_2026_fall/closed_loop/probe-001/report.md",
+  "rules": {
+    "cte_threshold": 2.0,
+    "consecutive_frames": 3,
+    "rearm_threshold": 1.5,
+    "rearm_frames": 3,
+    "route_signal": null,
+    "collision": "terminate"
+  },
+  "scenarios": [
+    {
+      "id": "reset-01",
+      "seed": 101,
+      "start": "simulator_default",
+      "duration_s": 30.0
+    },
+    {
+      "id": "reset-02",
+      "seed": 102,
+      "start": "simulator_default",
+      "duration_s": 30.0
+    },
+    {
+      "id": "reset-03",
+      "seed": 103,
+      "start": "simulator_default",
+      "duration_s": 30.0
+    },
+    {
+      "id": "reset-04",
+      "seed": 104,
+      "start": "simulator_default",
+      "duration_s": 30.0
+    },
+    {
+      "id": "reset-05",
+      "seed": 105,
+      "start": "simulator_default",
+      "duration_s": 30.0
+    },
+    {
+      "id": "reset-06",
+      "seed": 106,
+      "start": "simulator_default",
+      "duration_s": 30.0
+    },
+    {
+      "id": "reset-07",
+      "seed": 107,
+      "start": "simulator_default",
+      "duration_s": 30.0
+    },
+    {
+      "id": "reset-08",
+      "seed": 108,
+      "start": "simulator_default",
+      "duration_s": 30.0
+    },
+    {
+      "id": "reset-09",
+      "seed": 109,
+      "start": "simulator_default",
+      "duration_s": 30.0
+    },
+    {
+      "id": "reset-10",
+      "seed": 110,
+      "start": "simulator_default",
+      "duration_s": 30.0
+    }
+  ]
+}

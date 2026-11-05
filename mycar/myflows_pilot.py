@@ -30,11 +30,13 @@ class MyFlowsResNet18Pilot:
         steering_scale=1.0,
         debug=False,
         device="auto",
+        training_config=None,
+        prefer_onnx=True,
     ):
         checkpoint = Path(checkpoint_path).resolve()
         self.device = str(device)
         self.checkpoint_path = str(checkpoint)
-        self.ckpt_stem = checkpoint.with_suffix("") if checkpoint.suffix == ".onnx" else checkpoint
+        self.ckpt_stem = checkpoint.with_suffix("") if checkpoint.suffix in (".onnx", ".json", ".npz") else checkpoint
         self.image_w = int(image_w)
         self.image_h = int(image_h)
         self.max_throttle = abs(float(max_throttle))
@@ -52,7 +54,7 @@ class MyFlowsResNet18Pilot:
         )
 
         onnx_path = checkpoint if checkpoint.suffix == ".onnx" else checkpoint.with_suffix(".onnx")
-        if onnx_path.exists():
+        if prefer_onnx and onnx_path.exists():
             try:
                 import onnxruntime as ort
 
@@ -72,21 +74,31 @@ class MyFlowsResNet18Pilot:
             except Exception as exc:
                 print(f"[MyFlowsPilot] ONNX load failed, fallback to MyFlows: {exc}")
 
-        resolve_myflows_device(self.device)
-        self.x = ms.Variable(
-            np.zeros((1, 3, self.image_h, self.image_w), dtype=np.float32),
-            name="X",
-        )
-        self.model = ms.ResNet18(
-            in_channels=3,
-            output_dim=2,
-            stem="cifar",
-            base_width=64,
-            name="resnet18_donkey",
-        )
-        self.out = self.model(self.x)
+        actual_device = resolve_myflows_device(self.device)
+        if training_config is None:
+            self.x = ms.Variable(np.zeros((1, 3, self.image_h, self.image_w), dtype=np.float32), name="X",
+                                 requires_grad=False)
+            self.model = ms.ResNet18(in_channels=3, output_dim=2, stem="cifar", base_width=64,
+                                     name="resnet18_donkey")
+            self.out = self.model(self.x)
+        else:
+            from apps.train import train_myflows_donkey as train
+
+            args = train.build_parser().parse_args([])
+            saved = training_config["args"]
+            for name in vars(args).keys() & saved.keys():
+                setattr(args, name, saved[name])
+            args.distributed = "none"
+            self.input_dtype = np.dtype(args.dtype).type
+            ms.set_default_dtype(self.input_dtype)
+            backend = train._resolve_conv_backend(args.conv_backend, actual_device, self.input_dtype)
+            self.x, _, self.model, self.out, _, _ = train._build_model(
+                args, 1, self.image_h, self.image_w, self.input_dtype, backend, load_pretrained=False)
         self.graph = ms.Graph(self.out)
         ms.load_checkpoint([self.model], None, str(self.ckpt_stem))
+        if training_config is not None:
+            for parameter in self.model.params:
+                parameter.trainable = False
         self.model.eval()
         self.graph.forward()
         print(f"[MyFlowsPilot] loaded JSON+NPZ {self.ckpt_stem}")
@@ -111,7 +123,7 @@ class MyFlowsResNet18Pilot:
         if self.session is not None:
             pred = np.asarray(self.session.run(None, {self.input_name: x})[0]).reshape(-1)
         else:
-            self.x.value = x.astype(np.float32, copy=False)
+            self.x.value = x.astype(self.input_dtype, copy=False)
             self.model.eval()
             self.graph.forward()
             pred = asnumpy(self.out.value).reshape(-1)
