@@ -104,6 +104,7 @@ def main(argv=None) -> int:
     from MyFlows.core.device import set_device, xp
     from MyFlows.data.pipeline import MultiprocessDataLoader
     from MyFlows.utils import pretrained
+    from MyFlows.transfer import TransferLearningManager
     from apps.train.train_myflows_donkey import _resolve_conv_backend
 
     stamp = time.strftime("%Y%m%d-%H%M%S")
@@ -139,13 +140,11 @@ def main(argv=None) -> int:
         ms.set_default_dtype(np.float32)
         conv_backend = _resolve_conv_backend(args.conv_backend, args.device, np.float32)
         initializer = ms.make_initializer("kaiming_normal", seed=args.seed)
-        model = pretrained.build_model(args.arch, args.classes, dropout=0.0, initializer=initializer,
-                                       conv_backend=conv_backend, input_norm="imagenet", name=f"{args.arch}_transfer")
-        report = None
-        if not args.no_pretrained:
-            report = pretrained.load_torchvision_weights(
-                model, ROOT / "runs" / "pretrained" / "converted" / f"{args.arch}.npz", replace_head=True)
-        freeze = pretrained.freeze_stages(model, args.freeze_stages)
+        manager = TransferLearningManager.build(args.arch, args.classes, dropout=0., initializer=initializer,
+                                               conv_backend=conv_backend, input_norm="imagenet", name=f"{args.arch}_transfer",
+                                               pretrained=None if args.no_pretrained else ROOT / "runs/pretrained/converted" / f"{args.arch}.npz",
+                                               freeze_stages=args.freeze_stages)
+        model, report, freeze = manager.model, manager.load_report, manager.freeze
         model.train()
         x_var = ms.Variable(np.zeros((args.batch, 3, size, size), np.float32), name="X", requires_grad=False)
         y_var = ms.Variable(np.zeros((args.batch,), np.int64), name="y", requires_grad=False)
@@ -203,7 +202,7 @@ def main(argv=None) -> int:
 
     head = max(10, len(step_losses) // 10)
     result = {
-        "task": "transfer_classify", "dataset": "DonkeyCar steering bins (CIFAR-10 not available locally)",
+        "task": "transfer_classify", "dataset": "DonkeyCar steering bins",
         "args": vars(args), "arch": args.arch, "pretrained": not args.no_pretrained,
         "load_report": pretrained.summarize_load_report(report) if report else None,
         "freeze": freeze, "frozen_before": frozen_before, "frozen_after": frozen_after,

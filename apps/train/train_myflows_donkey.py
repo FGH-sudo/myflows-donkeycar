@@ -792,7 +792,7 @@ def input_size(args, first_image) -> tuple[int, int]:
     return tuple(first_image.shape[:2])
 
 
-def transfer_config(args) -> dict | None:
+def transfer_config(args, *, require_weights=True) -> dict | None:
     """--arch / --pretrained / --freeze-stages 的有效配置；默认的 MyFlows ResNet18（旧结构）返回 None。"""
     if args.arch == "resnet18" and not args.pretrained:
         if args.freeze_stages:
@@ -808,7 +808,7 @@ def transfer_config(args) -> dict | None:
     if args.pretrained:
         path = (ROOT / "runs" / "pretrained" / "converted" / f"{args.arch}.npz" if args.pretrained == "imagenet"
                 else (ROOT / args.pretrained).resolve())
-        if not path.is_file():
+        if require_weights and not path.is_file():
             raise SystemExit(f"预训练权重不存在：{path}（先运行 tools/convert_torchvision_weights.py）")
     norm = args.input_norm if args.input_norm != "auto" else ("imagenet" if path else "none")
     return {"arch": args.arch, "pretrained": str(path) if path else None, "freeze_stages": int(args.freeze_stages),
@@ -826,7 +826,7 @@ def _build_model(args, batch: int, h: int, w: int, dtype, conv_backend: str, dro
     x_var = ms.Variable(np.zeros((batch, 3, h, w), dtype=dtype), name="X", requires_grad=False)
     y_var = ms.Variable(np.zeros((batch, 2), dtype=dtype), name="y", requires_grad=False)
     initializer = make_initializer(args.initializer, seed=args.seed) if args.seed is not None else args.initializer
-    transfer = transfer_config(args)
+    transfer = transfer_config(args, require_weights=load_pretrained)
     if transfer is None:
         model = ms.ResNet18(
             in_channels=3,
@@ -840,19 +840,17 @@ def _build_model(args, batch: int, h: int, w: int, dtype, conv_backend: str, dro
             dropout_seed=dropout_seed,
         )
     else:
-        from MyFlows.utils import pretrained
+        from MyFlows.transfer import TransferLearningManager
 
-        model = pretrained.build_model(
+        manager = TransferLearningManager.build(
             transfer["arch"], 2, dropout=float(args.dropout or 0.0), initializer=initializer,
             conv_backend=conv_backend, dropout_seed=dropout_seed,
             input_norm=None if transfer["input_norm"] == "none" else transfer["input_norm"],
-            name=f"{transfer['arch']}_donkey")
-        report = None
-        if transfer["pretrained"] and load_pretrained:
-            report = pretrained.summarize_load_report(
-                pretrained.load_torchvision_weights(model, transfer["pretrained"], replace_head=True))
-        model.transfer = dict(transfer, load_report=report,
-                              freeze=pretrained.freeze_stages(model, transfer["freeze_stages"]))
+            name=f"{transfer['arch']}_donkey", pretrained=transfer["pretrained"] if load_pretrained else None,
+            freeze_stages=transfer["freeze_stages"])
+        model = manager.model
+        model.transfer_manager = manager
+        model.transfer = {**transfer, **manager.result()}
     logits = model(x_var)
     loss_node = ms.MSELoss(logits, y_var, name="loss")
     graph = ms.Graph(loss_node, optimize=bool(args.graph_opt))
