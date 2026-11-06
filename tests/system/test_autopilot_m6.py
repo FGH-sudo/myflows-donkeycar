@@ -68,6 +68,18 @@ class CapabilityTest(unittest.TestCase):
         with self.assertRaisesRegex(SpecError, "同时出现"):
             validate_spec(raw, self.repo)
 
+    def test_backbone_lr_multiplier_is_conditional_and_default_is_one(self):
+        raw = transfer_spec(backbone_lr_mult=[.1, 1.])
+        with self.assertRaises(SpecError):
+            validate_spec(raw, self.repo)
+        converted(self.repo)
+        spec = validate_spec(raw, self.repo)
+        spec["fixed"]["split_file"] = "split.json"
+        baseline = resolve_args(spec, {"lr": .001, "batch": 2, "seed": 1})
+        self.assertEqual(resolve_args(spec, {"lr": .001, "batch": 2, "seed": 1, "backbone_lr_mult": 1.}), baseline)
+        resolved = resolve_args(spec, {"lr": .001, "batch": 2, "seed": 1, "backbone_lr_mult": .1})
+        self.assertEqual(resolved["backbone_lr_mult"], .1)
+
     def test_zero_is_the_baseline_fingerprint(self):
         converted(self.repo)
         spec = validate_spec(transfer_spec(freeze_stages=[0, 2]), self.repo)

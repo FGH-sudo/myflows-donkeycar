@@ -59,6 +59,8 @@ class TPEStrategy:
             out["augment"] = CategoricalDistribution(sorted({bool(v) for v in self.space["augment"]}))
         if "freeze_stages" in self.space:
             out["freeze_stages"] = CategoricalDistribution(sorted(int(v) for v in self.space["freeze_stages"]))
+        if "backbone_lr_mult" in self.space:
+            out["backbone_lr_mult"] = CategoricalDistribution(sorted(float(v) for v in self.space["backbone_lr_mult"]))
         return out
 
     def _suggest(self, trial) -> dict:
@@ -79,6 +81,9 @@ class TPEStrategy:
         if "freeze_stages" in self.space:
             params["freeze_stages"] = int(trial.suggest_categorical(
                 "freeze_stages", sorted(int(v) for v in self.space["freeze_stages"])))
+        if "backbone_lr_mult" in self.space:
+            params["backbone_lr_mult"] = float(trial.suggest_categorical(
+                "backbone_lr_mult", sorted(float(v) for v in self.space["backbone_lr_mult"])))
         return params
 
     def _history_params(self, params: dict) -> dict | None:
@@ -106,6 +111,10 @@ class TPEStrategy:
         if "freeze_stages" in self.space:
             out["freeze_stages"] = int(params.get("freeze_stages", 0))
             if out["freeze_stages"] not in {int(v) for v in self.space["freeze_stages"]}:
+                return None
+        if "backbone_lr_mult" in self.space:
+            out["backbone_lr_mult"] = float(params.get("backbone_lr_mult", 1.))
+            if out["backbone_lr_mult"] not in self.space["backbone_lr_mult"]:
                 return None
         return out
 

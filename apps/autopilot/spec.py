@@ -26,11 +26,11 @@ THROUGHPUT_KEYS = ("num_workers", "conv_backend", "distributed", "workers", "tra
 TPE_KEYS = ("weight_decay", "dropout", "augment")
 # Transfer learning (E2): searchable only after the capability check (``unavailable_keys``) — the campaign fixes
 # ``pretrained`` and the converted ImageNet weights exist. 0 (nothing frozen) is apps.train's default.
-TRANSFER_KEYS = ("freeze_stages",)
-TRANSFER_DEFAULTS = {"freeze_stages": 0}
+TRANSFER_KEYS = ("freeze_stages", "backbone_lr_mult")
+TRANSFER_DEFAULTS = {"freeze_stages": 0, "backbone_lr_mult": 1.}
 NO_PRETRAINED = "campaign 未设置 fixed.pretrained（冻结阶段只对 ImageNet 预训练权重有意义）"
 # Static fallback for callers without a spec; ``unavailable_keys(spec, repo_root)`` is the real check.
-UNAVAILABLE_KEYS = {"freeze_stages": NO_PRETRAINED}
+UNAVAILABLE_KEYS = {key: NO_PRETRAINED for key in TRANSFER_KEYS}
 SPECIALISTS = {
     "gpu_monitor": "GPU Monitor",
     "benchmark": "Benchmark",
@@ -234,6 +234,8 @@ def validate_spec(raw: dict, repo_root: Path) -> dict:
         raise SpecError("搜索空间中的 lr 必须为正数，batch 必须为正整数")
     if any(not 0 <= v <= MAX_FREEZE_STAGES for v in space.get("freeze_stages", [])):
         raise SpecError(f"搜索空间中的 freeze_stages 必须在 0 到 {MAX_FREEZE_STAGES} 之间")
+    if any(v <= 0 for v in space.get("backbone_lr_mult", [])):
+        raise SpecError("搜索空间中的 backbone_lr_mult 必须为正数")
     grid = 1
     for key in (*ACCURACY_KEYS, *TRANSFER_KEYS):
         grid *= len(space.get(key, [None]))

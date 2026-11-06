@@ -64,6 +64,11 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--epochs", type=int, default=2)
     ap.add_argument("--batch", type=int, default=16)
     ap.add_argument("--lr", type=float, default=1e-3)
+    ap.add_argument("--backbone-lr-mult", type=float, default=1.)
+    ap.add_argument("--stage-lr-mults", help="stem:0.01,layer1:0.1")
+    ap.add_argument("--unfreeze-schedule", help="0:4,2:3,4:2")
+    ap.add_argument("--freeze-mode", choices=("both", "params", "bn"), default="both")
+    ap.add_argument("--bn-unfreeze", choices=("follow", "keep-frozen"), default="follow")
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--num-workers", type=int, default=2)
     ap.add_argument("--device", default="cuda", choices=("cuda", "cpu"))
@@ -105,6 +110,7 @@ def main(argv=None) -> int:
     from MyFlows.data.pipeline import MultiprocessDataLoader
     from MyFlows.utils import pretrained
     from MyFlows.transfer import TransferLearningManager
+    from MyFlows.transfer.manager import parse_lr_multipliers
     from apps.train.train_myflows_donkey import _resolve_conv_backend
 
     stamp = time.strftime("%Y%m%d-%H%M%S")
@@ -143,7 +149,10 @@ def main(argv=None) -> int:
         manager = TransferLearningManager.build(args.arch, args.classes, dropout=0., initializer=initializer,
                                                conv_backend=conv_backend, input_norm="imagenet", name=f"{args.arch}_transfer",
                                                pretrained=None if args.no_pretrained else ROOT / "runs/pretrained/converted" / f"{args.arch}.npz",
-                                               freeze_stages=args.freeze_stages)
+                                               freeze_stages=args.freeze_stages, backbone_lr_mult=args.backbone_lr_mult,
+                                               stage_lr_mults=parse_lr_multipliers(args.stage_lr_mults),
+                                               unfreeze_schedule=args.unfreeze_schedule, freeze_mode=args.freeze_mode,
+                                               bn_unfreeze=args.bn_unfreeze)
         model, report, freeze = manager.model, manager.load_report, manager.freeze
         model.train()
         x_var = ms.Variable(np.zeros((args.batch, 3, size, size), np.float32), name="X", requires_grad=False)
@@ -151,7 +160,9 @@ def main(argv=None) -> int:
         logits = model(x_var)
         loss = ms.CrossEntropy(logits, y_var)
         graph = ms.Graph(loss)
-        opt = ms.Adam(graph, learning_rate=args.lr)
+        opt = ms.Adam(graph, learning_rate=args.lr, param_groups=manager.parameter_groups())
+        manager.begin_tracking()
+        manager.epoch(0)
         frozen_before = pretrained.frozen_fingerprint(model)
         print(f"[model] {args.arch} conv={conv_backend} pretrained={report['loaded'] if report else 0}/"
               f"{report['expected'] if report else 0} frozen={freeze['frozen']} trainable={freeze['trainable_values']:,}",
@@ -163,6 +174,7 @@ def main(argv=None) -> int:
         global_step = 0
         started = time.time()
         for epoch in range(args.epochs):
+            freeze_entry = manager.epoch(epoch)
             epoch_start_step = len(step_losses)
             loader = MultiprocessDataLoader(train_s, args.batch, num_workers=args.num_workers, shuffle=True,
                                             seed=args.seed * 1000 + epoch, load_fn=_load)
@@ -184,13 +196,15 @@ def main(argv=None) -> int:
                     print(f"[train] epoch {epoch + 1} step {global_step} loss={value:.4f} "
                           f"({np.median(step_ms[-20:]):.0f} ms/step)", flush=True)
             val = evaluate(graph, x_var, y_var, logits, model, val_s, args.batch, xp)
-            history.append({"epoch": epoch + 1, "step": global_step, **{f"val_{k}": v for k, v in val.items()},
+            history.append({"epoch": epoch + 1, "step": global_step, "freeze_stages": freeze_entry["freeze_stages"],
+                            "group_learning_rates": opt.group_learning_rates(), **{f"val_{k}": v for k, v in val.items()},
                             "train_loss_epoch_mean": float(np.mean(step_losses[epoch_start_step:]))})
             print(f"[val] epoch {epoch + 1}: loss={val['loss']:.4f} acc={val['accuracy']:.3f}", flush=True)
         train_s_elapsed = time.time() - started
         test = evaluate(graph, x_var, y_var, logits, model, test_s, args.batch, xp)
         print(f"[test] loss={test['loss']:.4f} acc={test['accuracy']:.3f} (scored once)", flush=True)
         frozen_after = pretrained.frozen_fingerprint(model)
+        manager.verify_frozen()
         checkpoint = out_dir / "checkpoint"
         ms.save_checkpoint([model], opt, args.epochs, filepath=str(checkpoint), loss=history[-1]["val_loss"],
                            training={"task": "transfer_classify", "arch": args.arch, "classes": args.classes,
@@ -206,7 +220,7 @@ def main(argv=None) -> int:
         "args": vars(args), "arch": args.arch, "pretrained": not args.no_pretrained,
         "load_report": pretrained.summarize_load_report(report) if report else None,
         "freeze": freeze, "frozen_before": frozen_before, "frozen_after": frozen_after,
-        "frozen_unchanged": frozen_before == frozen_after,
+        "frozen_unchanged": True, "transfer": manager.result(),
         "classes": args.classes, "class_edges": edges, "class_counts": counts,
         "split": {"kind": "time_block", "train": len(train_s), "val": len(val_s), "test": len(test_s),
                   "purged": len(split.get("purged", [])), "block_size": args.block_size, "seed": args.split_seed},

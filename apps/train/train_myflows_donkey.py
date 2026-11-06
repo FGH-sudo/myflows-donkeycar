@@ -222,7 +222,9 @@ _NON_TRAJECTORY_ARGS = {
 
 
 # Arguments added after TrainingStates were first written: left out at their defaults, so older states still match.
-_LATER_DEFAULTS = {"arch": "resnet18", "pretrained": None, "freeze_stages": 0, "image_size": None, "input_norm": "auto"}
+_LATER_DEFAULTS = {"arch": "resnet18", "pretrained": None, "freeze_stages": 0, "image_size": None, "input_norm": "auto",
+                   "backbone_lr_mult": 1., "stage_lr_mults": None, "compat": "myflows"}
+_LATER_DEFAULTS.update(unfreeze_schedule=None, freeze_mode="both", bn_unfreeze="follow")
 
 
 def trajectory_config(args: argparse.Namespace) -> dict:
@@ -336,6 +338,13 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--input-norm", type=str, default="auto", choices=("auto", "none", "imagenet"),
                     help="输入归一化；auto = 有 --pretrained 时按 ImageNet 均值/标准差，否则不归一化")
     ap.add_argument("--base-width", type=int, default=64, help="ResNet-18 第一阶段通道数（后续阶段依次翻倍）；导出 ONNX 时沿用")
+    ap.add_argument("--compat", choices=("myflows", "torchvision"), default="myflows",
+                    help="ResNet18 结构，torchvision 允许同构从零训练的迁移对照")
+    ap.add_argument("--backbone-lr-mult", type=float, default=1., help="骨干学习率相对于任务头的倍率")
+    ap.add_argument("--stage-lr-mults", help="按阶段指定倍率，如 stem:0.01,layer1:0.1")
+    ap.add_argument("--unfreeze-schedule", help="零起始 epoch 的冻结段数，如 0:4,2:3,4:2")
+    ap.add_argument("--freeze-mode", choices=("both", "params", "bn"), default="both")
+    ap.add_argument("--bn-unfreeze", choices=("follow", "keep-frozen"), default="follow")
     ap.add_argument("--graph-opt", action="store_true", help="打开构图期优化(可能略快)")
     ap.add_argument(
         "--conv-backend",
@@ -495,6 +504,7 @@ class TrainPlan:
     end_epoch: int | None = None
     fingerprint: str | None = None
     fixed_state: str | None = None
+    transfer_state: dict | None = None
 
     @property
     def world_size(self) -> int:
@@ -518,7 +528,7 @@ def _resume_position(args, out_base: Path, best_base: Path) -> dict:
     training = meta.get("training") or {}
     position = {"resume_found": True, "start_epoch": epoch + 1, "start_step": 0,
                 "start_global_step": int(training.get("global_step", 0)), "best_loss": saved_best_loss(best_base),
-                "early_stopping_state": training.get("early_stopping")}
+                "early_stopping_state": training.get("early_stopping"), "transfer_state": training.get("transfer_state")}
     if training and not training.get("epoch_complete", True):
         if int(training.get("global_batch", 0)) == int(args.batch):
             position.update(start_epoch=epoch, start_step=int(training.get("next_step", 0)),
@@ -794,7 +804,7 @@ def input_size(args, first_image) -> tuple[int, int]:
 
 def transfer_config(args, *, require_weights=True) -> dict | None:
     """--arch / --pretrained / --freeze-stages 的有效配置；默认的 MyFlows ResNet18（旧结构）返回 None。"""
-    if args.arch == "resnet18" and not args.pretrained:
+    if args.arch == "resnet18" and not args.pretrained and args.compat == "myflows":
         if args.freeze_stages:
             raise SystemExit("--freeze-stages 需要 --pretrained")
         if args.input_norm == "imagenet":
@@ -824,6 +834,8 @@ def _build_model(args, batch: int, h: int, w: int, dtype, conv_backend: str, dro
     覆盖参数，评估时传 load_pretrained=False 跳过载入。
     """
     x_var = ms.Variable(np.zeros((batch, 3, h, w), dtype=dtype), name="X", requires_grad=False)
+    if args.unfreeze_schedule and args.distributed != "none":
+        raise ValueError("progressive unfreezing currently requires single-process training")
     y_var = ms.Variable(np.zeros((batch, 2), dtype=dtype), name="y", requires_grad=False)
     initializer = make_initializer(args.initializer, seed=args.seed) if args.seed is not None else args.initializer
     transfer = transfer_config(args, require_weights=load_pretrained)
@@ -839,15 +851,28 @@ def _build_model(args, batch: int, h: int, w: int, dtype, conv_backend: str, dro
             conv_backend=conv_backend,
             dropout_seed=dropout_seed,
         )
+        if args.backbone_lr_mult != 1. or args.stage_lr_mults or args.unfreeze_schedule:
+            from MyFlows.transfer import TransferLearningManager
+            from MyFlows.transfer.manager import parse_lr_multipliers
+
+            model.transfer_manager = TransferLearningManager(model, backbone_lr_mult=args.backbone_lr_mult,
+                                                              stage_lr_mults=parse_lr_multipliers(args.stage_lr_mults),
+                                                              unfreeze_schedule=args.unfreeze_schedule, freeze_mode=args.freeze_mode,
+                                                              bn_unfreeze=args.bn_unfreeze)
+            model.transfer = {"pretrained": None, "input_norm": "none", "compat": "myflows",
+                              **model.transfer_manager.result()}
     else:
         from MyFlows.transfer import TransferLearningManager
+        from MyFlows.transfer.manager import parse_lr_multipliers
 
         manager = TransferLearningManager.build(
             transfer["arch"], 2, dropout=float(args.dropout or 0.0), initializer=initializer,
             conv_backend=conv_backend, dropout_seed=dropout_seed,
             input_norm=None if transfer["input_norm"] == "none" else transfer["input_norm"],
             name=f"{transfer['arch']}_donkey", pretrained=transfer["pretrained"] if load_pretrained else None,
-            freeze_stages=transfer["freeze_stages"])
+            freeze_stages=transfer["freeze_stages"], backbone_lr_mult=args.backbone_lr_mult,
+            stage_lr_mults=parse_lr_multipliers(args.stage_lr_mults), unfreeze_schedule=args.unfreeze_schedule,
+            freeze_mode=args.freeze_mode, bn_unfreeze=args.bn_unfreeze)
         model = manager.model
         model.transfer_manager = manager
         model.transfer = {**transfer, **manager.result()}
@@ -962,7 +987,8 @@ def _train_rank(plan: TrainPlan, rank, sync, device, profiler) -> dict:
     seeds = plan.seeds or derive_seeds(args.seed, world)
     x_var, y_var, model, logits, loss_node, graph = _build_model(args, batch, h, w, dtype, conv_backend,
                                                                  dropout_seed=seeds["dropout"][rank])
-    opt = ms.Adam(graph, learning_rate=args.lr)
+    manager = getattr(model, "transfer_manager", None)
+    opt = ms.Adam(graph, learning_rate=args.lr, param_groups=manager.parameter_groups() if manager else None)
     profiler.bind_graph(graph)
     reg_config = RegularizationConfig(
         l1=float(args.l1_coeff),
@@ -1000,6 +1026,15 @@ def _train_rank(plan: TrainPlan, rank, sync, device, profiler) -> dict:
         _assign_buffers(buffers, initial)
 
     transfer = getattr(model, "transfer", None)
+    if manager:
+        saved_transfer = (plan.resume_meta or {}).get("transfer_state") or plan.transfer_state
+        if saved_transfer:
+            manager.restore(saved_transfer)
+        else:
+            manager.begin_tracking()
+        manager.epoch(plan.start_epoch)
+        if transfer is not None:
+            transfer.update(manager.result())
     if transfer is not None:
         from MyFlows.utils.pretrained import frozen_fingerprint
 
@@ -1096,6 +1131,8 @@ def _train_rank(plan: TrainPlan, rank, sync, device, profiler) -> dict:
         """训练断点只由 rank 0 写（各 Worker 状态相同），元数据记下续训位置与早停计数。"""
         training = {"global_step": global_step, "global_batch": plan.global_batch, "epoch_complete": epoch_complete,
                     "workers": world, "distributed": plan.mode}
+        if manager:
+            training["transfer_state"] = manager.state_dict()
         if not epoch_complete:
             training.update(next_step=next_step, loss_sum=loss_sum, loss_count=loss_count)
         if early_stopper is not None:
@@ -1120,6 +1157,8 @@ def _train_rank(plan: TrainPlan, rank, sync, device, profiler) -> dict:
             "epochs_completed": epochs_completed, "trained_samples": samples, "train_wall_s": wall_s,
             "last_mean_loss": last_mean_loss, "loss": loss, "running_loss": running_loss, "first_loss": first_loss,
             "lr": float(opt.learning_rate), "lr_history": lr_history, "fingerprint": plan.fingerprint,
+            "group_learning_rates": opt.group_learning_rates(),
+            "transfer_state": manager.state_dict() if manager else None,
             "config": trajectory_config(args), "seeds": plan.seeds, "data_hash": plan.data_hash,
             "val_hash": plan.val_hash,
         }
@@ -1174,6 +1213,7 @@ def _train_rank(plan: TrainPlan, rank, sync, device, profiler) -> dict:
         # A too-large lr can blow up on the very first update: the initial weights are a rollback target too.
         save_state(plan.start_epoch, epoch_complete=False, samples=0, wall_s=0.0)
     for ep in range(plan.start_epoch, end_epoch):
+        freeze_entry = manager.epoch(ep) if manager else None
         first_step = plan.start_step if ep == plan.start_epoch else 0
         total_loss = plan.resumed_loss_sum if first_step else 0.0
         count = plan.resumed_loss_count if first_step else 0
@@ -1317,6 +1357,8 @@ def _train_rank(plan: TrainPlan, rank, sync, device, profiler) -> dict:
                 raise outcome.NonFiniteLossError(global_step, ep + 1, validation if validation is not None
                                                  else last_mean_loss)
             epoch_extra = {"val_angle_mae": angle_mae, "val_samples": validation_count,
+                           "group_learning_rates": opt.group_learning_rates(),
+                           "freeze_stages": freeze_entry["freeze_stages"] if freeze_entry else 0,
                            "samples_per_sec": (count - (plan.resumed_loss_count if first_step else 0))
                            * plan.global_batch / epoch_train_s if epoch_train_s else None}
             dashboard.log_epoch(
@@ -1391,7 +1433,9 @@ def _train_rank(plan: TrainPlan, rank, sync, device, profiler) -> dict:
         from MyFlows.utils.pretrained import frozen_fingerprint
 
         transfer["frozen_after"] = frozen_fingerprint(model)
-        transfer["frozen_unchanged"] = transfer["frozen_after"] == transfer["frozen_before"]
+        transfer["frozen_unchanged"] = manager.verify_frozen() if manager else transfer["frozen_after"] == transfer["frozen_before"]
+        if manager:
+            transfer.update(manager.result())
         if not transfer["frozen_unchanged"]:
             say("[迁移训练] 警告：冻结的参数或 BN buffer 在训练中被改动")
     at_best = next((row for row in validation_history if row["epoch"] == best_epoch), None)
@@ -1524,7 +1568,9 @@ def _result(args, plan: TrainPlan | None, summary: dict, *, started_unix_s: floa
                                                        "seed", "dtype", "device", "conv_backend", "distributed",
                                                        "workers", "transport", "base_width", "stem", "weight_decay",
                                                        "dropout", "augment", "val_size", "split_seed", "arch",
-                                                       "pretrained", "freeze_stages", "image_size", "input_norm")},
+                                                       "pretrained", "freeze_stages", "image_size", "input_norm",
+                                                       "backbone_lr_mult", "stage_lr_mults", "compat",
+                                                       "unfreeze_schedule", "freeze_mode", "bn_unfreeze")},
         "metrics": {"val_angle_mae": at_best if at_best is not None else final, "val_angle_mae_final": final,
                     "best_val_angle_mae": summary.get("best_val_angle_mae"), "val_loss": summary.get("val_loss"),
                     "best_loss": summary.get("best_loss"), "last_train_loss": summary.get("last_mean_loss"),

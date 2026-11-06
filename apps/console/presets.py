@@ -38,6 +38,8 @@ SINGLE_ARGS = {
     "state_every": int, "keep_states": int, "resume_state": str,
     "export_onnx": bool, "split_file": str, "phase_timing_every": int,
     "arch": str, "pretrained": str, "freeze_stages": int, "image_size": str, "input_norm": str,
+    "backbone_lr_mult": float, "stage_lr_mults": str, "compat": str,
+    "unfreeze_schedule": str, "freeze_mode": str, "bn_unfreeze": str,
 }
 TRANSFER_ARCHS = ("resnet18", "mobilenet_v2", "alexnet")
 MAX_FREEZE_STAGES = 5
@@ -223,6 +225,35 @@ def validate_single(args: dict, repo_root: Path) -> dict:
         _check_conv_backend(out["conv_backend"], out.get("device"), out.get("dtype"))
     if out.get("epochs", 1) < 1 or out.get("batch", 1) < 1:
         raise ValidationError("epochs 与 batch 必须为正整数")
+    if out.get("compat", "myflows") not in ("myflows", "torchvision"):
+        raise ValidationError("compat 只能是 myflows 或 torchvision")
+    if out.get("backbone_lr_mult", 1.) < 0:
+        raise ValidationError("backbone_lr_mult 必须非负")
+    if out.get("freeze_mode", "both") not in ("both", "params", "bn") or out.get("bn_unfreeze", "follow") not in ("follow", "keep-frozen"):
+        raise ValidationError("invalid freeze mode or BN unfreeze policy")
+    if out.get("unfreeze_schedule"):
+        from MyFlows.transfer.freeze import parse_schedule
+
+        try:
+            schedule = parse_schedule(out["unfreeze_schedule"])
+            if any(v > MAX_FREEZE_STAGES for v in schedule.values()):
+                raise ValueError("freeze stage count exceeds the backbone")
+        except ValueError as exc:
+            raise ValidationError(str(exc)) from exc
+        if out.get("distributed", "none") != "none":
+            raise ValidationError("progressive unfreezing requires single-process training")
+    if out.get("stage_lr_mults"):
+        from MyFlows.transfer.manager import parse_lr_multipliers
+        from MyFlows.transfer.registry import PretrainedModelRegistry
+
+        try:
+            multipliers = parse_lr_multipliers(out["stage_lr_mults"])
+            if multipliers.keys() - set(PretrainedModelRegistry.STAGES[out.get("arch", "resnet18")]):
+                raise ValueError("unknown stage")
+            if any(not math.isfinite(v) or v < 0 for v in multipliers.values()):
+                raise ValueError("invalid multiplier")
+        except (KeyError, ValueError) as exc:
+            raise ValidationError(f"stage_lr_mults 无效：{exc}") from exc
     distributed = out.setdefault("distributed", "none")
     if distributed not in TRAINING_PARALLEL:
         raise ValidationError("distributed 只能是 none、ps 或 ring")
@@ -296,7 +327,7 @@ def _check_transfer(out: dict, repo_root: Path) -> None:
         raise ValidationError("freeze_stages 需要 pretrained")
     if out.get("input_norm", "auto") not in ("auto", "none", "imagenet"):
         raise ValidationError("input_norm 只能是 auto、none 或 imagenet")
-    if (arch != "resnet18" or pretrained) and out.get("distributed", "none") != "none":
+    if (arch != "resnet18" or pretrained or out.get("compat") == "torchvision") and out.get("distributed", "none") != "none":
         raise ValidationError("迁移训练（arch / pretrained）目前只支持单进程")
     size = out.get("image_size")
     if size:
