@@ -217,7 +217,7 @@ _NON_TRAJECTORY_ARGS = {
     "keep_states", "checkpoint_every", "unique_run", "run_id", "export_onnx", "onnx_out", "no_tensorboard",
     "save_png_plots", "summary_once", "check_shape", "check_content", "num_workers", "gpu_lock_timeout",
     "phase_timing_every", "sync_timeout", "worker_memory_mb", "epochs", "lr", "log_dir", "logdir", "plot_prefix",
-    "split_out", "monitor", "monitor_interval_s", "nvtx", "nvtx_nodes", "profile_steps",
+    "split_out", "monitor", "monitor_interval_s", "nvtx", "nvtx_nodes", "profile_steps", "initial_validation",
 }
 
 
@@ -225,6 +225,7 @@ _NON_TRAJECTORY_ARGS = {
 _LATER_DEFAULTS = {"arch": "resnet18", "pretrained": None, "freeze_stages": 0, "image_size": None, "input_norm": "auto",
                    "backbone_lr_mult": 1., "stage_lr_mults": None, "compat": "myflows"}
 _LATER_DEFAULTS.update(unfreeze_schedule=None, freeze_mode="both", bn_unfreeze="follow")
+_LATER_DEFAULTS.update(feature_cache=False)
 
 
 def trajectory_config(args: argparse.Namespace) -> dict:
@@ -345,6 +346,8 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--unfreeze-schedule", help="零起始 epoch 的冻结段数，如 0:4,2:3,4:2")
     ap.add_argument("--freeze-mode", choices=("both", "params", "bn"), default="both")
     ap.add_argument("--bn-unfreeze", choices=("follow", "keep-frozen"), default="follow")
+    ap.add_argument("--feature-cache", action="store_true", help="缓存完全冻结且无随机增强的骨干输出，仅训练任务头")
+    ap.add_argument("--initial-validation", action="store_true", help="在首个训练 step 前使用同一验证集评估初始 MAE")
     ap.add_argument("--graph-opt", action="store_true", help="打开构图期优化(可能略快)")
     ap.add_argument(
         "--conv-backend",
@@ -480,6 +483,7 @@ class TrainPlan:
     val_dataset: list
     h: int
     w: int
+    test_dataset: list = field(default_factory=list)
     mode: str = "none"
     transport: str = "none"
     shard_sizes: list = field(default_factory=list)
@@ -690,7 +694,7 @@ def prepare(args: argparse.Namespace) -> tuple[TrainPlan, TeeLogger]:
     sys.stderr = tee
 
     index, splits, split_path = load_rows(args, data_dir)
-    val_index = []
+    val_index, test_index = [], []
     if splits is not None:
         full_count = len(index)
         train_index = select_split(index, splits, "train")
@@ -724,6 +728,7 @@ def prepare(args: argparse.Namespace) -> tuple[TrainPlan, TeeLogger]:
         run_dir=str((ROOT / args.run_dir).resolve()) if args.run_dir else None,
         dataset=[(str(data_dir / rel), angle, throttle, w, h, args.dtype) for rel, angle, throttle in index],
         val_dataset=[(str(data_dir / rel), angle, throttle, w, h, args.dtype) for rel, angle, throttle in val_index],
+        test_dataset=[(str(data_dir / rel), angle, throttle, w, h, args.dtype) for rel, angle, throttle in test_index],
         h=h, w=w, mode=args.distributed, transport=args.transport if distributed else "none",
         shard_sizes=split_global_batch(int(args.batch), int(args.workers) if distributed else 1),
         data_hash=entries_hash(index), val_hash=entries_hash(val_index) if val_index else None,
@@ -1060,6 +1065,30 @@ def _train_rank(plan: TrainPlan, rank, sync, device, profiler) -> dict:
         print(format_model_summary(model_summary(model)))
     tb_logdir = Path(plan.tb_logdir)
     run_dir = Path(plan.run_dir) if plan.run_dir else None
+    evaluation_x, evaluation_logits, evaluation_graph = x_var, logits, graph
+    cached_train = None
+    cache_info = None
+    if args.feature_cache:
+        if manager is None or sync is not None or args.augment or args.mixup or args.cutmix:
+            raise ValueError("feature cache requires a single-process frozen backbone with no random augmentation")
+        selected = {"train": plan.dataset, "val": plan.val_dataset, "test": plan.test_dataset}
+        cache_arrays, cache_info = manager.cache_features(
+            Path(plan.run_dir or plan.log_dir) / "feature-cache", selected,
+            sample_manifest={key: [list(sample) for sample in values] for key, values in selected.items()},
+            input_node=evaluation_x, batch=batch, load_input=lambda sample: _load_training_sample(sample)[0],
+            preprocessing={"height": h, "width": w, "dtype": args.dtype, "backend": conv_backend,
+                           "input_norm": getattr(model, "input_norm", None)})
+        cached_train = {tuple(sample): (cache_arrays["train"][i], np.asarray(sample[1:3], dtype=dtype))
+                        for i, sample in enumerate(plan.dataset)}
+        x_var = ms.Variable(np.zeros((batch, cache_arrays["train"].shape[1]), dtype=dtype), name="features", requires_grad=False)
+        logits = model.forward_head(x_var)
+        loss_node = ms.MSELoss(logits, y_var, name="loss")
+        graph = ms.Graph(loss_node)
+        profiler.bind_graph(graph)
+        opt.graph = graph
+        if transfer is not None:
+            transfer["cache"] = cache_info
+        say(f"[feature-cache] hit={cache_info['hit']} extraction={cache_info['extraction_s']:.3f}s; loader_workers=0")
     dashboard = TrainingDashboard(
         tb_logdir,
         enabled=lead and not args.no_tensorboard,
@@ -1159,6 +1188,7 @@ def _train_rank(plan: TrainPlan, rank, sync, device, profiler) -> dict:
             "lr": float(opt.learning_rate), "lr_history": lr_history, "fingerprint": plan.fingerprint,
             "group_learning_rates": opt.group_learning_rates(),
             "transfer_state": manager.state_dict() if manager else None,
+            "initial_validation": initial_validation,
             "config": trajectory_config(args), "seeds": plan.seeds, "data_hash": plan.data_hash,
             "val_hash": plan.val_hash,
         }
@@ -1180,10 +1210,10 @@ def _train_rank(plan: TrainPlan, rank, sync, device, profiler) -> dict:
             x_batch = np.asarray(x_items, dtype=dtype)
             y_batch = np.asarray(y_items, dtype=dtype).reshape(-1, 2)
             x_batch, y_batch = _pad_fixed_batch(x_batch, y_batch, batch)
-            x_var.value = x_batch
+            evaluation_x.value = x_batch
             y_var.value = y_batch
-            graph.forward()
-            pred = np.asarray(asnumpy(logits.value), dtype=np.float64)[:real]
+            evaluation_graph.forward()
+            pred = np.asarray(asnumpy(evaluation_logits.value), dtype=np.float64)[:real]
             target = y_batch[:real].astype(np.float64)
             squared += float(np.sum((pred - target) ** 2)) / 2.0
             angle_abs += float(np.sum(np.abs(pred[:, 0] - target[:, 0])))
@@ -1209,6 +1239,10 @@ def _train_rank(plan: TrainPlan, rank, sync, device, profiler) -> dict:
         y_var.value = y_batch
         return y_batch
 
+    initial_validation = (plan.resume_meta or {}).get("initial_validation")
+    if args.initial_validation and global_step == 0 and initial_validation is None:
+        initial_loss, initial_angle, initial_count = validation_loss(-1)
+        initial_validation = {"step": 0, "val_loss": initial_loss, "val_angle_mae": initial_angle, "samples": initial_count}
     if lead and args.state_every and plan.resume_meta is None and global_step == 0:
         # A too-large lr can blow up on the very first update: the initial weights are a rollback target too.
         save_state(plan.start_epoch, epoch_complete=False, samples=0, wall_s=0.0)
@@ -1218,12 +1252,15 @@ def _train_rank(plan: TrainPlan, rank, sync, device, profiler) -> dict:
         total_loss = plan.resumed_loss_sum if first_step else 0.0
         count = plan.resumed_loss_count if first_step else 0
         epoch_start = time.perf_counter()
+        epoch_samples = _epoch_samples(plan.dataset, ep, plan.shard_sizes, rank)[first_step * batch:]
+        if cached_train is not None:
+            epoch_samples = [cached_train[tuple(sample)] for sample in epoch_samples]
         loader = MultiprocessDataLoader(
-            _epoch_samples(plan.dataset, ep, plan.shard_sizes, rank)[first_step * batch:],
+            epoch_samples,
             batch,
-            num_workers=int(args.num_workers),
+            num_workers=int(args.num_workers) if cached_train is None else 0,
             shuffle=False,
-            load_fn=_load_training_sample,
+            load_fn=_load_training_sample if cached_train is None else lambda sample: sample,
         )
         epoch_interrupted = False
         load_start = time.perf_counter()
@@ -1310,7 +1347,8 @@ def _train_rank(plan: TrainPlan, rank, sync, device, profiler) -> dict:
                 epoch=ep + 1,
                 extra=phase_row,
             )
-            dashboard.log_activations(global_step, getattr(model, "_last_feature_nodes", {}), preferred_last="layer4")
+            dashboard.log_activations(global_step, getattr(model, "_last_feature_nodes", {}) if cached_train is None
+                                      else {"cached_features": x_var}, preferred_last="layer4")
             if s % 10 == 0 or s == steps - 1:
                 say(f"epoch {ep+1} step {s+1}/{steps} loss={step_loss:.6f}")
             if stop_now:
@@ -1450,7 +1488,8 @@ def _train_rank(plan: TrainPlan, rank, sync, device, profiler) -> dict:
             "val_loss": finals.get("val_loss"), "val_angle_mae": finals.get("val_angle_mae"),
             "best_val_angle_mae": min(maes) if maes else None,
             "val_angle_mae_at_best": at_best.get("val_angle_mae") if at_best else None,
-            "epochs": validation_history, "memory": memory, "device": device, "transfer": transfer,
+            "epochs": validation_history, "initial_validation": initial_validation,
+            "memory": memory, "device": device, "transfer": transfer,
             "conv_backend": ("numpy" if device == "cpu" else "cupy") if conv_backend == "auto" else conv_backend}
 
 
@@ -1570,12 +1609,13 @@ def _result(args, plan: TrainPlan | None, summary: dict, *, started_unix_s: floa
                                                        "dropout", "augment", "val_size", "split_seed", "arch",
                                                        "pretrained", "freeze_stages", "image_size", "input_norm",
                                                        "backbone_lr_mult", "stage_lr_mults", "compat",
-                                                       "unfreeze_schedule", "freeze_mode", "bn_unfreeze")},
+                                                       "unfreeze_schedule", "freeze_mode", "bn_unfreeze", "feature_cache")},
         "metrics": {"val_angle_mae": at_best if at_best is not None else final, "val_angle_mae_final": final,
                     "best_val_angle_mae": summary.get("best_val_angle_mae"), "val_loss": summary.get("val_loss"),
                     "best_loss": summary.get("best_loss"), "last_train_loss": summary.get("last_mean_loss"),
                     "best_epoch": summary.get("best_epoch")},
         "epochs": summary.get("epochs", []),
+        "initial_validation": summary.get("initial_validation"),
         "throughput": {"samples_per_s": summary.get("samples_per_s"),
                        "epoch_train_wall_s": summary.get("epoch_train_wall_s"),
                        "train_wall_s": summary.get("train_wall_s")},

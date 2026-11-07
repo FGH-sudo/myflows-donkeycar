@@ -16,13 +16,13 @@
 | 工作包 | 状态 | 下一项 / 证据 |
 | --- | --- | --- |
 | 开工回归 | 通过 | `runs/stage3/baseline-tests.log`，统一 `--scope all`，443 项，549.087 s |
-| S1 监控交付 | 实验已完成，等待统一回归复测 | 9 次开销、两次真实 Nsight、完整三轮趋势、60 次冻结对照及五项自查见[交付报告](experiments/semester_2026_fall/monitoring/README.md) |
-| S2 冻结反向截断 | 数值与性能已验证，等待统一回归复测 | 三架构四后端 40 组数值检查，2,012 组梯度与更新逐字节相同。冻结指纹保持，60 次交替计时见[冻结报告](experiments/semester_2026_fall/monitoring/freeze-001/report.md) |
-| S3 迁移学习组件 | 待开始 | S2 后；含参数组、渐进解冻、缓存、增强、LoRA |
+| S1 监控交付 | 已验收（476 项回归通过） | 9 次开销、两次真实 Nsight、完整三轮趋势、60 次冻结对照及五项自查见[交付报告](experiments/semester_2026_fall/monitoring/README.md) |
+| S2 冻结反向截断 | 已验收（476 项回归通过） | 三架构四后端 40 组数值检查，2,012 组梯度与更新逐字节相同。冻结指纹保持，60 次交替计时见[冻结报告](experiments/semester_2026_fall/monitoring/freeze-001/report.md) |
+| S3 迁移学习组件 | S3.1–S3.5 已接入 | 两个入口各 166 个 checkpoint 数组保持一致。参数组、跨解冻续训、缓存逐步一致性已验证。LoRA 和策略先验待完成 |
 | S4 迁移实验 | 待开始 | S3 后；小规模后全量配对种子 |
-| S5 跨框架比较 | 协议与 worker 已编写 | 待小规模校准、正式三种子质量与两档吞吐验证 |
+| S5 跨框架比较 | 正式协议已完成 | 三个共同种子、两种吞吐和独立质量实验均已完成，后续重大算子优化继续用同一协议复测。[报告](experiments/semester_2026_fall/frameworks/resnet18-001/report.md) |
 | S6 闭环评估 | S6.1、S6.2 已实测 | 721 帧探测标定阈值，三模型短跑通过。三模型共 30 个正式 episode 已完成，S4.2 最佳迁移模型随后加入 |
-| S7 CIFAR-10 系统测试 | 数据已备齐 | 二进制数据在 `runs/datasets/cifar10/` |
+| S7 CIFAR-10 系统测试 | 全量验收已测 | 32 样本过拟合门槛通过。45,000/5,000 训练与验证、同构 PyTorch 比较、锁定后官方 10,000 张测试均已完成。[报告](experiments/semester_2026_fall/classification/cifar10-001/report.md) |
 | S8 算子与显存优化 | 待开始 | S2 后串行，含所有已纳入拓展项 |
 | S9 测试计划与 CI | 待开始 | 本地 / WSL 验证后准备公开 CI；推送前请求同意 |
 | S10 AutoPilot 增量 | 待开始 | 失败归类、算子诊断、迁移先验 |
@@ -48,6 +48,9 @@
 | 2026-11-05 | 统一回归复测 | 首次 473 项回归中一个既有驾驶 fallback mock 因新增参数枚举失败。已将冻结操作限定到按训练配置构建的模型路径，fallback 专项通过。完整复测日志为 `runs/stage3/s2-monitor-regression-002.log`。 |
 | 2026-11-05 | S11.2 | [正式调优归档](experiments/semester_2026_fall/autopilot/formal-full-002/report.md)与[历史迁移归档](experiments/semester_2026_fall/e2_transfer/historical-001/report.md)包含原始文件位置与校验和。历史 ResNet18 分类产物实际冻结 2 段，另两种模型冻结 3 段。 |
 | 2026-11-05 | S6.3 基础比较 | 三模型 × 10 次，30 s 全部存活，碰撞及出界为 0。候选离线 MAE 略低，闭环平均绝对 CTE 高 0.013。原始帧、配对差值与 checksum 见[闭环报告](experiments/semester_2026_fall/closed_loop/baseline-001/report.md)。 |
+| 2026-11-06 | S1/S2、S5 | 统一回归 476 项通过（604.327 s）。S5 共 30 个独立 worker 成功，62 个可训练张量逐个比较。三 seed 验证角度 MAE 为 MyFlows 0.06397 ± 0.03676，PyTorch 0.08408 ± 0.04474。 |
+| 2026-11-07 | S3.1–S3.5 | 组件提交 `f788e98` / `056a1e4`，分组与解冻 `b045741` / `4dc8838`。两种 BN 策略跨越解冻点逐字节续训，缓存开关下分类 123 步和回归 84 步的 loss 与最终状态一致。[缓存报告](experiments/semester_2026_fall/transfer/cache-001/report.md) |
+| 2026-11-07 | S7 | 完成配置锁定与独立测试，官方测试准确率 60.13%，多数类 10%。 |
 
 ## 待用户审核的规划文档更新建议
 

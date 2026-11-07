@@ -40,6 +40,7 @@ SINGLE_ARGS = {
     "arch": str, "pretrained": str, "freeze_stages": int, "image_size": str, "input_norm": str,
     "backbone_lr_mult": float, "stage_lr_mults": str, "compat": str,
     "unfreeze_schedule": str, "freeze_mode": str, "bn_unfreeze": str,
+    "feature_cache": bool,
 }
 TRANSFER_ARCHS = ("resnet18", "mobilenet_v2", "alexnet")
 MAX_FREEZE_STAGES = 5
