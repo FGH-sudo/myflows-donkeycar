@@ -19,7 +19,7 @@
 | S1 监控交付 | 已验收（476 项回归通过） | 9 次开销、两次真实 Nsight、完整三轮趋势、60 次冻结对照及五项自查见[交付报告](experiments/semester_2026_fall/monitoring/README.md) |
 | S2 冻结反向截断 | 已验收（476 项回归通过） | 三架构四后端 40 组数值检查，2,012 组梯度与更新逐字节相同。冻结指纹保持，60 次交替计时见[冻结报告](experiments/semester_2026_fall/monitoring/freeze-001/report.md) |
 | S3 迁移学习组件 | S3.1–S3.5 已接入 | 两个入口各 166 个 checkpoint 数组保持一致。参数组、跨解冻续训、缓存逐步一致性已验证。LoRA 和策略先验待完成 |
-| S4 迁移实验 | 待开始 | S3 后；小规模后全量配对种子 |
+| S4 迁移实验 | 编排完成 | 固定训练代码树。先 24 个分类试验，再处理 DonkeyCar 2,000 帧 × 2 seeds 的全部配置，最后按历史时间段划分做全量 3 seeds × 3 epochs 对照 |
 | S5 跨框架比较 | 正式协议已完成 | 三个共同种子、两种吞吐和独立质量实验均已完成，后续重大算子优化继续用同一协议复测。[报告](experiments/semester_2026_fall/frameworks/resnet18-001/report.md) |
 | S6 闭环评估 | S6.1、S6.2 已实测 | 721 帧探测标定阈值，三模型短跑通过。三模型共 30 个正式 episode 已完成，S4.2 最佳迁移模型随后加入 |
 | S7 CIFAR-10 系统测试 | 全量验收已测 | 32 样本过拟合门槛通过。45,000/5,000 训练与验证、同构 PyTorch 比较、锁定后官方 10,000 张测试均已完成。[报告](experiments/semester_2026_fall/classification/cifar10-001/report.md) |
@@ -51,6 +51,7 @@
 | 2026-11-06 | S1/S2、S5 | 统一回归 476 项通过（604.327 s）。S5 共 30 个独立 worker 成功，62 个可训练张量逐个比较。三 seed 验证角度 MAE 为 MyFlows 0.06397 ± 0.03676，PyTorch 0.08408 ± 0.04474。 |
 | 2026-11-07 | S3.1–S3.5 | 组件提交 `f788e98` / `056a1e4`，分组与解冻 `b045741` / `4dc8838`。两种 BN 策略跨越解冻点逐字节续训，缓存开关下分类 123 步和回归 84 步的 loss 与最终状态一致。[缓存报告](experiments/semester_2026_fall/transfer/cache-001/report.md) |
 | 2026-11-07 | S7 | 完成配置锁定与独立测试，官方测试准确率 60.13%，多数类 10%。 |
+| 2026-11-07 | S4 准备 | 冻结源码训练流程可按已验证的 attempt 接续。首步前的真实验证对照、含增强的 CIFAR-10 小规模迁移、两个训练入口的缓存轨迹均已测。长任务日志位于 `runs/stage3/transfer-classify-study.log` 与 `runs/stage3/transfer-donkey-study.log`。 |
 
 ## 待用户审核的规划文档更新建议
 
