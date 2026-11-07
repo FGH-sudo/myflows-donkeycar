@@ -19,12 +19,12 @@
 | S1 监控交付 | 已验收（476 项回归通过） | 9 次开销、两次真实 Nsight、完整三轮趋势、60 次冻结对照及五项自查见[交付报告](experiments/semester_2026_fall/monitoring/README.md) |
 | S2 冻结反向截断 | 已验收（476 项回归通过） | 三架构四后端 40 组数值检查，2,012 组梯度与更新逐字节相同。冻结指纹保持，60 次交替计时见[冻结报告](experiments/semester_2026_fall/monitoring/freeze-001/report.md) |
 | S3 迁移学习组件 | S3.1–S3.5 已接入 | 两个入口各 166 个 checkpoint 数组保持一致。参数组、跨解冻续训、缓存逐步一致性已验证。LoRA 和策略先验待完成 |
-| S4 迁移实验 | 编排完成 | 固定训练代码树。先 24 个分类试验，再处理 DonkeyCar 2,000 帧 × 2 seeds 的全部配置，最后按历史时间段划分做全量 3 seeds × 3 epochs 对照 |
+| S4 迁移实验 | 两项正式实验完成 | [分类递进](experiments/semester_2026_fall/transfer/classify-001/report.md)有 24 个试验。[回归对照](experiments/semester_2026_fall/transfer/donkey-001/report.md)有 14 个小规模试验及 21 个全量试验，附逐轮曲线、首层特征和 Grad-CAM |
 | S5 跨框架比较 | 正式协议已完成 | 三个共同种子、两种吞吐和独立质量实验均已完成，后续重大算子优化继续用同一协议复测。[报告](experiments/semester_2026_fall/frameworks/resnet18-001/report.md) |
-| S6 闭环评估 | S6.1、S6.2 已实测 | 721 帧探测标定阈值，三模型短跑通过。三模型共 30 个正式 episode 已完成，S4.2 最佳迁移模型随后加入 |
+| S6 闭环评估 | 探测与两组正式实验完成 | 721 帧标定，三模型 30 次。加入 S4 候选后在同一仿真会话轮换四个模型，共 40 次、24,011 帧。[配对结果与会话差异](experiments/semester_2026_fall/closed_loop/transfer-001/report.md) |
 | S7 CIFAR-10 系统测试 | 全量验收已测 | 32 样本过拟合门槛通过。45,000/5,000 训练与验证、同构 PyTorch 比较、锁定后官方 10,000 张测试均已完成。[报告](experiments/semester_2026_fall/classification/cifar10-001/report.md) |
 | S8 算子与显存优化 | 待开始 | S2 后串行，含所有已纳入拓展项 |
-| S9 测试计划与 CI | 待开始 | 本地 / WSL 验证后准备公开 CI；推送前请求同意 |
+| S9 测试计划与 CI | CPU 工作流与锁定依赖已入库 | 已建立 Ubuntu 22.04、Python 3.11 的独立无 CUDA 环境，正在实跑。测试计划、GPU 门槛及托管验收待完成 |
 | S10 AutoPilot 增量 | 待开始 | 失败归类、算子诊断、迁移先验 |
 | S11 设计与最终报告 | S11.2 已归档 | formal-full-002 与既有 E2 / M6 报告已整理。设计文档持续同步，控制台与最终报告待完成 |
 

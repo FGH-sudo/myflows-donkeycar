@@ -81,6 +81,8 @@
 | benchmark/stage1_common.py | 配置、环境、双仓库源码快照、错误状态与产物校验和 |
 | benchmark/stage1_regression.py | 三个独立进程的完整回归与日志归档 |
 | benchmark/monitor_overhead.py、profile_train.py | 训练资源监控的交替开销对照，以及指定步段的 Nsight Systems 采集与 SQLite 导出 |
+| benchmark/transfer_study.py、transfer_visuals.py | 同一训练代码树上的分类、回归、低秩训练对照，以及在相同验证帧上的首层激活和 Grad-CAM |
+| MyFlows/transfer/lora.py | 在 layer4 卷积和任务头训练 A、B 两个因子，合并到原有权重后导出单输入 ONNX |
 | tools/timeline_gaps.py | 合并同设备各 stream 上的 kernel/拷贝/清零忙区间，将空闲段按 CPU NVTX 来源拆分，输出图表和分阶段占比 |
 | tools/run_tests.py | 同时收集 unittest 和函数式测试的统一入口 |
 | tools/restore_stage1_source.py | 按运行 manifest 校验并恢复实际源码，不覆盖现有目录 |
