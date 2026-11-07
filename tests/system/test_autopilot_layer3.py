@@ -48,7 +48,10 @@ class SummaryTest(unittest.TestCase):
         self.assertIn("手动检查", text)
 
     def test_the_campaign_spec_is_valid(self):
-        spec = validate_spec(acceptance.campaign_spec("layer3-unit"), Path("."))
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            (root / "mycar" / "data").mkdir(parents=True)
+            spec = validate_spec(acceptance.campaign_spec("layer3-unit"), root)
         self.assertTrue(spec["llm"]["enabled"])
         self.assertEqual(spec["llm"]["max_calls"], 6)
 
