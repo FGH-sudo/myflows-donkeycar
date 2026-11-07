@@ -288,18 +288,56 @@ def donkey_report(out,rows):
     (out/"report.md").write_text("\n".join(lines)+"\n",encoding="utf-8")
 
 
+def lora_study(out, tree):
+    source = init_study(out, tree, "lora")
+    split = split_for("pilot", out)
+    settings = {"device": "cuda", "dtype": "float32", "batch": 8, "epochs": 2, "seed": 1,
+                "lr": .001, "data": str(ROOT / "mycar/data"), "max_samples": 2000, "split_file": str(split),
+                "pretrained": str(WEIGHTS), "image_size": "120x160", "input_norm": "imagenet",
+                "conv_backend": "cuda_native_register", "phase_timing_every": 20, "no_tensorboard": True,
+                "checkpoint_every": 0, "initial_validation": True}
+    cases = {"head": {"freeze_stages": 5}, **{f"lora-r{r}": {"lora_rank": r} for r in (4, 8, 16)},
+             "freeze-3": {"freeze_stages": 3}, "full": {"freeze_stages": 0}}
+    rows = []
+    for name, config in cases.items():
+        run, result = attempt(tree, source, out/name, {**settings, **config, "export_onnx": name == "lora-r4"})
+        transfer = result["transfer"]
+        if not transfer["frozen_unchanged"]:
+            raise RuntimeError(f"frozen tensors changed in {name}")
+        rows.append({"method": name, "trainable": transfer["freeze"]["trainable_values"],
+                     "initial_mae": result["initial_validation"]["val_angle_mae"],
+                     "final_mae": result["metrics"]["val_angle_mae_final"], "epochs": result["epochs"],
+                     "run": run.relative_to(ROOT).as_posix(), "lora": transfer.get("lora")})
+        write(out/"summary.json", rows)
+    counts = read(split)["splits"]
+    lines = ["# ResNet18 低秩微调对照", "",
+             f"取前 2,000 帧按时间段切分，训练 {len(counts['train'])} 帧，验证 {len(counts['val'])} 帧。"
+             "六种方式使用同一组 ImageNet 权重、任务头初值、样本顺序和预算。batch 8，学习率 0.001，"
+             "训练 2 轮，seed 1。表中使用最后一轮验证集转向 MAE。", "",
+             "| 配置 | 可训练参数 | 初始验证 MAE | 最终验证 MAE |", "| --- | ---: | ---: | ---: |"]
+    for row in rows:
+        lines.append(f"| {row['method']} | {row['trainable']:,} | {row['initial_mae']:.6f} | {row['final_mae']:.6f} |")
+    lines.extend(["", "LoRA 固定原权重、偏置和 BN 统计量，更新 layer4 的五个卷积及回归头。"
+                  "缩放系数等于 1。各组均逐字节校验冻结状态。单个种子的结果用于比较参数预算和此次验证表现。",
+                  "", "复现命令为 `python -m benchmark.transfer_study lora --out runs/stage3/lora-repro`。"
+                  "本目录 summary.json 和各 attempt 保存参数量、逐轮指标、训练命令与 checkpoint。"])
+    (out/"report.md").write_text("\n".join(lines)+"\n", encoding="utf-8")
+
+
 def main(argv=None):
     parser=argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("kind",choices=("classification","donkey"))
+    parser.add_argument("kind",choices=("classification","donkey","lora"))
     parser.add_argument("--tree",type=Path,default=ROOT)
     parser.add_argument("--out",type=Path)
     args=parser.parse_args(argv)
-    out=(ROOT/args.out).resolve() if args.out else ARCHIVE/("classify-001" if args.kind=="classification" else "donkey-001")
+    out=(ROOT/args.out).resolve() if args.out else ARCHIVE/{"classification":"classify-001","donkey":"donkey-001","lora":"lora-001"}[args.kind]
     if not out.is_relative_to(ROOT):
         parser.error("output must be inside the workspace")
     tree=args.tree.resolve()
     if args.kind=="classification":
         classification_study(out,tree)
+    elif args.kind=="lora":
+        lora_study(out,tree)
     else:
         source=init_study(out,tree,"donkey")
         donkey_phase(out,tree,source,"pilot")

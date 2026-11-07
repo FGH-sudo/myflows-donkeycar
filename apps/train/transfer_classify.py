@@ -60,6 +60,8 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--dropout", type=float, default=0.)
     ap.add_argument("--augment", action="store_true")
     ap.add_argument("--feature-cache", action="store_true")
+    ap.add_argument("--lora-rank", type=int, default=0)
+    ap.add_argument("--lora-alpha", type=float, help="LoRA alpha, defaults to the rank")
     ap.add_argument("--require-loss-decrease", action=argparse.BooleanOptionalAction, default=True,
                     help="use the historical loss-decrease check as an exit gate")
     ap.add_argument("--freeze-stages", type=int, default=0)
@@ -171,6 +173,10 @@ def main(argv=None) -> int:
         args.classes = 10
     if args.arch == "small":
         args.no_pretrained = True
+    if args.lora_rank < 0 or args.lora_rank and (args.arch != "resnet18" or args.no_pretrained):
+        raise ValueError("LoRA requires a pretrained ResNet18 and a positive rank")
+    if args.lora_alpha is not None and not args.lora_rank:
+        raise ValueError("--lora-alpha requires --lora-rank")
     if args.feature_cache and args.augment:
         raise ValueError("feature cache requires deterministic input; disable random augmentation")
     size = int(args.image_size)
@@ -202,6 +208,7 @@ def main(argv=None) -> int:
         else:
             manager = TransferLearningManager.build(args.arch, args.classes, dropout=args.dropout, initializer=initializer,
                                                    dropout_seed=args.seed, conv_backend=conv_backend, input_norm="imagenet",
+                                                   lora_rank=args.lora_rank, lora_alpha=args.lora_alpha,
                                                    name=f"{args.arch}_transfer", pretrained=None if args.no_pretrained else
                                                    (Path(args.weights) if args.weights else ROOT / "runs/pretrained/converted" / f"{args.arch}.npz"), **strategy)
         model, report, freeze = manager.model, manager.load_report, manager.freeze

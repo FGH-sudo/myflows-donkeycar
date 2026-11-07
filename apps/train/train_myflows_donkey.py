@@ -225,7 +225,7 @@ _NON_TRAJECTORY_ARGS = {
 _LATER_DEFAULTS = {"arch": "resnet18", "pretrained": None, "freeze_stages": 0, "image_size": None, "input_norm": "auto",
                    "backbone_lr_mult": 1., "stage_lr_mults": None, "compat": "myflows"}
 _LATER_DEFAULTS.update(unfreeze_schedule=None, freeze_mode="both", bn_unfreeze="follow")
-_LATER_DEFAULTS.update(feature_cache=False)
+_LATER_DEFAULTS.update(feature_cache=False, lora_rank=0, lora_alpha=None)
 
 
 def trajectory_config(args: argparse.Namespace) -> dict:
@@ -347,6 +347,8 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--freeze-mode", choices=("both", "params", "bn"), default="both")
     ap.add_argument("--bn-unfreeze", choices=("follow", "keep-frozen"), default="follow")
     ap.add_argument("--feature-cache", action="store_true", help="缓存完全冻结且无随机增强的骨干输出，仅训练任务头")
+    ap.add_argument("--lora-rank", type=int, default=0, help="在预训练 ResNet18 的 layer4 与回归头训练低秩更新")
+    ap.add_argument("--lora-alpha", type=float, help="LoRA 缩放系数的分子，默认等于秩")
     ap.add_argument("--initial-validation", action="store_true", help="在首个训练 step 前使用同一验证集评估初始 MAE")
     ap.add_argument("--graph-opt", action="store_true", help="打开构图期优化(可能略快)")
     ap.add_argument(
@@ -809,6 +811,10 @@ def input_size(args, first_image) -> tuple[int, int]:
 
 def transfer_config(args, *, require_weights=True) -> dict | None:
     """--arch / --pretrained / --freeze-stages 的有效配置；默认的 MyFlows ResNet18（旧结构）返回 None。"""
+    if args.lora_rank < 0 or args.lora_rank and (args.arch != "resnet18" or not args.pretrained):
+        raise SystemExit("--lora-rank 需要预训练的 ResNet18 和正整数秩")
+    if args.lora_alpha is not None and not args.lora_rank:
+        raise SystemExit("--lora-alpha 需要 --lora-rank")
     if args.arch == "resnet18" and not args.pretrained and args.compat == "myflows":
         if args.freeze_stages:
             raise SystemExit("--freeze-stages 需要 --pretrained")
@@ -876,6 +882,7 @@ def _build_model(args, batch: int, h: int, w: int, dtype, conv_backend: str, dro
             input_norm=None if transfer["input_norm"] == "none" else transfer["input_norm"],
             name=f"{transfer['arch']}_donkey", pretrained=transfer["pretrained"] if load_pretrained else None,
             freeze_stages=transfer["freeze_stages"], backbone_lr_mult=args.backbone_lr_mult,
+            lora_rank=args.lora_rank, lora_alpha=args.lora_alpha,
             stage_lr_mults=parse_lr_multipliers(args.stage_lr_mults), unfreeze_schedule=args.unfreeze_schedule,
             freeze_mode=args.freeze_mode, bn_unfreeze=args.bn_unfreeze)
         model = manager.model
@@ -1609,7 +1616,8 @@ def _result(args, plan: TrainPlan | None, summary: dict, *, started_unix_s: floa
                                                        "dropout", "augment", "val_size", "split_seed", "arch",
                                                        "pretrained", "freeze_stages", "image_size", "input_norm",
                                                        "backbone_lr_mult", "stage_lr_mults", "compat",
-                                                       "unfreeze_schedule", "freeze_mode", "bn_unfreeze", "feature_cache")},
+                                                       "unfreeze_schedule", "freeze_mode", "bn_unfreeze", "feature_cache",
+                                                       "lora_rank", "lora_alpha")},
         "metrics": {"val_angle_mae": at_best if at_best is not None else final, "val_angle_mae_final": final,
                     "best_val_angle_mae": summary.get("best_val_angle_mae"), "val_loss": summary.get("val_loss"),
                     "best_loss": summary.get("best_loss"), "last_train_loss": summary.get("last_mean_loss"),
@@ -1727,14 +1735,35 @@ def main() -> None:
 
 
 def _export_onnx(args, plan: TrainPlan) -> None:
-    if transfer_config(args) is not None:
-        print("ONNX 导出目前只支持默认的 MyFlows ResNet18 结构，跳过")
+    transfer = transfer_config(args, require_weights=False)
+    if transfer and transfer["arch"] != "resnet18":
+        print(f"ONNX 导出暂不支持 {transfer['arch']}，跳过")
         return
     best_base = Path(plan.best_base)
     if not best_base.with_suffix(".json").exists():
         print(f"还没有最佳模型（第一个 epoch 结束前就停止了），跳过 ONNX 导出: {best_base}")
         return
     onnx_path = (ROOT / args.onnx_out).resolve() if args.onnx_out else best_base.with_suffix(".onnx")
+    if transfer:
+        from MyFlows.core.device import get_device
+        from MyFlows.core.dtype import get_default_dtype
+        from MyFlows.transfer.lora import merge_resnet_lora
+
+        previous_device, previous_dtype = get_device(), get_default_dtype()
+        try:
+            set_device("cpu")
+            ms.set_default_dtype(np.float32)
+            x, _, model, _, _, _ = _build_model(args, 1, plan.h, plan.w, np.float32, "auto", load_pretrained=False)
+            ms.load_checkpoint([model], None, str(best_base))
+            merge_resnet_lora(model).eval()
+            graph = ms.Graph(model(x))
+            onnx_path.parent.mkdir(parents=True, exist_ok=True)
+            ms.export_onnx(graph, str(onnx_path), input_nodes=[x], output_names=["prediction"])
+        finally:
+            set_device(previous_device)
+            ms.set_default_dtype(previous_dtype)
+        print(f"已导出 ONNX: {onnx_path} (batch=1)")
+        return
     export_resnet18_onnx(
         best_base,
         output=onnx_path,
