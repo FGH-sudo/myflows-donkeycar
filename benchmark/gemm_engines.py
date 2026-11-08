@@ -103,7 +103,7 @@ def gemm_part(args, run):
                                                                 engine=engine, out=out))
                      for engine, _ in ENGINES}
             row = {"model": model_name, "part": part, "layout": layout, "m": m, "n": n, "k": k, "count": count}
-            row["tile"], row["slices"] = native.gemm_plan(m, n, k)
+            row["tile"], row["slices"] = native.gemm_plan(m, n, k, layout=layout)
             for engine, _ in ENGINES:
                 got = xp.asnumpy(calls[engine]()).astype(np.float64)
                 row[f"{engine}_error"] = float(np.abs(got - exact).max() / np.abs(exact).max())
