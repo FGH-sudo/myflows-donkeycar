@@ -11,7 +11,7 @@ from fastapi.testclient import TestClient
 
 from apps.console.jobs import JobManager
 from apps.console.readers import JsonlTail
-from apps.console.registry import RunRegistry
+from apps.console.registry import RunRegistry, phase_totals
 from apps.console.server import create_app
 
 
@@ -60,6 +60,13 @@ def make_registry(root: Path, jobs=None) -> RunRegistry:
 
 
 class JsonlTailTest(unittest.TestCase):
+    def test_phase_totals_only_pair_complete_measurements_and_reconstruct_legacy_wall(self):
+        sample = {"data_load_ms": 2., "forward_ms": 3., "backward_ms": 4., "optimizer_ms": 1.}
+        totals = phase_totals([{**sample, "step_total_ms": 12.}, {**sample, "step_time_ms": 10.},
+                               {"step_total_ms": 100., "forward_ms": 90.}, {**sample, "backward_ms": None}])
+        self.assertEqual(totals, {"count": 2, "step_total_ms": 24., "data_load_ms": 4.,
+                                  "forward_ms": 6., "backward_ms": 8., "optimizer_ms": 2.})
+
     def test_partial_line_waits_for_newline_and_fields_are_projected(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "x.jsonl"
@@ -401,6 +408,19 @@ class ConsoleApiTest(unittest.TestCase):
         page = self.client.get("/runs")
         self.assertEqual(page.status_code, 200)
         self.assertIn("前端尚未构建", page.text)
+
+    def test_framework_archive_exposes_measurements_and_protocol(self):
+        folder = self.root / "docs/experiments/semester_2026_fall/frameworks/resnet-test"
+        folder.mkdir(parents=True)
+        run = {"framework": "myflows", "seed": 1, "mode": "quality", "status": "succeeded",
+               "samples_per_s": 128., "epochs": [{"epoch": 1, "val_angle_mae": .05}], "environment": {"unused": 1}}
+        (folder/"summary.json").write_text(json.dumps({"task": "framework_resnet18", "protocol": {"batch": 8},
+                                                       "runs": [run, {**run, "status": "failed"}]}), encoding="utf-8")
+        item, = self.client.get("/api/framework-comparisons").json()
+        self.assertEqual((item["id"], item["protocol"]["batch"]), ("resnet-test", 8))
+        row, = item["runs"]
+        self.assertEqual((row["samples_per_s"], row["curve"]), (128., [[1, .05]]))
+        self.assertNotIn("environment", row)
 
     def test_stream_of_finished_run_ends(self):
         events = []

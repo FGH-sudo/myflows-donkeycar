@@ -19,6 +19,7 @@ function stats(values: (number | null)[] | undefined) {
 
 export default function ResourcesTab({ detail, state }: { detail: RunDetail; state: RunState }) {
   const res = state.resources
+  const memory = res?.gpu_device_memory_mib?.some((v) => v !== null) ? res.gpu_device_memory_mib : res?.gpu_memory_mib
   const distributed = detail.kind === 'distributed'
   const marks = useMemo(() => epochMarkAreas(state.epochs['0'], distributed ? 1 : 0), [state.epochs, distributed])
 
@@ -81,14 +82,14 @@ export default function ResourcesTab({ detail, state }: { detail: RunDetail; sta
         yAxisIndex: 1,
         lineStyle: { width: 1.6, color: '#8866d6' },
         itemStyle: { color: '#8866d6' },
-        data: zip(res.t, res.gpu_memory_mib),
+        data: zip(res.t, memory),
       },
     ]
     return option(series, [
       { type: 'value', min: 0, max: 100, axisLabel: { formatter: '{value}%' } },
-      { type: 'value', axisLabel: { formatter: (v: number) => (v >= 1024 ? `${(v / 1024).toFixed(1)} GB` : `${v} MB`) }, splitLine: { show: false } },
+      { type: 'value', axisLabel: { formatter: (v: number) => (v >= 1024 ? `${(v / 1024).toFixed(1)} GiB` : `${v} MiB`) }, splitLine: { show: false } },
     ])
-  }, [res, marks])
+  }, [res, marks, memory])
 
   const powerOption = useMemo(() => {
     if (!res) return null
@@ -154,7 +155,8 @@ export default function ResourcesTab({ detail, state }: { detail: RunDetail; sta
   }
 
   const util = stats(res.gpu_utilization_pct)
-  const mem = stats(res.gpu_memory_mib)
+  const mem = stats(memory)
+  const peak = stats(res.gpu_device_memory_peak_mib).max ?? mem.max
   const power = stats(res.gpu_power_w)
   const cpu = stats(res.cpu_utilization_pct)
 
@@ -175,10 +177,10 @@ export default function ResourcesTab({ detail, state }: { detail: RunDetail; sta
             {
               label: '显存峰值',
               color: '#8866d6',
-              value: mem.max !== null ? (mem.max / 1024).toFixed(2) : '—',
-              unit: 'GB',
-              hint: mem.mean !== null ? `均值 ${(mem.mean / 1024).toFixed(2)} GB · 整卡` : undefined,
-              spark: res.gpu_memory_mib,
+              value: peak !== null ? (peak / 1024).toFixed(2) : '—',
+              unit: 'GiB',
+              hint: mem.mean !== null ? `均值 ${(mem.mean / 1024).toFixed(2)} GiB · 整卡` : undefined,
+              spark: memory,
             },
             {
               label: 'GPU 功耗',

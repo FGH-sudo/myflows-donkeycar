@@ -150,6 +150,35 @@ def build_router(*, registry: RunRegistry, jobs: JobManager, live, sampler, repo
     def sources():
         return registry.sources()
 
+    @router.get("/framework-comparisons")
+    def framework_comparisons():
+        folder = repo_root / "docs/experiments/semester_2026_fall/frameworks"
+        studies = []
+        for path in sorted(folder.glob("*/summary.json")):
+            data = read_json(path) or {}
+            if data.get("task") != "framework_resnet18" or not isinstance(data.get("runs"), list):
+                continue
+            rows = []
+            for run in data["runs"]:
+                if run.get("status") != "succeeded" or run.get("mode") not in ("fixed", "e2e", "quality"):
+                    continue
+                epochs = run.get("epochs") or []
+                resources = run.get("resources") or {}
+                allocator = run.get("allocator") or {}
+                rows.append({"framework": run["framework"], "mode": run["mode"], "seed": run["seed"],
+                             "step_ms": run.get("median_step_ms"), "samples_per_s": run.get("samples_per_s"),
+                             "val_mae": epochs[-1].get("val_angle_mae") if epochs else None,
+                             "device_mib": resources.get("gpu_device_mib_sampled_peak"),
+                             "allocator_mib": allocator.get("peak_used_mib"), "allocator_kind": allocator.get("allocator"),
+                             "cpu_pct": resources.get("cpu_util_pct_mean"), "gpu_pct": resources.get("gpu_util_pct_median"),
+                             "rss_bytes": resources.get("rss_bytes_sampled_peak"),
+                             "curve": [[e["epoch"], e.get("val_angle_mae")] for e in epochs]})
+            protocol = data.get("protocol") or {}
+            if rows:
+                studies.append({"id": path.parent.name, "runs": rows, "protocol":
+                                {k: protocol.get(k) for k in ("architecture", "train", "val", "batch", "epochs", "seeds")}})
+        return studies
+
     @router.get("/runs")
     def runs(source: str | None = None, kind: str | None = None, task: str | None = None, mode: str | None = None,
              status: str | None = None, q: str | None = None):

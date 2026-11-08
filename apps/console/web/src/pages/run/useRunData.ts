@@ -10,6 +10,7 @@ import { useEventSource } from '../../hooks/useEventSource'
 export interface RunState {
   loaded: boolean
   steps: Record<string, Columns>
+  phaseTotals?: Record<string, number>
   epochs: Record<string, EpochRow[]>
   resources: ResourceSeries | null
   cursor: Cursor
@@ -57,6 +58,7 @@ function reducer(state: RunState, action: Action): RunState {
         ...state,
         loaded: true,
         steps: action.steps.ranks,
+        phaseTotals: action.steps.phase_totals,
         epochs: action.epochs.ranks,
         resources: action.resources.series,
         cursor: { ...action.steps.cursor, ...action.epochs.cursor, ...action.resources.cursor },
@@ -64,7 +66,9 @@ function reducer(state: RunState, action: Action): RunState {
     case 'steps': {
       const steps = { ...state.steps }
       for (const [rank, cols] of Object.entries(action.data.ranks)) steps[rank] = concatColumns(steps[rank], cols)
-      return { ...state, steps, cursor: { ...state.cursor, ...action.data.cursor } }
+      const phaseTotals = { ...state.phaseTotals }
+      for (const [k, v] of Object.entries(action.data.phase_totals ?? {})) phaseTotals[k] = (phaseTotals[k] ?? 0) + v
+      return { ...state, steps, phaseTotals, cursor: { ...state.cursor, ...action.data.cursor } }
     }
     case 'epochs': {
       const epochs = { ...state.epochs }

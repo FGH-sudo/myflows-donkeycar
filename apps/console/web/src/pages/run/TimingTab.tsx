@@ -20,8 +20,14 @@ const STAGES: [string, string, string][] = [
 ]
 const SINGLE_STAGES: [string, string, string][] = [
   ['data_load_ms', '数据加载', '#7a8394'],
+  ['forward_ms', '前向', '#3b6fd8'],
+  ['backward_ms', '反向', '#2f9e7a'],
+  ['optimizer_ms', '优化器', '#8866d6'],
+]
+const LEGACY_STAGES: [string, string, string][] = [
+  ['data_load_ms', '数据加载', '#7a8394'],
   ['train_step_ms', '前向+反向', '#3b6fd8'],
-  ['step_time_ms', '整步时间', '#d4892a'],
+  ['step_time_ms', '计算与同步', '#d4892a'],
 ]
 const OTHER_COLOR = '#ececf0'
 const msLabel = { formatter: (v: number) => `${v} ms` }
@@ -34,7 +40,10 @@ export default function TimingTab({ detail, state, ranks }: { detail: RunDetail;
 
   const stackOption = useMemo<EChartsOption | null>(() => {
     if (!cols?.x?.length) return null
-    const stages = distributed ? STAGES : SINGLE_STAGES
+    const phases = !!state.phaseTotals?.count
+    const stages = distributed ? STAGES : phases
+      ? [...SINGLE_STAGES, ['step_total_ms', '单步总耗时', '#d4892a']]
+      : LEGACY_STAGES
     const fields = stages.map((s) => s[0])
     const binned = binColumns(cols, fields, 'x', 400)
     const scale = distributed ? 1000 : 1
@@ -44,6 +53,7 @@ export default function TimingTab({ detail, state, ranks }: { detail: RunDetail;
         name: label,
         type: 'line',
         showSymbol: false,
+        connectNulls: !distributed,
         stack: distributed ? 'stage' : undefined,
         areaStyle: distributed ? { opacity: 0.6 } : undefined,
         lineStyle: { width: distributed ? 0 : 1.6, color },
@@ -66,12 +76,14 @@ export default function TimingTab({ detail, state, ranks }: { detail: RunDetail;
       dataZoom: zoom,
       series,
     }
-  }, [cols, distributed])
+  }, [cols, distributed, state.phaseTotals])
 
   const shareOption = useMemo<EChartsOption | null>(() => {
-    if (!distributed) return null
-    const categories = allRanks.map((r) => `rank ${r}`)
-    const totals = allRanks.map((r) => {
+    const phase = state.phaseTotals
+    if (!distributed && !phase?.count) return null
+    const stages = distributed ? STAGES : SINGLE_STAGES
+    const categories = distributed ? allRanks.map((r) => `rank ${r}`) : ['训练步骤']
+    const totals = !distributed && phase ? [{ ...phase, step: phase.step_total_ms }] : allRanks.map((r) => {
       const c = state.steps[String(r)]
       const out: Record<string, number> = {}
       for (const [field] of STAGES) out[field] = (c?.[field] ?? []).reduce<number>((s, v) => s + (v ?? 0), 0)
@@ -80,7 +92,7 @@ export default function TimingTab({ detail, state, ranks }: { detail: RunDetail;
     })
     if (!totals.some((t) => t.step > 0)) return null
     const pct = (t: Record<string, number>, field: string) => (t.step ? (t[field] / t.step) * 100 : 0)
-    const series: SeriesOption[] = STAGES.map(([field, label, color]) => ({
+    const series: SeriesOption[] = stages.map(([field, label, color]) => ({
       name: label,
       type: 'bar',
       stack: 'share',
@@ -93,7 +105,7 @@ export default function TimingTab({ detail, state, ranks }: { detail: RunDetail;
       type: 'bar',
       stack: 'share',
       itemStyle: { color: OTHER_COLOR },
-      data: totals.map((t) => Math.max(0, 100 - STAGES.reduce((s, [f]) => s + pct(t, f), 0))),
+      data: totals.map((t) => Math.max(0, 100 - stages.reduce((s, [f]) => s + pct(t, f), 0))),
     })
     return {
       animation: false,
@@ -104,11 +116,11 @@ export default function TimingTab({ detail, state, ranks }: { detail: RunDetail;
       },
       legend: baseLegend,
       grid: { left: 64, right: 32, top: 64, bottom: 32 },
-      xAxis: { type: 'value', max: 100, axisLabel: { formatter: '{value}%' } },
+      xAxis: { type: 'value', min: 0, axisLabel: { formatter: '{value}%' } },
       yAxis: { type: 'category', data: categories, axisLine: { show: false } },
       series,
     }
-  }, [state.steps, allRanks, distributed])
+  }, [state.steps, state.phaseTotals, allRanks, distributed])
 
   const bytesOption = useMemo<EChartsOption | null>(() => {
     if (!distributed) return null
@@ -185,7 +197,9 @@ export default function TimingTab({ detail, state, ranks }: { detail: RunDetail;
         ) : null}
         {shareOption ? (
           <Col xs={24} xl={12}>
-            <ChartPanel title="各 Rank 阶段耗时占比" subtitle="已加载 step 的累计占比" option={shareOption} height={pairHeight} />
+            <ChartPanel title={distributed ? '各 Rank 阶段耗时占比' : '训练阶段耗时占比'}
+              subtitle={distributed ? '已加载 step 的累计占比' : `按 ${state.phaseTotals?.count} 个完整采样步的总耗时计算，含数据读取`}
+              option={shareOption} height={pairHeight} />
           </Col>
         ) : null}
         {bytesOption ? (

@@ -184,10 +184,11 @@ export default function CurvesTab({ detail, state, ranks }: Props) {
           return n !== null && wall ? n / wall : null
         })
       } else {
-        values = cols.samples_per_sec ?? []
+        values = cols.samples_per_sec_total?.some((v) => v !== null)
+          ? cols.samples_per_sec_total : cols.samples_per_sec ?? []
       }
       series.push({
-        name: `rank ${rank}`,
+        name: distributed ? `rank ${rank}` : cols.samples_per_sec_total?.some((v) => v !== null) ? '含数据读取' : '计算与同步',
         type: 'line',
         showSymbol: false,
         sampling: 'lttb',

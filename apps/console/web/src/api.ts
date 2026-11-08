@@ -106,9 +106,32 @@ export interface RunDetail {
 }
 
 export interface StepsResponse {
+  phase_totals?: Record<string, number>
   origin: number | null
   ranks: Record<string, Columns>
   cursor: Cursor
+}
+
+export interface FrameworkRun {
+  framework: string
+  mode: 'fixed' | 'e2e' | 'quality'
+  seed: number
+  step_ms: number | null
+  samples_per_s: number | null
+  val_mae: number | null
+  device_mib: number | null
+  allocator_mib: number | null
+  allocator_kind: string | null
+  gpu_pct: number | null
+  cpu_pct: number | null
+  rss_bytes: number | null
+  curve: [number, number | null][]
+}
+
+export interface FrameworkStudy {
+  id: string
+  protocol: { architecture: string; train: number; val: number; batch: number; epochs: number; seeds: number[] }
+  runs: FrameworkRun[]
 }
 
 export interface EpochRow {
@@ -125,7 +148,7 @@ export interface EpochsResponse {
 }
 
 export const RESOURCE_KEYS = ['cpu_utilization_pct', 'ram_used_bytes', 'gpu_utilization_pct', 'gpu_memory_mib',
-  'gpu_temperature_c', 'gpu_power_w'] as const
+  'gpu_temperature_c', 'gpu_power_w', 'gpu_device_memory_mib', 'gpu_device_memory_peak_mib', 'process_rss_total_bytes'] as const
 
 export type ResourceSeries = { t: number[]; rank_rss_mib: Record<string, (number | null)[]> } &
   Partial<Record<(typeof RESOURCE_KEYS)[number], (number | null)[]>>
@@ -265,6 +288,7 @@ function query(params: Record<string, string | number | undefined | null>): stri
 }
 
 export const api = {
+  frameworks: () => request<FrameworkStudy[]>('/api/framework-comparisons'),
   gpu: () => request<GpuPayload>('/api/gpu'),
   sources: () => request<SourceInfo[]>('/api/sources'),
   runs: (params: { source?: string; kind?: string; task?: string; mode?: string; status?: string; q?: string } = {}) =>

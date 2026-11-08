@@ -7,6 +7,7 @@ import { Link, useSearchParams } from 'react-router-dom'
 import { api } from '../api'
 import type { RunDetail, RunSummary } from '../api'
 import ChartPanel from '../components/ChartPanel'
+import FrameworkComparison from './FrameworkComparison'
 import EmptyState from '../components/EmptyState'
 import { Panel, SectionHeader } from '../components/Panel'
 import StatusTag from '../components/StatusTag'
@@ -40,6 +41,7 @@ function epochSeries(detail: RunDetail, metric: (typeof METRICS)[number]): [numb
 
 export default function Compare() {
   const [params, setParams] = useSearchParams()
+  const frameworks = params.get('view') === 'frameworks'
   const ids = (params.get('ids') ?? '').split(',').filter(Boolean)
   const [metric, setMetric] = useState(METRICS[0].key)
   const all = useQuery({ queryKey: ['runs', 'all'], queryFn: () => api.runs() })
@@ -89,6 +91,17 @@ export default function Compare() {
         </div>
       </div>
 
+      <div className="toolbar tab-toolbar">
+        <Segmented value={frameworks ? 'frameworks' : 'runs'} aria-label="对比类型"
+          options={[{ label: '训练运行', value: 'runs' }, { label: '跨框架实验', value: 'frameworks' }]}
+          onChange={(v) => setParams((current) => {
+            const next = new URLSearchParams(current)
+            if (v === 'frameworks') next.set('view', 'frameworks')
+            else next.delete('view')
+            return next
+          })} />
+      </div>
+      {frameworks ? <FrameworkComparison /> : <>
       <div className="compare-picker">
         <Select
           mode="multiple"
@@ -230,6 +243,7 @@ export default function Compare() {
           </section>
         </>
       )}
+      </>}
     </div>
   )
 }

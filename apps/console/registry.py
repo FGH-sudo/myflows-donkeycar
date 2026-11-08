@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import threading
 import time
 from collections import OrderedDict
@@ -38,6 +39,27 @@ RESOURCE_FIELDS = (
 )
 ACTIVE_STATUSES = ("pending", "running", "stopping")
 FINAL_SPLITS = ("val", "test", "train")
+PHASE_FIELDS = ("data_load_ms", "forward_ms", "backward_ms", "optimizer_ms")
+SINGLE_STEP_FIELDS = ("epoch", "step", "loss", "running_loss", "step_time_ms", "step_total_ms", "train_step_ms",
+                      "samples_per_sec", "samples_per_sec_total", *PHASE_FIELDS)
+
+
+def phase_totals(rows):
+    """Sum complete measurements before chart downsampling. Legacy wall times exclude the loader."""
+    totals = dict.fromkeys((*PHASE_FIELDS, "step_total_ms", "count"), 0)
+    for row in rows:
+        if not all(isinstance(row.get(k), (int, float)) and math.isfinite(row[k]) and row[k] >= 0 for k in PHASE_FIELDS):
+            continue
+        wall = row.get("step_total_ms")
+        if wall is None and isinstance(row.get("step_time_ms"), (int, float)):
+            wall = row["data_load_ms"] + row["step_time_ms"]
+        if not isinstance(wall, (int, float)) or not math.isfinite(wall) or wall <= 0:
+            continue
+        for k in PHASE_FIELDS:
+            totals[k] += row[k]
+        totals["step_total_ms"] += wall
+        totals["count"] += 1
+    return totals
 
 
 @dataclass
@@ -415,21 +437,21 @@ class RunRegistry:
             new = rows[start:]
             idx = downsample_indices(len(new), max_points)
             t0 = rows[0]["unix_s"] if rows else None
-            series = columns(new, fields or ("step", "loss", "running_loss", "step_time_ms", "data_load_ms",
-                                             "train_step_ms", "samples_per_sec"), idx)
+            series = columns(new, fields or SINGLE_STEP_FIELDS, idx)
             series["t"] = [new[i]["unix_s"] - t0 for i in idx] if t0 is not None else []
             series["x"] = [new[i]["step"] for i in idx]
-            return {"origin": None, "ranks": {"0": series}, "cursor": {"steps:0": len(rows)}}
+            return {"origin": None, "ranks": {"0": series}, "phase_totals": phase_totals(new),
+                    "cursor": {"steps:0": len(rows)}}
         if data.kind == "single":
             rows = [r for r in data.metrics.rows if r.get("kind") == "step"]
             start = int(cursor.get("steps:0", 0))
             new = rows[start:]
             idx = downsample_indices(len(new), max_points)
-            series = columns(new, fields or ("epoch", "step", "loss", "running_loss", "step_time_ms", "data_load_ms",
-                                             "train_step_ms", "samples_per_sec"), idx)
+            series = columns(new, fields or SINGLE_STEP_FIELDS, idx)
             series["t"] = [new[i]["monotonic_s"] - origin for i in idx] if origin is not None else []
             series["x"] = [new[i]["step"] for i in idx]
-            return {"origin": origin, "ranks": {"0": series}, "cursor": {"steps:0": len(rows)}}
+            return {"origin": origin, "ranks": {"0": series}, "phase_totals": phase_totals(new),
+                    "cursor": {"steps:0": len(rows)}}
         out, new_cursor = {}, {}
         wanted = fields or ("epoch", "step", "loss", "step_wall_s", "data_s", "input_h2d_wall_s", "forward_wall_s", "backward_wall_s",
                             "optimizer_wall_s", "gradient_sync_s", "forward_gpu_s", "backward_gpu_s", "optimizer_gpu_s",
@@ -475,7 +497,8 @@ class RunRegistry:
         rows = data.resources.rows[start:]
         idx = downsample_indices(len(rows), max_points)
         series = columns(rows, ("cpu_utilization_pct", "ram_used_bytes", "gpu_utilization_pct", "gpu_memory_mib",
-                                "gpu_temperature_c", "gpu_power_w"), idx)
+                                "gpu_temperature_c", "gpu_power_w", "gpu_device_memory_mib",
+                                "gpu_device_memory_peak_mib", "process_rss_total_bytes"), idx)
         series["t"] = [rows[i]["monotonic_s"] - origin for i in idx] if origin is not None else []
         pid_to_rank = {str(pid): rank for rank, pid in data.rank_pids.items()}
         rank_rss = {str(rank): [] for rank in data.rank_pids}
