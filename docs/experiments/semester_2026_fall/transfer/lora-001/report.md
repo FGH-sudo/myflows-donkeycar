@@ -14,3 +14,5 @@
 LoRA 固定原权重、偏置和 BN 统计量，更新 layer4 的五个卷积及回归头。缩放系数等于 1。各组均逐字节校验冻结状态。单个种子的结果用于比较参数预算和此次验证表现。
 
 复现命令为 `python -m benchmark.transfer_study lora --out runs/stage3/lora-repro`。本目录 summary.json 和各 attempt 保存参数量、逐轮指标、训练命令与 checkpoint。
+
+从秩 4 的最佳 checkpoint 合并并导出单输入 ONNX。在原验证清单上等间距取 8 帧，用未合并模型与 ONNX Runtime CPU 比较两路回归输出，最大绝对差 8.20×10⁻⁷。逐帧预测和模型校验和在 lora-r4/attempt-01/onnx-parity.json。复现入口为 `python -m benchmark.verify_lora_onnx --run <训练目录>`。

@@ -18,15 +18,15 @@
 | 开工回归 | 通过 | `runs/stage3/baseline-tests.log`，统一 `--scope all`，443 项，549.087 s |
 | S1 监控交付 | 已验收（476 项回归通过） | 9 次开销、两次真实 Nsight、完整三轮趋势、60 次冻结对照及五项自查见[交付报告](experiments/semester_2026_fall/monitoring/README.md) |
 | S2 冻结反向截断 | 已验收（476 项回归通过） | 三架构四后端 40 组数值检查，2,012 组梯度与更新逐字节相同。冻结指纹保持，60 次交替计时见[冻结报告](experiments/semester_2026_fall/monitoring/freeze-001/report.md) |
-| S3 迁移学习组件 | S3.1–S3.5 已接入 | 两个入口各 166 个 checkpoint 数组保持一致。参数组、跨解冻续训、缓存逐步一致性已验证。LoRA 和策略先验待完成 |
+| S3 迁移学习组件 | S3.1–S3.7 已实现并专项验证 | 两个入口各 166 个 checkpoint 数组保持一致。验证了缓存、解冻续训、[LoRA 六组对照与导出](experiments/semester_2026_fall/transfer/lora-001/report.md)和[冻结特征先验](experiments/semester_2026_fall/autopilot/diagnostics-001/report.md) |
 | S4 迁移实验 | 两项正式实验完成 | [分类递进](experiments/semester_2026_fall/transfer/classify-001/report.md)有 24 个试验。[回归对照](experiments/semester_2026_fall/transfer/donkey-001/report.md)有 14 个小规模试验及 21 个全量试验，附逐轮曲线、首层特征和 Grad-CAM |
 | S5 跨框架比较 | 正式协议已完成 | 三个共同种子、两种吞吐和独立质量实验均已完成，后续重大算子优化继续用同一协议复测。[报告](experiments/semester_2026_fall/frameworks/resnet18-001/report.md) |
 | S6 闭环评估 | 探测与两组正式实验完成 | 721 帧标定，三模型 30 次。加入 S4 候选后在同一仿真会话轮换四个模型，共 40 次、24,011 帧。[配对结果与会话差异](experiments/semester_2026_fall/closed_loop/transfer-001/report.md) |
 | S7 CIFAR-10 系统测试 | 全量验收已测 | 32 样本过拟合门槛通过。45,000/5,000 训练与验证、同构 PyTorch 比较、锁定后官方 10,000 张测试均已完成。[报告](experiments/semester_2026_fall/classification/cifar10-001/report.md) |
-| S8 算子与显存优化 | 待开始 | S2 后串行，含所有已纳入拓展项 |
-| S9 测试计划与 CI | CPU 工作流与锁定依赖已入库 | 已建立 Ubuntu 22.04、Python 3.11 的独立无 CUDA 环境，正在实跑。测试计划、GPU 门槛及托管验收待完成 |
-| S10 AutoPilot 增量 | 待开始 | 失败归类、算子诊断、迁移先验 |
-| S11 设计与最终报告 | S11.2 已归档 | formal-full-002 与既有 E2 / M6 报告已整理。设计文档持续同步，控制台与最终报告待完成 |
+| S8 算子与显存优化 | S8.1、S8.2 已实测，S8.5 正在执行 | 梯度延迟分配将 w16 的驻留边界从 37 提高到 46，进一步重算 im2col 达到 93。三个配置和两次 S5 复测见[延迟分配](experiments/semester_2026_fall/operators/lazy-001/report.md)及[重算](experiments/semester_2026_fall/operators/recompute-001/report.md) |
+| S9 测试计划与 CI | 本地 CPU 工作流通过 | Ubuntu 22.04 上收集 495 项，56 项带原因跳过，213.739 s。GPU 门槛和公开托管验收另行记录 |
+| S10 AutoPilot 增量 | 已实现并专项验证 | M4、M6 和新增诊断规则 26 项通过。真实线性探测、配对差与算子指标见[报告示例](experiments/semester_2026_fall/autopilot/diagnostics-001/report.md) |
+| S11 设计与最终报告 | S11.2、S11.3 已验证 | 历史结果已归档。浏览器已检验 v1 与历史运行的阶段占比、硬件资源和跨框架对比，最终报告待整合 |
 
 ## 运行与决策记录
 

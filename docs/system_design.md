@@ -185,6 +185,10 @@ ResNet18、MobileNetV2 与 AlexNet 可读取按 torchvision 名称保存的 NPZ 
 
 ### 训练监控记录（2026-11-05）
 
+运行详情的耗时图按数据、前向、反向、优化器四段展示，阶段占比按共同的阶段采样步累计并除以含读取的总步时。分母在后端降采样之前计算。硬件资源页显示整卡显存与采样峰值。Compare 页可选择 S5 框架归档，分别查看固定张量吞吐、含数据传输的吞吐和逐种子验证曲线。
+
+训练图在首次收到贡献时写入梯度，多条反向路径汇合时继续累加。每个算子反传后释放已消费的中间梯度，Grad-CAM 通过 retain_grad 显式保留特征梯度。设置 MYFLOWS_RECOMPUTE_IM2COL=1 可在反向按原输入重建卷积展开矩阵。默认选择保存矩阵，实测的显存与速度取舍见第三阶段记录。
+
 `python -m apps.train --run-dir <目录>` 默认启动独立资源采样进程，每 0.5 s 写 resources.jsonl；控制台/AutoPilot 已有记录器时通过环境标记避免重复写入。采样进程校验训练 PID 的创建时间，训练异常消失后自动退出。`--monitor off` 关闭训练自身采样，`--monitor-interval-s` 调整间隔。
 
 训练按 v1 写 config、metrics、rank steps 与 result；资源记录也带版本和缺测原因。旧字段继续保留，新字段明确区分整卡显存、CuPy 池和进程 RSS，并补充含数据读取的 step_total_ms 与同分母吞吐。result.environment 保存依赖、设备、驱动、CUDA/NVRTC 与原生源码哈希。格式和时钟定义见 [monitoring_format.md](monitoring_format.md)。
