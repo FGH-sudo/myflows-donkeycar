@@ -8,6 +8,8 @@ import statistics
 import time
 from pathlib import Path
 
+from apps.train.common.outcome import FAILURE_CATEGORIES, categorized_failure
+
 from .files import write_json
 from .planner import confirm_seeds
 from .spec import MODES, SPECIALISTS
@@ -17,6 +19,19 @@ LEADERBOARD_FIELDS = ("rank", "trial_id", "phase", "origin", "lr", "lr_effective
                       "seed", "objective",
                       "val_loss", "throughput_sps", "data_share", "gpu_util_median", "mem_peak_mb", "verdict",
                       "reason", "run_dir")
+
+
+def failure_table(trials):
+    groups = {key: [] for key in FAILURE_CATEGORIES}
+    for trial in trials:
+        for attempt in trial.get("attempts") or []:
+            failure = categorized_failure(attempt.get("failure"))
+            if failure:
+                groups[failure["category"]].append(f"{trial['trial_id']}/{attempt['attempt']} ({failure.get('kind')})")
+    if not any(groups.values()):
+        return []
+    return ["", "### 失败尝试", "", "| 平台 platform | 代码 code | 训练 training | 配置 config |",
+            "| --- | --- | --- | --- |", "| " + " | ".join(", ".join(v) or "—" for v in groups.values()) + " |"]
 
 
 def _fmt(value, digits: int = 5) -> str:
@@ -305,6 +320,7 @@ def write(ev, store, *, llm_events: list[dict] | None = None, specialists_status
                      f"{r['batch']} | {freeze}{r['num_workers']} | {r['seed']} | {_fmt(r['objective'])} | "
                      f"{_fmt(r['throughput_sps'], 4)} | {_pct(r['data_share'])} | "
                      f"{_fmt(r['gpu_util_median'], 3)} | {r['verdict']} | {r['reason'][:80]} |")
+    lines += failure_table(ev.trials)
     lines += ["", "## 5. 诊断链", ""]
     chains = state.get("chains") or []
     if not chains:

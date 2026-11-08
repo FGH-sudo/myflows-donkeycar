@@ -12,7 +12,7 @@ import json
 
 from .agents.base import Proposal
 from .scheduler import budget_fraction
-from .spec import ACCURACY_KEYS, THROUGHPUT_KEYS, baseline_params
+from .spec import ACCURACY_KEYS, THROUGHPUT_KEYS, TRANSFER_DEFAULTS, baseline_params
 from .strategies.candidate_list import CandidateList
 from .strategies.rule_refine import RuleRefine
 
@@ -112,6 +112,19 @@ class Planner:
         seed = self.spec["baseline"]["seeds"][0]
         tried = [t["params"] for t in ev.trials if t.get("phase") in ("baseline", "explore")]
         base = baseline_params(self.spec, seed)
+        prior = next((f for f in findings if f.kind == "transfer_prior" and f.data.get("candidate")), None)
+        initial = None
+        if prior:
+            delta = dict(prior.data["candidate"])
+            for key in ("lr", "batch"):
+                choices = self.spec["space"][key]
+                delta[key] = min(choices, key=lambda v: abs(v-base[key]))
+            candidate = {**self.base_params(ev, seed), **delta}
+            if not any(all(p.get(k, self.spec["fixed"].get(k, TRANSFER_DEFAULTS.get(k))) == v
+                           for k, v in delta.items()) for p in [base, *tried]):
+                initial = Proposal(delta=delta, params=candidate, strategy="transfer_prior", agent="transfer",
+                                   phase="explore", base_trial=prior.trial_id, finding_ids=[prior.id],
+                                   rationale=prior.message, expected=f"配对验证 {ev.metric}")
         if self.spec["strategy"]["name"] == "tpe" and self.tpe is not None:
             if self._open(ev, "explore"):
                 return []
@@ -119,6 +132,8 @@ class Planner:
             if len(done) >= self.spec["strategy"]["max_candidates"]:
                 self._phase(ev, "exploit", "TPE 候选用完")
                 return []
+            if initial and not done:
+                return [initial]
             proposal = self.tpe.ask(ev)
             if proposal is None:
                 self._phase(ev, "exploit", "TPE 没有新的候选")
@@ -127,9 +142,14 @@ class Planner:
             return [proposal]
         if not ev.state.get("explore_proposed"):
             ev.state["explore_proposed"] = True
-            proposals = self.candidates.proposals(self.spec, exclude=[base] + tried)
+            exclude = [base] + tried
+            if initial:
+                exclude.append(initial.params)
+            proposals = self.candidates.proposals(self.spec, exclude=exclude, reserved=int(initial is not None))
             for p in proposals:
                 p.params = {**self.base_params(ev, seed), **p.delta}
+            if initial:
+                proposals.insert(0, initial)
             if proposals:
                 return proposals
         if self._open(ev, "explore"):

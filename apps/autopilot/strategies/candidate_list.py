@@ -23,6 +23,8 @@ def stratified(space: dict, count: int, seed: int, exclude: list[dict] | None = 
     rng = random.Random(seed)
     rng.shuffle(remaining)
     count = min(count, len(remaining))
+    if count <= 0:
+        return []
     if math.comb(len(remaining), count) <= 20000:
         # Small grids: the most balanced subset (spread of per-value counts, summed over keys); ties keep the
         # seeded shuffle order.
@@ -51,9 +53,9 @@ def stratified(space: dict, count: int, seed: int, exclude: list[dict] | None = 
 class CandidateList:
     name = "candidate_list"
 
-    def proposals(self, spec: dict, *, exclude: list[dict]) -> list[Proposal]:
+    def proposals(self, spec: dict, *, exclude: list[dict], reserved: int = 0) -> list[Proposal]:
         strategy = spec["strategy"]
-        points = stratified(spec["space"], int(strategy["max_candidates"]), int(strategy["seed"]), exclude)
+        points = stratified(spec["space"], int(strategy["max_candidates"]) - reserved, int(strategy["seed"]), exclude)
         return [Proposal(delta=dict(point), kind="accuracy", agent="planner", strategy=self.name, phase="explore",
                          rationale=f"分层抽样候选 {i + 1}/{len(points)}：" +
                                    "、".join(f"{k}={v:g}" if isinstance(v, float) else f"{k}={v}"

@@ -40,7 +40,7 @@ SINGLE_ARGS = {
     "arch": str, "pretrained": str, "freeze_stages": int, "image_size": str, "input_norm": str,
     "backbone_lr_mult": float, "stage_lr_mults": str, "compat": str,
     "unfreeze_schedule": str, "freeze_mode": str, "bn_unfreeze": str,
-    "feature_cache": bool,
+    "feature_cache": bool, "transfer_probe": bool, "lora_rank": int, "lora_alpha": float,
 }
 TRANSFER_ARCHS = ("resnet18", "mobilenet_v2", "alexnet")
 MAX_FREEZE_STAGES = 5
@@ -317,6 +317,13 @@ def _check_transfer(out: dict, repo_root: Path) -> None:
     if arch not in TRANSFER_ARCHS:
         raise ValidationError(f"arch 只能是 {'、'.join(TRANSFER_ARCHS)}")
     pretrained = out.get("pretrained")
+    rank = out.get("lora_rank", 0)
+    if rank < 0 or rank and (not pretrained or arch != "resnet18"):
+        raise ValidationError("LoRA 需要预训练 ResNet18 和正整数秩")
+    if "lora_alpha" in out and not rank:
+        raise ValidationError("lora_alpha 需要 lora_rank")
+    if out.get("transfer_probe") and not pretrained:
+        raise ValidationError("transfer_probe 需要预训练骨干")
     if pretrained:
         path = pretrained_path(arch, pretrained, repo_root)
         if not path.is_file():

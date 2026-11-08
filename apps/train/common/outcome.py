@@ -25,6 +25,26 @@ FAILURE_EXIT_CODES = {"nan": EXIT_NONFINITE, "oom": EXIT_OOM, "lock_timeout": EX
                       "error": EXIT_ERROR}
 EXIT_CODE_FAILURES = {code: kind for kind, code in FAILURE_EXIT_CODES.items()}
 
+FAILURE_CATEGORIES = ("platform", "code", "training", "config")
+
+
+def categorized_failure(failure):
+    """Preserve the retry/rollback kind and attach the reporting category, including for v0 records."""
+    if not failure or failure.get("category") in FAILURE_CATEGORIES:
+        return failure
+    kind = failure.get("kind")
+    message = str(failure.get("message") or "").lower()
+    if kind in ("nan", "diverged", "nonfinite"):
+        category = "training"
+    elif kind in ("invalid_args", "config", "validation_error"):
+        category = "config"
+    elif (kind in ("oom", "lock_timeout", "power_limit", "thermal_throttle", "paging", "console_lost", "reboot")
+          or any(marker in message for marker in ("控制台任务记录丢失", "控制台被关闭", "重启", "换页", "功耗墙", "降频"))):
+        category = "platform"
+    else:
+        category = "code"
+    return {**failure, "category": category}
+
 
 class NonFiniteLossError(FloatingPointError):
     """Training produced a NaN/Inf loss; the run stops without overwriting its last healthy checkpoint."""

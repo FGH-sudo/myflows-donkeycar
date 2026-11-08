@@ -217,7 +217,7 @@ _NON_TRAJECTORY_ARGS = {
     "keep_states", "checkpoint_every", "unique_run", "run_id", "export_onnx", "onnx_out", "no_tensorboard",
     "save_png_plots", "summary_once", "check_shape", "check_content", "num_workers", "gpu_lock_timeout",
     "phase_timing_every", "sync_timeout", "worker_memory_mb", "epochs", "lr", "log_dir", "logdir", "plot_prefix",
-    "split_out", "monitor", "monitor_interval_s", "nvtx", "nvtx_nodes", "profile_steps", "initial_validation",
+    "split_out", "monitor", "monitor_interval_s", "nvtx", "nvtx_nodes", "profile_steps", "initial_validation", "transfer_probe",
 }
 
 
@@ -348,6 +348,7 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--bn-unfreeze", choices=("follow", "keep-frozen"), default="follow")
     ap.add_argument("--feature-cache", action="store_true", help="缓存完全冻结且无随机增强的骨干输出，仅训练任务头")
     ap.add_argument("--lora-rank", type=int, default=0, help="在预训练 ResNet18 的 layer4 与回归头训练低秩更新")
+    ap.add_argument("--transfer-probe", action="store_true", help="仅在训练分区内测量冻结特征的线性探测分数")
     ap.add_argument("--lora-alpha", type=float, help="LoRA 缩放系数的分子，默认等于秩")
     ap.add_argument("--initial-validation", action="store_true", help="在首个训练 step 前使用同一验证集评估初始 MAE")
     ap.add_argument("--graph-opt", action="store_true", help="打开构图期优化(可能略快)")
@@ -1073,6 +1074,13 @@ def _train_rank(plan: TrainPlan, rank, sync, device, profiler) -> dict:
     tb_logdir = Path(plan.tb_logdir)
     run_dir = Path(plan.run_dir) if plan.run_dir else None
     evaluation_x, evaluation_logits, evaluation_graph = x_var, logits, graph
+    if args.transfer_probe:
+        if not transfer or not args.pretrained:
+            raise SystemExit("--transfer-probe 需要预训练骨干")
+        if not plan.resume_state and not plan.resume_found:
+            from apps.train.transfer_probe import linear_probe
+
+            transfer["probe"] = linear_probe(model, x_var, plan.dataset, _load_training_sample)
     cached_train = None
     cache_info = None
     if args.feature_cache:
@@ -1609,7 +1617,7 @@ def _result(args, plan: TrainPlan | None, summary: dict, *, started_unix_s: floa
     status = "failed" if failure else ("stopped" if summary.get("stopped_by_file") else "succeeded")
     at_best, final = summary.get("val_angle_mae_at_best"), summary.get("val_angle_mae")
     result = {
-        "status": status, "exit_code": exit_code, "failure": failure, "task": "donkey_resnet18_single",
+        "status": status, "exit_code": exit_code, "failure": outcome.categorized_failure(failure), "task": "donkey_resnet18_single",
         "config": {key: getattr(args, key) for key in ("lr", "batch", "num_workers", "epochs", "max_samples",
                                                        "seed", "dtype", "device", "conv_backend", "distributed",
                                                        "workers", "transport", "base_width", "stem", "weight_decay",
@@ -1694,7 +1702,7 @@ def main() -> None:
     except SystemExit as exc:
         if exc.code in (None, 0):
             raise
-        failure = {"kind": "error", "message": str(exc.code)}
+        failure = {"kind": "error", "category": "config", "message": str(exc.code)}
         exit_code = exc.code if isinstance(exc.code, int) else outcome.EXIT_ERROR
         if not isinstance(exc.code, int):
             print(exc.code)
@@ -1702,6 +1710,8 @@ def main() -> None:
         traceback.print_exc()
         kind = outcome.classify(exc)
         failure = {"kind": kind, "message": f"{type(exc).__name__}: {exc}"}
+        if plan is None and isinstance(exc, ValueError):
+            failure["category"] = "config"
         exit_code = outcome.FAILURE_EXIT_CODES[kind]
     finally:
         if monitor is not None:

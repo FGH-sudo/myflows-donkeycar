@@ -13,6 +13,7 @@ check that lets ``freeze_stages`` into the search space). Rules:
 
 from __future__ import annotations
 
+import math
 import statistics
 from pathlib import Path
 
@@ -22,6 +23,25 @@ from .base import Finding, Proposal, Specialist, cite
 ROOT = Path(__file__).resolve().parents[3]
 ARCHS = ("resnet18", "mobilenet_v2", "alexnet")
 OVERFIT_RISE = 0.10  # final val loss this much above the best epoch's: the run over-fitted
+
+
+def transfer_prior(probe, space, depth=5):
+    n, score = probe.get("train_samples"), probe.get("score")
+    if not isinstance(n, int) or n < 1 or not isinstance(score, (int, float)) or not math.isfinite(score):
+        return None
+    small, similar = n <= 3000, score >= .5
+    if small and similar:
+        level, mult, advice = depth, .1, "冻结全部骨干，只训练任务头"
+    elif small:
+        level, mult, advice = max(1, depth//2), .1, "冻结浅层并微调深层"
+    elif similar:
+        level, mult, advice = 0, .1, "解冻更多骨干层并降低骨干学习率"
+    else:
+        level, mult, advice = 0, 1., "增加同结构的从零训练对照，预训练组尝试全量微调"
+    candidate = {k: min(space[k], key=lambda v: (abs(v-target), v))
+                 for k, target in (("freeze_stages", level), ("backbone_lr_mult", mult)) if space.get(k)}
+    return {"small": small, "similar": similar, "train_samples": n, "score": score,
+            "target_level": level, "target_mult": mult, "candidate": candidate, "advice": advice}
 
 
 def freeze_level(trial: dict, evidence) -> int:
@@ -82,8 +102,31 @@ class TransferLearning(Specialist):
 
     # ---- diagnose ---------------------------------------------------------------------------------
     def diagnose(self, evidence) -> list[Finding]:
+        from .transfer_evidence import matching_records, paired_estimates
+
         findings = []
         with_transfer = [t for t in evidence.finished() if evidence.summary(t).get("transfer")]
+        for trial in evidence.valid():
+            info = evidence.summary(trial).get("transfer") or {}
+            prior = transfer_prior(info.get("probe") or {}, evidence.spec.get("space") or {})
+            if prior:
+                findings.append(Finding(
+                    id=f"{self.name}:prior:{trial['trial_id']}", agent=self.name, kind="transfer_prior",
+                    trial_id=trial["trial_id"], severity="action", data=prior,
+                    message=f"训练分区有 {prior['train_samples']} 帧，冻结特征线性探测得分 {prior['score']:.3f}。"
+                            f"{prior['advice']}。初始候选为 {prior['candidate']}",
+                    evidence=[cite(trial, evidence.summary(trial), "probe.score", prior["score"], source="transfer")]))
+                break
+        records = matching_records(self.repo_root, evidence)
+        for pair in paired_estimates(records) if records else ():
+            if pair["negative"]:
+                findings.append(Finding(
+                    id=f"{self.name}:negative:{pair['id']}", agent=self.name, kind="negative_transfer",
+                    severity="warning", data=pair,
+                    message=f"同预算配对种子 {pair['seeds']} 中，冻结 {pair['treatment'][1]} 段的预训练组最终验证 MAE "
+                            f"平均高 {pair['mean']:.5f}，95% 区间 [{pair['low']:.5f}, {pair['high']:.5f}]。"
+                            "检测到负迁移，建议减少冻结或采用从零训练。",
+                    evidence=[{"file": p, "metric": "val_angle_mae_final"} for p in pair["sources"]]))
         if with_transfer:
             first = with_transfer[0]
             info = evidence.summary(first)["transfer"]
@@ -186,6 +229,6 @@ class TransferLearning(Specialist):
                 lines.append(f"| {r['freeze_stages']} | {', '.join(r['frozen'] or []) or '—'} | "
                              f"{r['trainable_values'] or 0:,} | {r['n']} | {r['mean']:.5f} | {r['best']:.5f} | {step} |")
         for finding in findings:
-            if finding.get("kind") == "freeze_comparison":
+            if finding.get("kind") in ("freeze_comparison", "transfer_prior", "negative_transfer"):
                 lines += ["", f"- 结论：{finding.get('message')}"]
         return "\n".join(lines + [""])

@@ -149,7 +149,7 @@ def summarize_attempt(run_dir: Path) -> dict:
             "success_rate": report.get("success_rate"), "missing": len(report.get("missing") or []),
             "replaced_head": [r.get("source") for r in report.get("replaced_head") or []],
             "source_sha256": (report.get("source") or {}).get("source_sha256"), "npz_sha256": report.get("npz_sha256"),
-            "input_norm": transfer.get("input_norm")}
+            "input_norm": transfer.get("input_norm"), "probe": transfer.get("probe")}
         out["sources"]["transfer"] = "result.json#transfer"
     return out
 

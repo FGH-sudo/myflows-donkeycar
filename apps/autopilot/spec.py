@@ -315,6 +315,9 @@ def resolve_args(spec: dict, params: dict, *, check_split: bool = True) -> dict:
     """apps.train arguments of one trial: fixed settings, trial parameters, then the trial defaults."""
     fixed = {k: v for k, v in spec["fixed"].items() if k not in SPLIT_KEYS and k != "split_file"}
     args = {**TRIAL_DEFAULTS, **fixed, **params}
+    if (fixed.get("pretrained") and "transfer" in spec.get("specialists", ())
+            and params == baseline_params(spec, spec["baseline"]["seeds"][0])):
+        args["transfer_probe"] = True
     for key, default in TRANSFER_DEFAULTS.items():
         if args.get(key) == default:  # same run as leaving it out: keep fingerprints equal to the baseline's
             args.pop(key)

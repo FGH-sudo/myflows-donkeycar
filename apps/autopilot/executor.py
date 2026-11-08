@@ -8,6 +8,7 @@ from pathlib import Path
 
 from apps.common.gpu_lock import acquired_unix_s
 from apps.console.presets import TRAIN_MODULE, single_job, validate_single
+from apps.train.common.outcome import categorized_failure
 
 from .files import read_json, write_json
 from .provenance import code_state
@@ -97,6 +98,7 @@ class Executor:
                 store.event("online_stop", trial_id=trial["trial_id"], attempt=attempt["attempt"], **stop.to_dict())
         result = read_json(run_dir / "result.json")
         attempt.update(self._classify(job, result, online_stop, cancelled))
+        attempt["failure"] = categorized_failure(attempt.get("failure"))
         attempt["finished_unix_s"] = time.time()
         acquired = acquired_unix_s(run_dir)
         timing = (result or {}).get("timing") or {}
@@ -116,7 +118,7 @@ class Executor:
         if cancelled:
             return {"status": "cancelled", "failure": None, "note": "campaign 停止"}
         if job is None:
-            return {"status": "failed", "failure": {"kind": "crash", "message": "控制台任务记录丢失"}}
+            return {"status": "failed", "failure": {"kind": "crash", "category": "platform", "message": "控制台任务记录丢失"}}
         if result is not None and result.get("failure"):
             failure = dict(result["failure"])
             failure.setdefault("source", "result")
@@ -128,4 +130,6 @@ class Executor:
         if job["status"] == "cancelled":
             return {"status": "cancelled", "failure": None, "note": job.get("error") or "任务被取消"}
         message = job.get("error") or f"退出码 {job.get('returncode')}"
+        if job.get("returncode") == 2:
+            return {"status": "failed", "failure": {"kind": "crash", "category": "config", "message": message}}
         return {"status": "failed", "failure": {"kind": "crash", "message": f"训练进程异常结束且没有 result.json：{message}"}}

@@ -13,6 +13,7 @@ Kernels are compared on ``sm__cycles_elapsed.max`` when the Nsight Compute rows 
 
 from __future__ import annotations
 
+import math
 import sqlite3
 import time
 from pathlib import Path
@@ -76,6 +77,19 @@ def kernel_metrics(results: dict) -> tuple[str | None, list[dict]]:
                      "memory_throughput_pct": r.get("gpu__compute_memory_throughput.avg.pct_of_peak_sustained_elapsed"),
                      "bank_conflicts": r.get("l1tex__data_bank_conflicts_pipe_lsu_mem_shared_op_ld.sum")}
                     for r in ranked]
+
+
+def classify_kernel(kernel):
+    sm, memory = kernel.get("sm_throughput_pct"), kernel.get("memory_throughput_pct")
+    if not all(isinstance(v, (int, float)) and math.isfinite(v) and v >= 0 for v in (sm, memory)):
+        return "缺测", "补采计算与访存吞吐"
+    if max(sm, memory) < 50:
+        return "两项利用率均低", "测量占用率、线程分化及 launch 间隙"
+    if abs(sm - memory) < 10:
+        return "两项接近", "补查内存层级、指令吞吐和等待原因"
+    if memory > sm:
+        return "访存受限", "依次检查合并访问、分块复用和私有化，再复查占用率与线程分化"
+    return "计算受限", "先检查占用率和线程分化。算术吞吐饱和时比较替代算法并重测 FP64 误差"
 
 
 def kernel_hotspots(path: Path, top: int = HOTSPOTS) -> dict | None:
@@ -143,6 +157,18 @@ class OperatorOptimization(Specialist):
     def diagnose(self, evidence) -> list[Finding]:
         findings = []
         results = self._results()
+        rank_metric, kernels = kernel_metrics(results)
+        if kernels:
+            source = _rel(self.repo_root, self.matmul_path)
+            rows = []
+            for k in kernels[:HOTSPOTS]:
+                bound, advice = classify_kernel(k)
+                rows.append({**k, "bound": bound, "advice": advice})
+            findings.append(Finding(
+                id=f"{self.name}:kernel_limits", agent=self.name, kind="kernel_limits",
+                message=f"按 {rank_metric} 对前 {len(rows)} 个已采集的 kernel 作计算与访存诊断",
+                evidence=[{"file": source, "metric": rank_metric, "value": rows[0]["value"]}],
+                data={"rows": rows, "source": source, "rank_metric": rank_metric}))
         table = lecture_table(results)
         if table:
             source = _rel(self.repo_root, self.matmul_path)
@@ -159,9 +185,9 @@ class OperatorOptimization(Specialist):
             lecture = [at[name] for name in LECTURE_KERNELS if name in at and at[name]["speedup"]]
             if register and register.get("speedup") and lecture:
                 fastest = max(lecture, key=lambda r: r["speedup"])
-                if fastest["speedup"] < MEMORY_BOUND_SHARE * register["speedup"]:
-                    metric, kernels = kernel_metrics(results)
-                    by_impl = {k["implementation"]: k for k in kernels}
+                by_impl = {k["implementation"]: k for k in kernels}
+                if (fastest["speedup"] < MEMORY_BOUND_SHARE * register["speedup"] and
+                        classify_kernel(by_impl.get(fastest["implementation"], {}))[0] == "访存受限"):
                     detail = ""
                     if fastest["implementation"] in by_impl and "register-fp32" in by_impl:
                         a, b = by_impl[fastest["implementation"]], by_impl["register-fp32"]
@@ -245,8 +271,9 @@ class OperatorOptimization(Specialist):
     def report_section(self, evidence, findings: list[dict]) -> str | None:
         table = next((f["data"] for f in findings if f.get("kind") == "operator_table"), None)
         hot = next((f["data"] for f in findings if f.get("kind") == "kernel_hotspots"), None)
+        limits = next((f["data"] for f in findings if f.get("kind") == "kernel_limits"), None)
         lines = ["### Operator Optimization：算子对比（课件第 9 页）", ""]
-        if table is None and hot is None:
+        if table is None and hot is None and limits is None:
             return "\n".join(lines + [f"- {self.MISSING}", ""])
         if table:
             lines += [f"来源：`{table['source']}`。GPU 只计 kernel（CUDA event），加速比 = NumPy 时间 / 该实现时间，"
@@ -267,6 +294,15 @@ class OperatorOptimization(Specialist):
                           for k in sorted(kernels, key=lambda k: k["value"]) if k["implementation"].endswith("fp32")
                           or k["implementation"] == "cublas"]
                 lines.append("")
+        if limits:
+            lines += ["### 热点的计算与访存瓶颈", "",
+                      f"来源 `{limits['source']}`，按 `{limits['rank_metric']}` 降序。吞吐为持续峰值百分比。"
+                      "至少一项达到 50%，且两项相差至少 10 个百分点时标出约束方向。各建议需独立复测。",
+                      "", "| kernel | SM % | 访存 % | 判断 | 下一项测量 |", "| --- | ---: | ---: | --- | --- |"]
+            for k in limits["rows"]:
+                lines.append(f"| {k['kernel']} | {_fmt(k['sm_throughput_pct'], '.1f')} | "
+                             f"{_fmt(k['memory_throughput_pct'], '.1f')} | {k['bound']} | {k['advice']} |")
+            lines.append("")
         if hot:
             lines += [f"Nsight Systems kernel 热点（{hot['captured']}，`{hot['path']}`，合计 {hot['total_ms']:.1f} ms）：", "",
                       "| kernel | 次数 | 合计 ms | 占比 |", "|---|---|---|---|"]

@@ -21,6 +21,7 @@ from pathlib import Path
 import psutil
 
 from apps.console.presets import TRAIN_MODULE
+from apps.train.common.outcome import categorized_failure
 
 from . import reporter, rollback
 from .agents import build_specialists
@@ -669,6 +670,8 @@ class AutoPilotService:
             retries_left = spec["budget"]["max_retries"] - sum(
                 1 for a in trial["attempts"] if a.get("cause") == "retry")
             paging = self._paging_share(attempt) if failure.get("kind") == "hang" else None
+            if paging is not None:
+                failure.update(category="platform", gpu_memory_share=paging)
             if paging is not None and retries_left > 0:
                 # A hang with the GPU memory full is WDDM paging: the same configuration would hang again.
                 store.event("retry_skipped", trial_id=trial["trial_id"], attempt=attempt["attempt"],
@@ -715,7 +718,7 @@ class AutoPilotService:
             "paths": {"run_dir": str(run_dir), "result": str(run_dir / "result.json"),
                       "metrics": str(run_dir / "metrics.jsonl"), "resources": str(run_dir / "resources.jsonl"),
                       "log": str(run_dir / "train.log")},
-            "failure": attempt.get("failure"), "job_id": attempt.get("job_id"),
+            "failure": categorized_failure(attempt.get("failure")), "job_id": attempt.get("job_id"),
         }
         write_json(run_dir / "verdict.json", verdict)
         write_json(run_dir / "trial_result.json", trial_result)
