@@ -73,6 +73,7 @@ from apps.train.common.checkpoints import (
 from apps.train.common.training_control import BestScore, EarlyStopping
 from apps.train.common.logging import TeeLogger
 from MyFlows.core.device import asnumpy, cuda_available, set_device, xp
+from MyFlows.ops.precision import BACKENDS as PRECISION_BACKENDS, MIXED
 from MyFlows.data.pipeline import MultiprocessDataLoader
 from MyFlows.distributed.shards import split_global_batch
 from MyFlows.train.regularization import RegularizationConfig, apply_regularization
@@ -99,6 +100,8 @@ def _resolve_conv_backend(requested: str, device: str, dtype) -> str:
     不改用 CuPy；原生算子只支持 float32，所以 float64 与 CPU 交给算子按设备选 CuPy/NumPy。"""
     if requested == "auto":
         requested = "cuda_native_register" if device == "cuda" and dtype == np.float32 else "auto"
+    if requested in PRECISION_BACKENDS and (device != "cuda" or dtype != np.float32):
+        raise SystemExit("实验精度后端需要 CUDA 和 float32 主参数")
     if requested.startswith("cuda_native"):
         from MyFlows.ops.cuda_native import ensure_library
 
@@ -356,7 +359,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--conv-backend",
         type=str,
         default="auto",
-        choices=("auto", "numpy", "cupy", "cuda_native_register", "cuda_native_cublas"),
+        choices=("auto", "numpy", "cupy", "cuda_native_register", "cuda_native_cublas", *PRECISION_BACKENDS, "winograd"),
         help="卷积/池化后端；cuda_native_register / cuda_native_cublas 是原生库的两个 GEMM 引擎（寄存器分块 kernel / cuBLAS），"
         "原生库缺失时先自动编译；auto 在 CUDA + float32 时用 cuda_native_register，否则按设备用 CuPy/NumPy",
     )
@@ -651,6 +654,8 @@ def load_rows(args: argparse.Namespace, data_dir: Path) -> tuple[list, dict | No
 
 def prepare(args: argparse.Namespace) -> tuple[TrainPlan, TeeLogger]:
     """主进程：解析路径、读数据索引与划分、确定输入尺寸与 Worker 分片，返回训练计划与日志。"""
+    if args.conv_backend in MIXED and args.distributed != "none":
+        raise SystemExit("动态 loss scaling 的混合精度实验使用单进程")
     data_dir = (ROOT / args.data).resolve()
     if not data_dir.is_dir():
         raise SystemExit(f"数据目录不存在: {data_dir}")
@@ -1331,6 +1336,8 @@ def _train_rank(plan: TrainPlan, rank, sync, device, profiler) -> dict:
                 # 不保存断点：最近一次断点仍是健康状态，回滚从那里继续
                 raise outcome.NonFiniteLossError(global_step + 1, ep + 1, step_loss)
             phase_row = phases.row()
+            if opt.loss_scaler is not None:
+                phase_row.update(loss_scale=opt.loss_scaler.scale, overflow_skips=opt.loss_scaler.skipped_steps)
             if sync is not None and rank_steps is not None:
                 ended = time.perf_counter()
                 rank_steps.write(json.dumps(record({
@@ -1505,6 +1512,7 @@ def _train_rank(plan: TrainPlan, rank, sync, device, profiler) -> dict:
             "val_angle_mae_at_best": at_best.get("val_angle_mae") if at_best else None,
             "epochs": validation_history, "initial_validation": initial_validation,
             "memory": memory, "device": device, "transfer": transfer,
+            "loss_scaling": opt.loss_scaler.state_dict() if opt.loss_scaler else None,
             "conv_backend": ("numpy" if device == "cpu" else "cupy") if conv_backend == "auto" else conv_backend}
 
 
@@ -1640,6 +1648,7 @@ def _result(args, plan: TrainPlan | None, summary: dict, *, started_unix_s: floa
         "epochs_completed": summary.get("epochs_completed"),
         "stopped_early": bool(summary.get("stopped_early")), "stopped_by_file": bool(summary.get("stopped_by_file")),
         "transfer": summary.get("transfer"),
+        "loss_scaling": summary.get("loss_scaling"),
         "backend": {"requested": args.conv_backend, "actual": summary.get("conv_backend"),
                     "device": summary.get("device"), "dtype": args.dtype},
         "timing": {"started_unix_s": started_unix_s, "lock_wait_s": lock.wait_s if lock is not None else None,

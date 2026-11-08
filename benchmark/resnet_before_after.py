@@ -68,6 +68,8 @@ def _build(ms, args, device, dtype, backend):
     set_device(device)
     model = ms.ResNet18(in_channels=3, output_dim=2, stem=args.stem, base_width=args.width, name="resnet18",
                         initializer=make_initializer("kaiming_normal", seed=0))
+    if backend in ("cuda_tf32", "cuda_fp16", "cuda_bf16"):
+        model.linear_backend = backend
     forced = {"float32": np.float32, "float64": np.float64}.get(dtype)
     for layer in model.sub_layers:
         if isinstance(layer, Conv2D) and backend != "default":
@@ -123,7 +125,18 @@ def worker_grads(args):
     x.value, y.value = xp.asarray(fixture["x"]), xp.asarray(fixture["y"])
     model.train(True)
     graph.forward()
-    graph.backward()
+    if args.backend in ("cuda_fp16", "cuda_bf16"):
+        from MyFlows.train.loss_scaling import DynamicLossScaler
+        scaler = DynamicLossScaler()
+        while True:
+            graph.backward(loss_scale=scaler.scale)
+            if scaler.unscale(p.grad for p in model.params):
+                break
+            if scaler.scale == 1.:
+                raise FloatingPointError("nonfinite gradient at unit loss scale")
+            scaler.finish()
+    else:
+        graph.backward()
     np.savez(args.output, loss=float(loss.value),
              **{f"grad_{i}": asnumpy(p.grad).astype(np.float64) for i, p in enumerate(model.params)})
 
