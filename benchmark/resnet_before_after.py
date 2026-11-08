@@ -143,6 +143,10 @@ def worker_relu(args):
             node.value = xp.asarray(fixture[f"param_{i}"].astype(node.value.dtype))
         x.value, y.value = (xp.asarray(fixture[k].astype(x.value.dtype)) for k in ("x", "y"))
         model.train(True)
+        if getattr(args, "graph_opt", False):
+            # Inspect the logical pre-activation values, including a BN/Add hidden by execution fusion.
+            graph.retain_grad(*(n.parents[0] for n in graph.sorted_nodes
+                                if isinstance(n, ReLU) and n.parents[0].parents))
         graph.forward()
         return [asnumpy(n.parents[0].value).astype(np.float64) for n in graph.sorted_nodes if isinstance(n, ReLU)]
 

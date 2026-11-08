@@ -17,7 +17,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class MyFlowsRun:
-    def __init__(self, initial, batch):
+    def __init__(self, initial, batch, graph_opt=False):
         import MyFlows as ms
         from MyFlows.core.device import _lazy_cupy, asnumpy, set_device
         from MyFlows.utils.pretrained import build_model, load_torchvision_weights
@@ -32,11 +32,11 @@ class MyFlowsRun:
         self.y = ms.Variable(np.zeros((batch, 2), np.float32), requires_grad=False)
         self.logits = self.model(self.x)
         self.loss = ms.MSELoss(self.logits, self.y)
-        self.graph = ms.Graph(self.loss)
+        self.graph = ms.Graph(self.loss, optimize=graph_opt)
         self.opt = ms.Adam(self.graph, learning_rate=.001)
         self.peak_used = self.peak_total = 0
         self.info = {"framework": "MyFlows", "conv_backend": "cuda_native_register", "cupy": self.cp.__version__,
-                     "tf32": False, "dtype": "float32"}
+                     "tf32": False, "dtype": "float32", "graph_opt": graph_opt}
 
     def device_batch(self, x, y):
         return self.cp.asarray(x), self.cp.asarray(y)
@@ -202,7 +202,8 @@ def main():
     with np.load(seed_dir / "batches.npz", allow_pickle=False) as saved:
         training, val, timing = saved["training"], saved["val"], saved["timing"]
     def build():
-        return MyFlowsRun(initial, batch) if framework == "myflows" else TorchRun(initial, batch, autotuned=framework == "torch-autotuned")
+        return (MyFlowsRun(initial, batch, config.get("graph_opt", False)) if framework == "myflows"
+                else TorchRun(initial, batch, autotuned=framework == "torch-autotuned"))
     init_start = time.perf_counter()
     runner = build()
     timer = Timer(runner)

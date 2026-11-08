@@ -87,7 +87,12 @@ def worker(args):
     after = wddm_memory() if args.capacity else None
     if args.capacity and not (idle and after):
         raise RuntimeError("the WDDM nonlocal usage counter is required to certify batch capacity")
+    from MyFlows.core.node import Variable
+    activations = {node.value.data.ptr: node.value.nbytes for node in graph.nodes
+                   if not isinstance(node, Variable) and node.value is not None}
     return {"median_ms": statistics.median(times), "steps_ms": times, "pool_mib": max(peaks),
+            "live_activation_mib": sum(activations.values()) / 2**20,
+            "bn_activation_fusions": (getattr(graph, "_opt_stats", None) or {}).get("bn_activation_fusions", 0),
             "pool_used_at_step_end_mib": max(used), "power": powers, "loss": value,
             "idle": idle, "wddm": after,
             "resident": after["Non Local Usage"] <= idle["Non Local Usage"] + 1. if after else None}
@@ -189,6 +194,12 @@ def study(args):
         lines.append("| " + " | ".join((name, *times, *pools, " / ".join(caps))) + " |")
     if args.capacity_only:
         lines = ["# WDDM 显存驻留边界复测"]
+    if args.graph_opt and rows:
+        lines += ["", "| 配置 | 融合数 | 旧中间输出 MiB | 新中间输出 MiB |", "| --- | ---: | ---: | ---: |"]
+        for name, *_ in configs:
+            before, after = [next(r for r in rows if r["name"] == name and r["side"] == side) for side in trees]
+            lines.append(f"| {name} | {after['bn_activation_fusions']} | {before['live_activation_mib']:.2f} | "
+                         f"{after['live_activation_mib']:.2f} |")
     if capacity:
         lines += ["", "另用 cifar stem、w16 逐步增大 batch，在首次出现非本地显存后按整数二分。"
                   "容量试验先上传固定设备批次并同步，再记录 WDDM 的进程 Local Usage 和 Non Local Usage。"

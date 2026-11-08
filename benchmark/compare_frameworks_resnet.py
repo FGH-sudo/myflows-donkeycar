@@ -88,6 +88,7 @@ def prepare(directory, args):
     write(directory / "split.json", split)
     write(directory / "samples.json", [[str(row[0]).replace("\\", "/"), float(row[1]), float(row[2])] for row in rows])
     protocol = {"schema_version": 1, "samples": len(rows), "train": len(split["train"]), "val": len(split["val"]),
+                "graph_opt": getattr(args, "graph_opt", False),
                 "block_size": block, "gap": min(5, block // 5), "split_seed": 42, "batch": args.batch,
                 "epochs": args.epochs, "warmup": args.warmup, "timed_steps": args.timed_steps, "seeds": args.seeds,
                 "input": "RGB FP32 NCHW [0,1], OpenCV INTER_LINEAR, 120x160", "architecture": "torchvision ResNet18, 2 outputs",
@@ -251,7 +252,8 @@ def report(out, protocol, results, alignments):
               f"共同图像预处理耗时 {protocol['data_prepare_s']:.2f} s。summary.json SHA-256 为 `{sha256(out/'summary.json')}`。", "",
               f"复现命令为 `python -m benchmark.compare_frameworks_resnet --out runs/stage3/frameworks-repro --samples {protocol['samples']} "
               f"--batch {protocol['batch']} --val-size {protocol['val']} --epochs {protocol['epochs']} --seeds {','.join(map(str,protocol['seeds']))} "
-              f"--timed-steps {protocol['timed_steps']} --warmup {protocol['warmup']}`。"]
+              f"--timed-steps {protocol['timed_steps']} --warmup {protocol['warmup']}"
+              + (" --graph-opt" if protocol.get("graph_opt") else "") + "`。"]
     (out / "report.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
@@ -266,6 +268,7 @@ def main(argv=None):
     parser.add_argument("--samples", type=int, default=2000)
     parser.add_argument("--val-size", type=int, default=200)
     parser.add_argument("--batch", type=int, default=8)
+    parser.add_argument("--graph-opt", action="store_true", help="measure MyFlows graph fusion on the shared protocol")
     parser.add_argument("--epochs", type=int, default=3)
     parser.add_argument("--seeds", default="1,2,3")
     parser.add_argument("--timed-steps", type=int, default=80)
