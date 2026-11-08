@@ -8,6 +8,7 @@ from pathlib import Path
 import statistics
 import subprocess
 import sys
+import tempfile
 import time
 
 import numpy as np
@@ -19,10 +20,10 @@ CONFIGS = (("cifar-w64-b2", "cifar", 64, 2), ("cifar-w16-b16", "cifar", 16, 16),
            ("imagenet-w16-b128", "imagenet", 16, 128))
 
 
-def wddm_memory():
+def wddm_memory(pid=None):
     if os.name != "nt":
         return None
-    prefix = rf"\GPU Process Memory(pid_{os.getpid()}_*)"
+    prefix = rf"\GPU Process Memory(pid_{pid or os.getpid()}_*)"
     names = ("Local Usage", "Non Local Usage")
     proc = subprocess.run(["typeperf", *(prefix + "\\" + name for name in names), "-sc", "1"],
                           capture_output=True, encoding="mbcs", errors="replace", timeout=15)
@@ -30,8 +31,9 @@ def wddm_memory():
     if proc.returncode or len(rows) < 2:
         return None
     headers, values = rows[:2]
-    return {name: sum(float(v) for k, v in zip(headers[1:], values[1:]) if k.endswith("\\" + name)) / 2**20
-            for name in names}
+    counters = {name: [float(v) for k, v in zip(headers[1:], values[1:]) if k.endswith("\\" + name)]
+                for name in names}
+    return {name: sum(v)/2**20 for name, v in counters.items()} if all(counters.values()) else None
 
 
 def worker(args):
@@ -40,15 +42,20 @@ def worker(args):
     from MyFlows.monitoring.gpu import GpuSampler
 
     model, x, y, loss, graph = _build(ms, args, "cuda", "float32", "cuda_native_register")
-    if args.graph_opt:
-        graph = ms.Graph(loss, optimize=True)
     model.train()
     opt = ms.Adam(graph, learning_rate=.001)
     pool = xp.get_default_memory_pool()
     rng = np.random.default_rng(51)
     xb = rng.normal(size=x.value.shape).astype(np.float32)
     yb = rng.normal(size=y.value.shape).astype(np.float32)
+    if args.capacity:
+        # Upload before the idle reading. Windows accounts CuPy's pinned transfer buffers as nonlocal memory.
+        xb, yb = xp.asarray(xb), xp.asarray(yb)
+        x.value, y.value = xb, yb
+        xp.cuda.Device().synchronize()
     idle = wddm_memory() if args.capacity else None
+    if idle and args.ready_file:
+        args.ready_file.write_text(json.dumps({"pid": os.getpid(), "idle": idle}), encoding="utf-8")
     times, powers, peaks, used = [], [], [], []
     with GpuSampler() as sampler:
         for step in range(args.warmup + args.steps):
@@ -94,10 +101,39 @@ def run_case(tree, args, stem, width, batch, capacity=False):
         cmd.append("--capacity")
     if args.graph_opt:
         cmd.append("--graph-opt")
-    run = subprocess.run(cmd, cwd=ROOT, capture_output=True, encoding="utf-8", errors="replace", timeout=240)
-    if run.returncode:
-        raise RuntimeError(run.stdout[-1000:] + run.stderr[-2000:])
-    return json.loads(run.stdout.strip().splitlines()[-1])
+    from apps.console.jobs import kill_tree
+
+    with tempfile.TemporaryDirectory() as tmp:
+        ready = Path(tmp)/"ready.json"
+        if capacity:
+            cmd += ["--ready-file", str(ready)]
+        proc = subprocess.Popen(cmd, cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                encoding="utf-8", errors="replace")
+        start = time.monotonic()
+        try:
+            while True:
+                try:
+                    output, _ = proc.communicate(timeout=5 if capacity else 240)
+                    break
+                except subprocess.TimeoutExpired:
+                    if time.monotonic() - start >= 240:
+                        raise
+                    if ready.is_file():
+                        try:
+                            state = json.loads(ready.read_text(encoding="utf-8"))
+                        except ValueError:
+                            continue
+                        counter = wddm_memory(state["pid"])
+                        if counter and counter["Non Local Usage"] > state["idle"]["Non Local Usage"] + 1.:
+                            return {"resident": False, "reason": "nonlocal growth during step", "idle": state["idle"],
+                                    "wddm": counter, "elapsed_s": time.monotonic()-start}
+            if proc.returncode:
+                raise RuntimeError(output[-2600:])
+            return json.loads(output.strip().splitlines()[-1])
+        finally:
+            if proc.poll() is None:
+                kill_tree(proc.pid)
+            proc.communicate()
 
 
 def study(args):
@@ -114,7 +150,8 @@ def study(args):
     write(out/"manifest.json", manifest)
     rows, capacity = [], []
     with GpuLock(label="ResNet memory comparison", run_dir=out):
-        for name, stem, width, batch in CONFIGS:
+        configs = () if args.capacity_only else CONFIGS
+        for name, stem, width, batch in configs:
             for repeat in range(args.rounds):
                 for side, tree in trees.items():
                     result = run_case(tree, args, stem, width, batch)
@@ -140,7 +177,7 @@ def study(args):
              "每个进程的步时取中位数，下表列进程间中位数与样本标准差。CuPy 池列为单次进程申请峰值的中位数。", "",
              "| 配置 | 旧步时 ms | 新步时 ms | 旧池 MiB | 新池 MiB | 旧 / 新触及功耗墙 |",
              "| --- | ---: | ---: | ---: | ---: | --- |"]
-    for name, *_ in CONFIGS:
+    for name, *_ in configs:
         times, pools, caps = [], [], []
         for side in trees:
             group = [r for r in rows if r["name"] == name and r["side"] == side]
@@ -150,14 +187,17 @@ def study(args):
             powers = [p for r in group for p in r["power"] if p["power_w"] is not None and p["power_limit_w"]]
             caps.append(f"{statistics.mean(p['power_w'] >= .97*p['power_limit_w'] for p in powers):.0%}" if powers else "缺测")
         lines.append("| " + " | ".join((name, *times, *pools, " / ".join(caps))) + " |")
+    if args.capacity_only:
+        lines = ["# WDDM 显存驻留边界复测"]
     if capacity:
         lines += ["", "另用 cifar stem、w16 逐步增大 batch，在首次出现非本地显存后按整数二分。"
-                  "每次独立进程，记录 WDDM 的进程 Local Usage 和 Non Local Usage，容许相对空模型增加 1 MiB 的计数波动。"]
+                  "容量试验先上传固定设备批次并同步，再记录 WDDM 的进程 Local Usage 和 Non Local Usage。"
+                  "容许相对该基准增加 1 MiB 的计数波动。"]
         for side in trees:
             group = [r for r in capacity if r["side"] == side]
             resident = max((r["batch"] for r in group if r["resident"]), default=0)
             lines.append(f"- {side} 的最大驻留 batch 为 {resident}，相邻的 {resident+1} 已超出。")
-    lines += ["", "原始测量保存在 timings.json、capacity.json 和 manifest.json。"]
+    lines += ["", "原始测量与协议保存在本目录的 JSON 文件中。"]
     (out/"report.md").write_text("\n".join(lines)+"\n", encoding="utf-8")
 
 
@@ -170,8 +210,10 @@ def main(argv=None):
     ap.add_argument("--warmup", type=int, default=5)
     ap.add_argument("--graph-opt", action="store_true")
     ap.add_argument("--skip-capacity", action="store_true")
+    ap.add_argument("--capacity-only", action="store_true")
     ap.add_argument("--worker", action="store_true", help=argparse.SUPPRESS)
     ap.add_argument("--capacity", action="store_true", help=argparse.SUPPRESS)
+    ap.add_argument("--ready-file", type=Path, help=argparse.SUPPRESS)
     ap.add_argument("--tree", type=Path, default=ROOT)
     ap.add_argument("--stem", default="cifar")
     ap.add_argument("--width", type=int, default=16)

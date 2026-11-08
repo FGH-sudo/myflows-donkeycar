@@ -87,7 +87,7 @@ def _build(ms, args, device, dtype, backend):
         x = Variable(xp.zeros(shape, input_dtype), name="X")
         y = Variable(xp.zeros((args.batch, 2), input_dtype), name="y")
     loss = ms.MSELoss(model(x), y)
-    graph = ms.Graph(loss)
+    graph = ms.Graph(loss, optimize=getattr(args, "graph_opt", False))
     for node in graph.nodes:
         if isinstance(node, MaxPool2d_Op) and backend != "default":
             node.backend = backend
@@ -206,6 +206,8 @@ def _gradient_rows(seed, run, trees, configs=GRAD_CONFIGS):
     """One training-mode step on the batch of ``seed`` for every tree and configuration."""
     common = ["--stem", "imagenet", "--width", 16, "--batch", 8, "--height", 120, "--width-px", 160,
               "--seed", seed]
+    if getattr(run, "config", {}).get("graph_opt"):
+        common.append("--graph-opt")
     fixture, reference = run.path / f"grad-s{seed}-fixture.npz", run.path / f"grad-s{seed}-fp64.npz"
     _worker(ROOT, "reference", common + ["--fixture", fixture, "--output", reference])
     expected = np.load(reference)
@@ -323,6 +325,8 @@ def main(argv=None):
     parser.add_argument("--old", help="root of the code tree to compare against (with its native DLL built)")
     parser.add_argument("--out-dir")
     parser.add_argument("--warmup", type=int, default=5)
+    parser.add_argument("--graph-opt", action="store_true", help="compare numerics with graph optimisation enabled")
+    parser.add_argument("--include-register", action="store_true", help="include the native register engine in gradient comparisons")
     parser.add_argument("--steps", type=int, default=20)
     for name, default in (("--stem", "imagenet"), ("--bn", "train"), ("--dtype", "float32"),
                           ("--backend", "cuda_native_cublas"), ("--device", "cuda")):
@@ -351,7 +355,10 @@ def main(argv=None):
                                  for name, path in trees}
         skip = set(filter(None, args.skip.split(",")))
         if "gradients" not in skip:
-            gradients(args, run, trees)
+            configs = GRAD_CONFIGS
+            if args.include_register:
+                configs += (("register-fp32", "cuda", "float32", "cuda_native_register"),)
+            gradients(args, run, trees, configs)
         if "speed" not in skip:
             speed(args, run, trees)
         run.notes.append("“修改前”为 --old 指向的代码树（含其自身编译的原生 DLL），“修改后”为当前工作区；"
