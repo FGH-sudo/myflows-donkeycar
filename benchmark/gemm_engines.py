@@ -107,14 +107,18 @@ def gemm_part(args, run):
             for engine, _ in ENGINES:
                 got = xp.asnumpy(calls[engine]()).astype(np.float64)
                 row[f"{engine}_error"] = float(np.abs(got - exact).max() / np.abs(exact).max())
-            # Enough back-to-back calls for ~20 ms per measurement; engines alternate first per round.
-            reps = max(3, min(200, math.ceil(20.0 / max(_event_ms(xp, calls["cublas"], 1), 1e-3))))
+            # Small GEMMs can take less than 25 us. A 200-call cap would leave a 5 ms window on WDDM.
+            estimate = _event_ms(xp, calls["cublas"], 8)
+            reps = max(3, min(2048, math.ceil(20.0 / max(estimate, 1e-3))))
+            for engine in ("register", "cublas", "cublas", "register"):
+                _event_ms(xp, calls[engine], reps)
             samples = {engine: [] for engine, _ in ENGINES}
             for round_index in range(args.rounds):
                 for engine, _ in (ENGINES if round_index % 2 == 0 else ENGINES[::-1]):
                     samples[engine].append(_event_ms(xp, calls[engine], reps))
             for engine, _ in ENGINES:
                 row[f"{engine}_ms"] = float(np.median(samples[engine]))
+                row[f"{engine}_rounds_ms"] = samples[engine]
                 run.timings.append({"part": "gemm", "model": model_name, "gemm": part, "shape": f"{m}x{n}x{k}",
                                     "engine": engine, "reps": reps, "ms": row[f"{engine}_ms"]})
             rows.append(row)

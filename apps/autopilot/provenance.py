@@ -9,7 +9,7 @@ from pathlib import Path
 
 from apps.common.environment import environment  # compatibility export
 
-CODE_SUFFIXES = (".py", ".cu", ".cuh", ".cpp", ".h", ".proto", ".js", ".mjs")
+CODE_SUFFIXES = (".py", ".cu", ".cuh", ".cpp", ".h", ".inc", ".proto", ".js", ".mjs")
 
 
 def sha256_bytes(data: bytes) -> str:

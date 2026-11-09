@@ -11,7 +11,9 @@ import sys
 import time
 
 ROOT = Path(__file__).resolve().parents[1]
-SUITE = ("MyFlows.tests.test_cuda_native_kernels", "MyFlows.tests.test_cuda_native_cublas")
+SUITE = ("MyFlows.tests.test_cuda_native_kernels", "MyFlows.tests.test_cuda_native_cublas",
+         "MyFlows.tests.test_gemm_autotune.RegisterPlanTest.test_all_compiled_tiles_cover_aligned_and_ragged_operands",
+         "MyFlows.tests.test_gemm_autotune.RegisterPlanTest.test_narrow_tile_96_splits_and_parallel_reduction_are_deterministic")
 
 
 def find_sanitizer(explicit=None):

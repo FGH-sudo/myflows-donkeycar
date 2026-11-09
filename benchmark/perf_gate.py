@@ -3,6 +3,7 @@
 import argparse
 import hashlib
 import json
+import math
 from pathlib import Path
 import statistics
 import subprocess
@@ -17,10 +18,22 @@ GEMM_LIMIT = 1.20
 
 
 def violations(step_ratios, gemm_rows):
-    if not step_ratios or not gemm_rows:
-        raise ValueError("both model steps and convolution GEMM shapes are required")
+    from benchmark.gemm_engines import GEMM_MODELS
+
+    if set(step_ratios) != {name for name, *_ in CONFIGS} or not all(
+            math.isfinite(value) and value > 0. for value in step_ratios.values()):
+        raise ValueError("expected finite positive step ratios for every fixed ResNet configuration")
+    expected = {(name, part, layout) for name, *_ in GEMM_MODELS
+                for part, layout in (("forward", "NT"), ("dW", "TN"), ("dX", "NN"))}
+    if {(r["model"], r["part"], r["layout"]) for r in gemm_rows} != expected:
+        raise ValueError("both networks need forward, dW and dX GEMM measurements")
+    keys = {(r["model"], r["part"], r["layout"], r["m"], r["n"], r["k"]) for r in gemm_rows}
+    if len(keys) != len(gemm_rows):
+        raise ValueError("duplicate GEMM shape within a measurement group")
     failed = [f"{name} step {ratio:.3f}×" for name, ratio in step_ratios.items() if ratio > STEP_LIMIT]
     for row in gemm_rows:
+        if not all(math.isfinite(row[k]) and row[k] > 0. for k in ("register_ms", "cublas_ms")):
+            raise ValueError("GEMM timings must be finite and positive")
         ratio = row["register_ms"] / row["cublas_ms"]
         if ratio > GEMM_LIMIT:
             failed.append(f"{row['model']} {row['part']} {row['layout']} {row['m']}×{row['n']}×{row['k']} {ratio:.3f}×")
@@ -103,9 +116,11 @@ def run_gate(args):
              "每轮先预热，再取同步训练步时中位数。", "",
              "| ResNet18 | 基线 ms | 当前 ms | 比值 | 门槛 |", "| --- | ---: | ---: | ---: | ---: |"]
     for name, *_ in CONFIGS:
-        a, b = [med(r["median_ms"] for r in steps if r["side"] == side and r["name"] == name) for side in trees]
+        groups = [[r["median_ms"] for r in steps if r["side"] == side and r["name"] == name] for side in trees]
+        a,b = [med(g) for g in groups]
         ratios[name] = b/a
-        lines.append(f"| {name} | {a:.3f} | {b:.3f} | {b/a:.3f} | {STEP_LIMIT:.2f} |")
+        lines.append(f"| {name} | {a:.3f} ± {statistics.stdev(groups[0]):.3f} | "
+                     f"{b:.3f} ± {statistics.stdev(groups[1]):.3f} | {b/a:.3f} | {STEP_LIMIT:.2f} |")
     lines += ["", "| 单算子 | 阶段 | 基线 ms | 当前 ms | 比值 |", "| --- | --- | ---: | ---: | ---: |"]
     for case, phase in sorted({(r["case"], r["phase"]) for r in operators}):
         a, b = [med(r["median_ms"] for r in operators if r["side"] == side and r["case"] == case and r["phase"] == phase)
