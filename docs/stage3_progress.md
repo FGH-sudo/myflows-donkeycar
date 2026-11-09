@@ -63,11 +63,12 @@
 | 2026-11-09 | S9.4 阶段验收回归 | Windows `--scope all --repeat 3`（根仓库 `9db82b2`、MyFlows `f9344b5`）：每轮 530 项全部通过，无跳过，557.7 s、546.4 s、567.8 s。日志 `runs/stage3/s9-all-repeat3.log`。 |
 | 2026-11-09 | S4 补充 | `8902daa`：donkey-001 按各种子最佳验证轮补充到达时间与配对检验。冻结 4 段 0.02327 ± 0.00108，人工基线 0.03436 ± 0.01525，配对差 −0.01109 的 95% 区间跨零；仍未检出负迁移。 |
 | 2026-11-09 | S9.3 本地复验 | WSL Ubuntu 22.04 独立 checkout（根仓库 `8902daa`、MyFlows `f9344b5`）收集 530 项，463 项通过、67 项带原因跳过，209.3 s；此前失败的恢复测试已改为确定性场景并通过。日志 `runs/stage3/wsl-stage3-final.log`。 |
+| 2026-11-09 | S9.2 剩余 dW GEMM | MyFlows `724d0dd`：split-K 归约结果仍与固定顺序 FP64 求和逐位相同，但 2 份切分用 FP32 计算，3–32 份用 64 位整数精确求和（指数跨度超限、Inf/NaN 或次正规结果回到 FP64 循环）；TN 布局新增 3 种 cp.async 多级流水 tile，4 项 Ada 计划只换 tile、切分数不变。整网对拍 before-after-001 中 4 种配置 × 3 个 batch 的 83 个梯度数组前后逐位相同；`tools.run_tests --scope framework` 311 项通过。完整门槛 [gate-profile-004](experiments/semester_2026_fall/operators/gate-profile-004/report.md)：步时比值 1.007、0.994、1.001，64 个 GEMM 全部不超过 1.20（最高 1.173），加权合计 0.963；原超限 4 项为 1.112、1.153、0.967、1.136。见 [gemm-ncu-002](experiments/semester_2026_fall/operators/gemm-ncu-002/report.md)。 |
 
 ## 待用户审核的规划文档更新建议
 
 - 完成各工作包后，将本记录的已验收条目同步到 `stage3_plan.md` 第 8 节与 `semester_spec.md` 第 7 节。
 - S9.2 的逐形状 GEMM 比较已按规划 2.3 节改用 Nsight Compute 锁频周期；建议在规划 S9.2 中写明这一测量方法，以及 WDDM 上约 20 分钟的耗时。
-- 逐形状 register/cuBLAS ≤ 1.20 仍有 4 个小 dW GEMM 未达标（gate-profile-003）。需要用户决定：接受为已知超限，或另开工作包为 register kernel 增加异步拷贝流水、减少 FP64 归约开销。
+- 逐形状 register/cuBLAS ≤ 1.20 已在 gate-profile-004 中全部通过（4 个 dW GEMM 经结果逐位不变的归约与 cp.async 流水修正）。建议把规划 S9.2 中的 4 个已知超限改为已通过，并注明余量最小的是 TN 512×256×640（1.153）。
 - S9.3 的 GitHub 托管运行需要把 MyFlows 与根仓库的第三阶段提交推送到公开远端，推送前需用户同意（规划 2.5 节）。
 - 暂无需要新增依赖的决定。

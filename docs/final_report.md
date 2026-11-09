@@ -6,7 +6,7 @@
 
 **框架。** MyFlows 负责张量、计算图、层、自动微分、优化器和 checkpoint，NumPy、CuPy 与原生 CUDA 后端共用层接口。计算图在构图后缓存每个节点的梯度需求，冻结参数和不需要梯度的分支既不清零也不反传；梯度在首次写入时分配，已消费的中间梯度随即释放。原生卷积把输入展开为矩阵，经寄存器分块 GEMM 或 cuBLAS 计算，再在融合尾处理中还原为 NCHW 并加 bias 与激活；反向按输入、权重和偏置各自的需求跳过 dX、dW 或 db。BN、残差加与 ReLU 可在图优化时融合，Adam 可在一次 launch 中更新多个 FP32 参数。默认 FP32，规约在 FP64 中按固定顺序累加，不用原子加，原生路径与 CuPy 路径各自逐位可复现。
 
-**CUDA 与分布式。** 第 19 讲的寄存器分块 kernel 推广为三种布局、17 种 tile 几何，输出小而 K 长时按 K 切分并在 FP64 中归约。RTX 4060 Laptop GPU 上 ResNet18 的卷积形状使用实测计划，其他形状用解析规则，也可按形状在线实测。同步参数服务器（Socket JSON / gRPC）与 Ring All-Reduce 把本机多进程 Worker 接入同一训练入口。TF32、FP16/BF16 存储与 Winograd 只作实验后端。
+**CUDA 与分布式。** 第 19 讲的寄存器分块 kernel 推广为三种布局、20 种 tile 几何，其中 3 种在 TN 布局上用 cp.async 多级流水；输出小而 K 长时按 K 切分，归约结果与固定顺序的 FP64 求和逐位相同（2 份切分用 FP32 计算，3–32 份用 64 位整数精确求和）。RTX 4060 Laptop GPU 上 ResNet18 的卷积形状使用实测计划，其他形状用解析规则，也可按形状在线实测。同步参数服务器（Socket JSON / gRPC）与 Ring All-Reduce 把本机多进程 Worker 接入同一训练入口。TF32、FP16/BF16 存储与 Winograd 只作实验后端。
 
 **迁移学习。** `MyFlows/transfer/` 提供预训练模型注册、权重载入与名称/形状检查、按阶段或模块名冻结（参数与 BN 统计量分别控制）、任务头与特征适配器、参数组与分层学习率、按 epoch 的渐进解冻、冻结骨干的特征缓存和 LoRA。两个训练入口都通过 TransferLearningManager 构建迁移任务，result.json 记录冻结级别、来源哈希与冻结前后指纹。
 
@@ -23,7 +23,7 @@
 | 本机统一回归（Windows，CPU + CUDA） | 阶段验收按测试计划运行 `--repeat 3`：根仓库 9db82b2、MyFlows f9344b5，每轮收集 530 项全部通过，无跳过，三轮耗时 557.7 s、546.4 s、567.8 s。阶段开工时为 443 项 |
 | CPU 回归（WSL Ubuntu 22.04 独立 checkout，与 CI 相同依赖与环境变量） | 根仓库 8902daa、MyFlows f9344b5：收集 530 项，463 项通过，67 项带原因跳过（缺 CUDA/CuPy 46 项、缺 torch 12 项、缺固定版本的 dsh 克隆 8 项、缺本地 CIFAR-10 数据 1 项），测试 209.3 s，墙钟 230 s |
 | 原生 CUDA 动态检查 | memcheck、racecheck、synccheck 各运行 24 项原生测试，错误与竞争告警均为 0。[报告](experiments/semester_2026_fall/operators/sanitizer-profile-001/report.md) |
-| GPU 性能门槛 | 三个 ResNet18 配置与对照代码树交替 6 轮，步时比值 1.003、1.001、0.969，均在 1.10 以内。64 个卷积 GEMM 在 Nsight Compute 锁频计数下加权合计 register/cuBLAS 为 0.977，4 个每步只出现一次的小 dW GEMM 超过 1.20（1.204–1.466），逐形状门槛未全部通过。[门槛](experiments/semester_2026_fall/operators/gate-profile-003/report.md) |
+| GPU 性能门槛 | 三个 ResNet18 配置与对照代码树交替 6 轮，步时比值 1.007、0.994、1.001，均在 1.10 以内。64 个卷积 GEMM 在 Nsight Compute 锁频计数下逐形状 register/cuBLAS 均不超过 1.20（最高 1.173），加权合计 0.963；此前超限的 4 个 dW GEMM 降到 0.967–1.153，输出逐位不变。[门槛](experiments/semester_2026_fall/operators/gate-profile-004/report.md) |
 | GitHub 托管 CI | 工作流 `.github/workflows/tests.yml` 已就绪，尚未推送到公开远端运行 |
 
 ## 3. 实验结果
@@ -40,7 +40,7 @@
 | B5、S7 CIFAR-10 | 32 张真实图片达到 95% 过拟合门槛。45,000/5,000 训练与验证下，MyFlows 与同构 PyTorch 末轮验证准确率均为 60.22%；锁定 checkpoint 后官方 10,000 张测试图一次评分为 60.13%，多数类基线 10%。[分类报告](experiments/semester_2026_fall/classification/cifar10-001/report.md) |
 | S8.1–S8.3 显存与优化器 | 首次写入分配梯度并释放中间梯度后，w16 的最大驻留 batch 从 37 提高到 46，步时未变差（三个配置的中位数缩短 11%–12%，两侧触及功耗墙的比例不同）；再重算 im2col 可到 93，池峰值降 47%–51%，步时增加 14%–24%，保留为选项。多张量 Adam 把 82 个参数的 CUDA 更新阶段从 3.435 ms 降到 2.337 ms，参数与两组矩逐位一致。[梯度分配](experiments/semester_2026_fall/operators/lazy-001/report.md) [列缓冲重算](experiments/semester_2026_fall/operators/recompute-001/report.md) [Adam 对照](experiments/semester_2026_fall/operators/adam-002/report.md) |
 | S8.4 BN 融合 | 17 处 BN → (加残差) → ReLU 融合，三个配置步时缩短 2.7%–4.3%，中间输出显存降低 37%–40%；6 个 batch、4 个后端相对 FP64 的梯度误差统计与融合前相同。[BN 融合](experiments/semester_2026_fall/operators/bn-fusion-001/report.md) |
-| S8.6 GEMM 调优 | 逐形状实测 tile 与 split-K 共 4,365 个组合，并采集 17 个占用率样本；在 Ada 上补充 12 种 tile 几何、窄输出并行归约与 64 个形状的实测计划表。CUDA Event 门槛同一形状的轮间极差中位数为 36.4%，改用 Nsight Compute 锁频周期后为 4.0%，据此修正 3 项计划（2 项输出逐位不变）。在计划表生效的 w16 batch 128 上，6 个 batch 的 FP64 对照中只有 register 后端的 120/498 个数组改变，最大相对变化 3.51×10⁻⁶，误差统计不变。一次分组读取的归约改动经测量变慢后撤回，流水线指标显示归约受 FP64 流水线限制。[调优](experiments/semester_2026_fall/operators/autotune-001/report.md) [锁频对比](experiments/semester_2026_fall/operators/gemm-ncu-001/report.md) [计划表对拍](experiments/semester_2026_fall/operators/plans-numerics-001/report.md) |
+| S8.6 GEMM 调优 | 逐形状实测 tile 与 split-K 共 4,365 个组合，并采集 17 个占用率样本；在 Ada 上补充 12 种 tile 几何、窄输出并行归约与 64 个形状的实测计划表。CUDA Event 门槛同一形状的轮间极差中位数为 36.4%，改用 Nsight Compute 锁频周期后为 4.0%，据此修正 3 项计划（2 项输出逐位不变）。在计划表生效的 w16 batch 128 上，6 个 batch 的 FP64 对照中只有 register 后端的 120/498 个数组改变，最大相对变化 3.51×10⁻⁶，误差统计不变。一次分组读取的归约改动经测量变慢后撤回；流水线指标显示归约受 FP64 流水线限制，之后改为结果逐位不变的 FP32 与 64 位整数求和，并为 TN 布局加入 cp.async 多级流水 tile，4 个超限 dW GEMM 降到 1.20 以下，3 个 batch 的整网梯度前后逐位相同。[调优](experiments/semester_2026_fall/operators/autotune-001/report.md) [锁频对比](experiments/semester_2026_fall/operators/gemm-ncu-001/report.md) [计划表对拍](experiments/semester_2026_fall/operators/plans-numerics-001/report.md) [归约与流水](experiments/semester_2026_fall/operators/gemm-ncu-002/report.md) |
 | S8.7、S8.8 精度与 Winograd | TF32/FP16 的 ReLU 输入误差约 1.7×10⁻³，BF16 约 1.4×10⁻²；2,000 帧三种子训练的验证 MAE 为 FP32 0.04631 ± 0.00691、TF32 0.04589 ± 0.00647、FP16 0.05520 ± 0.00364、BF16 0.06132 ± 0.00491，溢出跳步 0 次。Winograd 乘积数降到 44%–47%，梯度误差与 cuBLAS 相当，但由 CuPy 数组运算实现，训练步时为 72.02 ms（cuBLAS 20.72 ms）。均不作为默认后端。[精度](experiments/semester_2026_fall/operators/precision-001/report.md) [Winograd](experiments/semester_2026_fall/operators/winograd-001/report.md) |
 | S10 诊断 | 在实际训练分区内取独立时间块做线性探测，验证转向 MAE 从中位数预测器的 0.17223 降至 0.06410，规则据此给出冻结级别与倍率候选；跨种子配对区间整体高于零时才报告负迁移。[诊断示例](experiments/semester_2026_fall/autopilot/diagnostics-001/report.md) |
 
@@ -65,7 +65,7 @@ S5 使用 batch 8，其 GEMM 形状不在 Ada 实测计划表中，最后一次�
 
 **测量条件。** 本机是笔记本 GPU：桌面程序使空闲利用率就有 25%–48%，功耗上限在 60–80 W 之间变化，同一配置两次运行可差 10%–15%。步时对照都在同一会话内交替运行并报告离散度；单个 kernel 的比较改用 Nsight Compute 在锁定基频下的周期数。WDDM 在显存超过约 7.7 GB 时换页而不报 OOM，驻留容量以进程 Non Local Usage 和相邻整数 batch 判定。设备显存、CuPy 池与进程 RSS 三种口径分列。
 
-**GEMM 门槛。** 逐形状 register/cuBLAS ≤ 1.20 的门槛仍有 4 个形状未通过：TN 128×64×2560（1.466）、512×256×640（1.327）、256×128×2560（1.254）、256×1152×2560（1.204），都是每步只出现一次的 dW GEMM，基频下合计多约 80 µs。三个 split-K 形状受固定顺序 FP64 归约限制，在 GeForce Ada 上 FP64 流水线活跃比例达 50%–83%；512×256×640 上所有 register 计划都慢于 cuBLAS 的多级流水 kernel。不清空缓存时比值基本不变。后续可为 register kernel 加入异步拷贝流水，或在保持结果不变的前提下减少 FP64 转换。实测计划表只覆盖本机 ResNet18 基准形状（w16 batch 128、w64 batch 32），其他形状使用解析规则或按需在线实测。
+**GEMM 门槛。** 逐形状 register/cuBLAS ≤ 1.20 的门槛现已全部通过，最高为不切分的 TN 256×2304×2560（1.173）。此前超限的 4 个 dW GEMM 中，三个 split-K 形状受固定顺序 FP64 归约限制（GeForce Ada 上 FP64 流水线活跃 50%–83%）。现在归约结果仍与 FP64 求和逐位相同，但 2 份切分用 FP32 计算，3–32 份用 64 位整数精确求和；再为 TN 布局加入 cp.async 多级流水 tile 后，4 项比值为 1.112（128×64×2560）、1.153（512×256×640）、0.967（256×128×2560）、1.136（256×1152×2560）。512×256×640 余量最小，切 2 份可到 1.124，但会改变舍入，没有采用。实测计划表只覆盖本机 ResNet18 基准形状（w16 batch 128、w64 batch 32），其他形状使用解析规则或按需在线实测。
 
 **迁移与闭环结论的范围。** 迁移对照只有 3 个种子，学习率 1e-3、batch 2 时多数配置在第 3 轮验证误差回升，各配置差值的 95% 区间都跨过零。生成道路的 Unity 接口只能控制客户端种子与默认 reset，同一模型（manual-t002）的平均绝对 CTE 在两次仿真会话中从 0.554 变为 29.823，模型排序只解释同一会话内的配对观测。分类准确率、离线回归 MAE 与闭环 CTE 回答的是不同问题，三者排序不一致。
 

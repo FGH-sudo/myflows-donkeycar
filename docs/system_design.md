@@ -184,7 +184,7 @@ ResNet18、MobileNetV2 与 AlexNet 可读取按 torchvision 名称保存的 NPZ 
 - 原生库：卷积尾处理用 32×33 共享内存 tile 把 NHWC 行转成 NCHW，同时加 bias 与 ReLU/LeakyReLU；反向在同一 kernel 内做激活门控、dY 转置和 FP64 bias 部分和（warp shuffle）；输入 `requires_grad=False` 时跳过 dX 的 GEMM 与 col2im。
 - 训练入口：`apps/train` 按 `--dtype` 设置默认 dtype，`--conv-backend auto` 在 CUDA + float32 时选 `cuda_native_register`（`cuda_native_cublas` 可显式指定，控制台“新建训练”页同样提供这两项）；输入与标签不求梯度；全局梯度范数只在需要记录时计算；`train_step_ms` 改用 CUDA event，每步只在读回 loss 时同步一次。
 - 确定性：原生路径与 CuPy 的 col2im（改为 gather kernel，不再用原子加的 `add.at`）结果逐位可复现。
-- GEMM 引擎：第 19 讲的寄存器分块 kernel 推广为 NN/NT/TN 三种布局（`native.gemm`）。`gemm_tiles.inc` 编译 17 种输出块、线程寄存器块与 K 块组合，其中 5 种为原有基础 tile。输出小而 K 长时按 K 切分，再按固定顺序在 FP64 中归约；输出不超过 32,768 个元素且切分不少于 48 份时，改由 8 个 warp 交错累加后按固定顺序合并，结果仍可逐位复现。RTX 4060 Laptop GPU 上 ResNet18 的卷积形状使用 `ada_plans.py` 中实测的计划，其他设备或形状用解析规则；`MYFLOWS_GEMM_AUTOTUNE=1` 时逐形状实测并按设备、运行库与原生源码哈希缓存。不切分时累加顺序与 tile 无关；改变切分数会改变舍入。`cuda_native_register` 后端用它做卷积与 `Dense` 的 GEMM，`cuda_native_cublas` 则调用 cuBLAS。Triton 扩展决定不做。
+- GEMM 引擎：第 19 讲的寄存器分块 kernel 推广为 NN/NT/TN 三种布局（`native.gemm`）。`gemm_tiles.inc` 编译 20 种输出块、线程寄存器块与 K 块组合，其中 5 种为原有基础 tile；另有 3 种（名称以 `/s<级数>` 结尾）的 TN float4 kernel 用 cp.async 多级流水直接把 tile 从全局内存拷到共享内存，共享 tile 与 FMA 顺序不变，结果与同几何的寄存器 kernel 逐位相同（sm_80 以下退回寄存器双缓冲）。输出小而 K 长时按 K 切分，归约结果等于按固定顺序在 FP64 中求和再舍入一次：2 份切分用 FP32 计算（二次舍入定理），3–32 份在指数跨度允许时用 64 位整数精确求和后舍入一次，其余情况与 NaN/Inf 仍走 FP64 循环，三者逐位相同；输出不超过 32,768 个元素且切分不少于 48 份时，改由 8 个 warp 交错累加后按固定顺序合并，结果仍可逐位复现。RTX 4060 Laptop GPU 上 ResNet18 的卷积形状使用 `ada_plans.py` 中实测的计划，其他设备或形状用解析规则；`MYFLOWS_GEMM_AUTOTUNE=1` 时逐形状实测并按设备、运行库与原生源码哈希缓存。不切分时累加顺序与 tile 无关；改变切分数会改变舍入。`cuda_native_register` 后端用它做卷积与 `Dense` 的 GEMM，`cuda_native_cublas` 则调用 cuBLAS。Triton 扩展决定不做。
 
 ### 训练监控记录（2026-11-05）
 

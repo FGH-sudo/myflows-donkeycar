@@ -9,7 +9,7 @@
 | MyFlows/core/ | 计算图、节点、Tensor 和 CPU/CUDA 设备切换；`dtype.py` 的全局默认 dtype（float32，可用 `set_default_dtype` 改为 float64）；`Variable(requires_grad=False)` 标记输入/标签，算子据此跳过 dX |
 | MyFlows/ops/ | 当前 NumPy/CuPy 算子，包括卷积、池化、损失和激活函数；卷积/池化与 `Linear` 可选原生后端 `cuda_native_register`（寄存器分块 GEMM）/ `cuda_native_cublas`，`Linear` 另有实验用的 `cuda_native_kahan` / `cuda_native_dot2`，bias 梯度 FP64 累加；CuPy 的 col2im 为确定性的 gather kernel |
 | MyFlows/ops/fused.py | 融合 kernel 与同算法 NumPy 回退：BatchNorm2d（FP64 平移统计、均值 hi/lo 双 float、反向重算 x̂）、softmax 交叉熵（FP64 log-sum-exp）、Adam（逐步显式舍入，CPU/GPU 逐位一致）、ReLU/LeakyReLU 反向累加、FP64 全局梯度范数 |
-| MyFlows/ops/cuda_native/ | 原生 C/C++ 调度自写 FP32 Conv/Pool kernel，GEMM 引擎为第 19 讲的寄存器分块 kernel（NN/NT/TN，五种 tile，长 K 小输出按 K 切分后 FP64 归约，`native.gemm`）或 cuBLAS；严格数组 wrapper 和运行时库管理（Windows 加载 DLL，Linux 加载 .so；`build.py` 在库缺失或与源码不一致时用 CMake 自动构建，文件锁保证多进程只构建一次）；NVRTC 按设备架构生成 SASS 并缓存到 `build/native-cuda/kernel-cache`；卷积尾处理融合 NHWC→NCHW 转置、bias 与 ReLU/LeakyReLU，bias 梯度 FP64；第 19 讲 basic/tiled/shared/register（寄存器分块）矩阵乘（fp32/kahan/dot2 累加）经 `native.matmul` 暴露；错误信息含源码行号与 CUDA/cuBLAS 错误名，`MYFLOWS_NATIVE_SYNC=1` 或 `set_debug_sync` 逐 kernel 同步 |
+| MyFlows/ops/cuda_native/ | 原生 C/C++ 调度自写 FP32 Conv/Pool kernel，GEMM 引擎为第 19 讲的寄存器分块 kernel（NN/NT/TN，20 种 tile，其中 3 种的 TN kernel 为 cp.async 多级流水；长 K 小输出按 K 切分，归约结果与固定顺序的 FP64 求和逐位相同，`native.gemm`、`native.split_reduce`）或 cuBLAS；严格数组 wrapper 和运行时库管理（Windows 加载 DLL，Linux 加载 .so；`build.py` 在库缺失或与源码不一致时用 CMake 自动构建，文件锁保证多进程只构建一次）；NVRTC 按设备架构生成 SASS 并缓存到 `build/native-cuda/kernel-cache`；卷积尾处理融合 NHWC→NCHW 转置、bias 与 ReLU/LeakyReLU，bias 梯度 FP64；第 19 讲 basic/tiled/shared/register（寄存器分块）矩阵乘（fp32/kahan/dot2 累加）经 `native.matmul` 暴露；错误信息含源码行号与 CUDA/cuBLAS 错误名，`MYFLOWS_NATIVE_SYNC=1` 或 `set_debug_sync` 逐 kernel 同步 |
 | MyFlows/distributed/ | 单机回环同步 PS（Socket JSON / gRPC）与 Ring AllReduce；Worker 本地优化器更新，PS 只聚合梯度 |
 | MyFlows/monitoring/schema.py、record.py、gpu.py | v1 记录与增量 JSONL 游标；NVML/nvidia-smi/主机资源采样；训练 PID 生命周期绑定的独立采样进程，正常与异常退出清理 |
 | MyFlows/utils/training_dashboard.py、tensorboard_logger.py | 逐 step/epoch 的 v1 JSONL，增量读取资源曲线；直接写 TensorBoard 事件，不导入 torch，支持标量、文本、图像与直方图 |
@@ -27,7 +27,7 @@
 | MyFlows/transfer/freeze.py、adapters.py、heads.py、cache.py | 按阶段或模块名冻结，独立控制 BN，适配特征与任务头，并按权重、预处理、样本清单校验离线特征 |
 | MyFlows/ops/precision.py、winograd.py | 显式 cuBLAS TF32、FP16/BF16 操作数与 FP32 输出，以及 F(2×2,3×3) 卷积和反向变换 |
 | MyFlows/ops/cuda_native/autotune.py | 按布局与形状实测 register tile 和 split-K。按设备、运行库、源码及调优协议保存测量结果 |
-| MyFlows/ops/cuda_native/ada_plans.py、gemm_tiles.inc | RTX 4060 Laptop GPU 上 ResNet18 卷积 GEMM 的实测起始计划（布局与 M、N、K 精确匹配），以及编译进原生库的 17 种 register tile 几何 |
+| MyFlows/ops/cuda_native/ada_plans.py、gemm_tiles.inc | RTX 4060 Laptop GPU 上 ResNet18 卷积 GEMM 的实测起始计划（布局与 M、N、K 精确匹配），以及编译进原生库的 20 种 register tile 几何（名称以 `/s<级数>` 结尾的 3 种在 TN 布局上用 cp.async 多级流水） |
 | MyFlows/monitoring/nvtx.py | 按全局 step 控制 cudaProfilerApi，标注训练阶段与节点，保存相对源码位置 |
 | MyFlows/train/ | 优化器与正则化、按组学习率与权重衰减、Adam 逐参数步数。独立连续的 FP32 CUDA 张量共用一次更新，loss_scaling.py 管理半精度训练的溢出跳步与恢复 |
 | MyFlows/utils/checkpoint.py | JSON + NPZ checkpoint 保存和恢复；参数与优化器状态按当前模型的 dtype 恢复 |
