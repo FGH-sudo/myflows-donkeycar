@@ -19,14 +19,14 @@
 | S1 监控交付 | 已验收（476 项回归通过） | 9 次开销、两次真实 Nsight、完整三轮趋势、60 次冻结对照及五项自查见[交付报告](experiments/semester_2026_fall/monitoring/README.md) |
 | S2 冻结反向截断 | 已验收（476 项回归通过） | 三架构四后端 40 组数值检查，2,012 组梯度与更新逐字节相同。冻结指纹保持，60 次交替计时见[冻结报告](experiments/semester_2026_fall/monitoring/freeze-001/report.md) |
 | S3 迁移学习组件 | S3.1–S3.7 已实现并专项验证 | 两个入口各 166 个 checkpoint 数组保持一致。验证了缓存、解冻续训、[LoRA 六组对照与导出](experiments/semester_2026_fall/transfer/lora-001/report.md)和[冻结特征先验](experiments/semester_2026_fall/autopilot/diagnostics-001/report.md) |
-| S4 迁移实验 | 两项正式实验完成 | [分类递进](experiments/semester_2026_fall/transfer/classify-001/report.md)有 24 个试验。[回归对照](experiments/semester_2026_fall/transfer/donkey-001/report.md)有 14 个小规模试验及 21 个全量试验，附逐轮曲线、首层特征和 Grad-CAM |
-| S5 跨框架比较 | 正式协议已完成 | 三个共同种子、两种吞吐和独立质量实验均已完成，后续重大算子优化继续用同一协议复测。[报告](experiments/semester_2026_fall/frameworks/resnet18-001/report.md) |
+| S4 迁移实验 | 两项正式实验完成 | [分类递进](experiments/semester_2026_fall/transfer/classify-001/report.md)有 24 个试验。[回归对照](experiments/semester_2026_fall/transfer/donkey-001/report.md)有 14 个小规模试验及 21 个全量试验，附逐轮曲线、首层特征和 Grad-CAM；另按各种子最佳验证轮补充到达时间与配对检验 |
+| S5 跨框架比较 | 正式协议已完成，持续复测 | 三个共同种子、两种吞吐和独立质量实验均已完成。S8 各项与计划表修正后共复测 7 次，最近一次为 frameworks/resnet18-plans-001，汇总见最终报告第 4 节。[报告](experiments/semester_2026_fall/frameworks/resnet18-001/report.md) |
 | S6 闭环评估 | 探测与两组正式实验完成 | 721 帧标定，三模型 30 次。加入 S4 候选后在同一仿真会话轮换四个模型，共 40 次、24,011 帧。[配对结果与会话差异](experiments/semester_2026_fall/closed_loop/transfer-001/report.md) |
 | S7 CIFAR-10 系统测试 | 全量验收已测 | 32 样本过拟合门槛通过。45,000/5,000 训练与验证、同构 PyTorch 比较、锁定后官方 10,000 张测试均已完成。[报告](experiments/semester_2026_fall/classification/cifar10-001/report.md) |
-| S8 算子与显存优化 | S8.1、S8.2 已实测，S8.5 正在执行 | 梯度延迟分配将 w16 的驻留边界从 37 提高到 46，进一步重算 im2col 达到 93。三个配置和两次 S5 复测见[延迟分配](experiments/semester_2026_fall/operators/lazy-001/report.md)及[重算](experiments/semester_2026_fall/operators/recompute-001/report.md) |
-| S9 测试计划与 CI | 本地 CPU 工作流通过 | Ubuntu 22.04 上收集 495 项，56 项带原因跳过，213.739 s。GPU 门槛和公开托管验收另行记录 |
+| S8 算子与显存优化 | S8.1–S8.8 已实测 | 最大驻留 batch 为 37→46→93。多张量 Adam、BN 融合完成对拍。三种 sanitizer 24 项均 0 错误。自动调优测了 4,365 个组合及 17 个占用率样本，Ada 计划经锁频计数修正 3 项，见[逐形状结果](experiments/semester_2026_fall/operators/autotune-001/report.md)与[锁频对比](experiments/semester_2026_fall/operators/gemm-ncu-001/report.md)。[TF32/FP16/BF16](experiments/semester_2026_fall/operators/precision-001/report.md)与[Winograd](experiments/semester_2026_fall/operators/winograd-001/report.md)只作对照 |
+| S9 测试计划与 CI | 本地验收完成，托管 CI 待推送 | GEMM 门槛改用 Nsight Compute 锁频周期，结果见下方记录。WSL Ubuntu 22.04 独立 checkout 与 Windows 三轮统一回归见运行记录。GitHub 托管运行需要推送公开远端，等待用户同意 |
 | S10 AutoPilot 增量 | 已实现并专项验证 | M4、M6 和新增诊断规则 26 项通过。真实线性探测、配对差与算子指标见[报告示例](experiments/semester_2026_fall/autopilot/diagnostics-001/report.md) |
-| S11 设计与最终报告 | S11.2、S11.3 已验证 | 历史结果已归档。浏览器已检验 v1 与历史运行的阶段占比、硬件资源和跨框架对比，最终报告待整合 |
+| S11 设计与最终报告 | S11.1–S11.4 已整合 | 设计文档按 2026-11-09 的代码更新。[最终报告](final_report.md)覆盖系统设计、测试、B2–B7、E1–E3、S4–S10 与限制 |
 
 ## 运行与决策记录
 
@@ -52,8 +52,22 @@
 | 2026-11-07 | S3.1–S3.5 | 组件提交 `f788e98` / `056a1e4`，分组与解冻 `b045741` / `4dc8838`。两种 BN 策略跨越解冻点逐字节续训，缓存开关下分类 123 步和回归 84 步的 loss 与最终状态一致。[缓存报告](experiments/semester_2026_fall/transfer/cache-001/report.md) |
 | 2026-11-07 | S7 | 完成配置锁定与独立测试，官方测试准确率 60.13%，多数类 10%。 |
 | 2026-11-07 | S4 准备 | 冻结源码训练流程可按已验证的 attempt 接续。首步前的真实验证对照、含增强的 CIFAR-10 小规模迁移、两个训练入口的缓存轨迹均已测。长任务日志位于 `runs/stage3/transfer-classify-study.log` 与 `runs/stage3/transfer-donkey-study.log`。 |
+| 2026-11-08 | S3.6、S9.3 | LoRA 训练与合并导出（`d540ed9` / `e133baf`），秩 4 合并 ONNX 最大输出差 8.20×10⁻⁷。CPU 工作流 `c33329f` 在 WSL Ubuntu 22.04 独立 checkout 收集 495 项、56 项带原因跳过，213.739 s（`runs/stage3/wsl-ci-verified.log`）。 |
+| 2026-11-08 | S8.1、S8.2 | 首次写入分配梯度（`832e3c3` / `f515d04`）：w16 最大驻留 batch 37→46，1,968 个梯度数组与改动前数值相等。重算 im2col（`cb4a62b` / `80da1d4`）：池峰值降 47%–51%、步时增 14%–24%、驻留 batch 46→93，默认关闭。两次 S5 复测见 frameworks/resnet18-lazy-001、resnet18-recompute-001。 |
+| 2026-11-08 | S8.3–S8.5、S9.2、S10、S11.3 | 多张量 Adam（`9531e04` / `bc133a3`）CUDA 更新 3.435→2.337 ms，参数与两组矩逐位一致。BN/残差/ReLU 融合（`5196b69` / `29aa8c0`）17 处，步时降 2.7%–4.3%。sanitizer 三种工具 22 项 0 错误。首个 GPU 门槛（事件计时）64 个形状中 29 个超过 1.20 倍。诊断规则与控制台阶段页见 `00e38f0`、`49d1f63`。 |
+| 2026-11-08 | S8.6 | `28e5572` / `cac6927`：逐形状实测 tile 与 split-K，4,365 个组合与 17 个占用率样本，见 operators/autotune-001。 |
+| 2026-11-09 | S8.7、S8.8 | `34a8b89` / `e032648`：TF32、FP16/BF16 存储加动态 loss scaling、Winograd F(2×2,3×3)，六 batch FP64 对拍与 2,000 帧三种子训练见 operators/precision-001、winograd-001；S5 复测 frameworks/resnet18-experimental-001。 |
+| 2026-11-09 | S9.2 计划实测 | `25de44a` / `0f19c48`：补充 12 种 tile 几何与窄输出并行归约，按 Ada 实测计划选择 tile。事件计时门槛 gate-profile-001 剩 4 个超限，复核替换后 gate-profile-002 变为 8 个，其中多数形状的计划未变，同一形状的轮间耗时相差约 2 倍。S6 补测部署模型离线分数（`616023a`）。 |
+| 2026-11-09 | S9.2 锁频门槛 | 交接后复查。`benchmark/gemm_ncu.py` 在 Nsight Compute 锁定基频、清缓存的条件下按 NVTX 区间比较 GEMM 周期，同一调用 7 次的极差中位数 4.0%（事件计时 36.4%）。修正前 64 个形状 6 个超限、加权合计 0.982；事件门槛报出的 8 个中 7 个实际在门槛内。候选搜索后修改 3 项 Ada 计划（MyFlows `f9344b5`），其中 2 项输出逐位不变。分组读取的归约改动经测量更慢，已撤回；流水线指标显示归约受 FP64 流水线限制。见 [锁频对比](experiments/semester_2026_fall/operators/gemm-ncu-001/report.md)。完整门槛 [gate-profile-003](experiments/semester_2026_fall/operators/gate-profile-003/report.md)：步时比值 1.003、1.001、0.969，GEMM 加权合计 0.977，仍有 4 个小 dW GEMM 超过 1.20（1.204–1.466），不清缓存时比值不变，记为已知超限。 |
+| 2026-11-09 | 计划表对拍与 S5 复测 | 计划表此前没有数值对拍。按门槛的 w16 batch 128 运行 6 个 batch 的 FP64 对照：只有 register 后端的 120/498 个数组改变，最大相对变化 3.51×10⁻⁶，误差统计不变；batch 8 的 1,992 个数组前后逐字节相同（计划表不覆盖）。S5 复测 frameworks/resnet18-plans-001：端到端 MyFlows 462.85 samples/s、PyTorch 确定性 301.61，验证 MAE 与此前逐位相同。见 [plans-numerics-001](experiments/semester_2026_fall/operators/plans-numerics-001/report.md)。 |
+| 2026-11-09 | S9.4 阶段验收回归 | Windows `--scope all --repeat 3`（根仓库 `9db82b2`、MyFlows `f9344b5`）：每轮 530 项全部通过，无跳过，557.7 s、546.4 s、567.8 s。日志 `runs/stage3/s9-all-repeat3.log`。 |
+| 2026-11-09 | S4 补充 | `8902daa`：donkey-001 按各种子最佳验证轮补充到达时间与配对检验。冻结 4 段 0.02327 ± 0.00108，人工基线 0.03436 ± 0.01525，配对差 −0.01109 的 95% 区间跨零；仍未检出负迁移。 |
+| 2026-11-09 | S9.3 本地复验 | WSL Ubuntu 22.04 独立 checkout（根仓库 `8902daa`、MyFlows `f9344b5`）收集 530 项，463 项通过、67 项带原因跳过，209.3 s；此前失败的恢复测试已改为确定性场景并通过。日志 `runs/stage3/wsl-stage3-final.log`。 |
 
 ## 待用户审核的规划文档更新建议
 
 - 完成各工作包后，将本记录的已验收条目同步到 `stage3_plan.md` 第 8 节与 `semester_spec.md` 第 7 节。
-- 暂无需要新增依赖或改变验收标准的决定。
+- S9.2 的逐形状 GEMM 比较已按规划 2.3 节改用 Nsight Compute 锁频周期；建议在规划 S9.2 中写明这一测量方法，以及 WDDM 上约 20 分钟的耗时。
+- 逐形状 register/cuBLAS ≤ 1.20 仍有 4 个小 dW GEMM 未达标（gate-profile-003）。需要用户决定：接受为已知超限，或另开工作包为 register kernel 增加异步拷贝流水、减少 FP64 归约开销。
+- S9.3 的 GitHub 托管运行需要把 MyFlows 与根仓库的第三阶段提交推送到公开远端，推送前需用户同意（规划 2.5 节）。
+- 暂无需要新增依赖的决定。

@@ -1,6 +1,6 @@
 # 当前系统设计
 
-更新时间为 2026-11-05。
+更新时间为 2026-11-09。
 
 本文只说明仓库当前已经存在的系统。第一阶段已实现 CUDA C/C++ Conv/Pool 与 Nsight 实验入口；分布式阶段已按 [stage1_distributed_gpu_spec.md](stage1_distributed_gpu_spec.md) 实现 GPU Worker 的同步 PS（Socket JSON / gRPC）与 Ring AllReduce。训练控制台（第 8 节）已把运行记录、实时曲线、GPU 占用和任务启停集中到一个 Web 界面。训练控制台也承担 AutoPilot 任务调度。训练入口支持 ImageNet 参数迁移、精确恢复、资源采样与 NVTX 诊断。
 
@@ -154,6 +154,8 @@ flowchart LR
 - Worker 视图：分布式实验按 rank 显示曲线、阶段耗时占比、最新 step 与梯度同步占比；各 rank 在 `prepare.json` 中记录 PID，控制台据此把 GPU 进程和进程内存对应到 rank。多 Worker 的正式训练也写 `rank-*/prepare.json` 与 `steps.jsonl`，拓扑页显示各 Worker 的 step 耗时与同步占比，曲线仍取 rank 0 的 `metrics.jsonl`。
 - 单进程训练：`TrainingDashboard` 在 `--run-dir` 下同时写 `metrics.jsonl`，与 TensorBoard 记录内容一致。
 
+运行详情的耗时图按数据、前向、反向、优化器四段展示，阶段占比按共同的阶段采样步累计并除以含读取的总步时。分母在后端降采样之前计算。硬件资源页显示整卡显存与采样峰值。Compare 页可选择 S5 框架归档，分别查看固定张量吞吐、含数据传输的吞吐和逐种子验证曲线。
+
 ### AutoPilot、迁移训练与恢复
 
 控制台将 campaign 交给 AutoPilot 服务。Planner 生成配置，Executor 通过 JobManager 串行执行 trial，Verifier 读取运行证据与在线异常，Scheduler 管理预算和恢复。Reporter 汇总人工基线、配对种子和独立测试集结果。持久化的 campaign、trial 和 attempt 记录支持重启后接续。TPE 使用已验证的历史结果搜索，回滚从通过校验的 TrainingState 恢复。[AutoPilot 规格](autopilot_agent_spec.md)
@@ -165,10 +167,11 @@ ResNet18、MobileNetV2 与 AlexNet 可读取按 torchvision 名称保存的 NPZ 
 - CUDA C 暂不支持 FP64、分组/空洞卷积和带 padding 的 Pool；这些高级卷积功能继续走原后端。当前原生路径限定 groups=1、dilation=1。
 - 分布式训练只支持单机回环；所有 Worker 共享一张 GPU，没有多 GPU、多机或 NCCL 实验，也不能按 Worker 指定设备。分布式实验中 ResNet18 独立整批与分片轨迹的逐步梯度等价未通过。正式训练的多 Worker BN 用各 Worker 本地 batch 的统计量，没有 SyncBN。
 - 在 WDDM 上，NVML 设备采样、CuPy 池统计和进程 RSS 分列展示。历史 distributed_experiment 自身的 nvidia-smi 采样只覆盖第一张卡。
-- 当前跨框架性能测试的方法需要重做，旧结果不能直接用于本学期结论。
+- 跨框架基准使用同构 torchvision ResNet18、相同的 FP32 初值及批序。比较覆盖固定张量和含 H2D 两种吞吐，聚合后同时保留各个种子的结果。[S5 协议和结果](experiments/semester_2026_fall/frameworks/resnet18-001/report.md)
 - 普通 checkpoint 保存模型、BN buffer 和优化器状态。单进程精确续训使用 TrainingState，另存数据游标、增强与 dropout RNG、最佳模型、早停历史和指纹。多 Worker 继续使用普通 checkpoint。
 - GPU 上的端到端梯度误差由卷积 GEMM 的 float32 累加决定（ResNet18 单步梯度相对 FP64 的中位误差 3e-6–4e-6）。自写的寄存器分块 GEMM 是原生卷积与 `Dense` 的默认引擎，cuBLAS 可选：ResNet18 每步耗时两者相同，寄存器分块的梯度中位误差高约 5%，在窄输出的前向 GEMM 上误差最多为 cuBLAS 的 6.3 倍。补偿累加（kahan/dot2）只作为实验后端，没有接入卷积。
-- 计算图缓存梯度需求，仅对可训练路径和显式保留的中间梯度清零并反向。活跃节点仍先清零再累加，后续的按需分配与提前释放由 S8 单独测量。
+- 计算图缓存梯度需求，只对可训练路径和显式保留的中间梯度执行反向。梯度在首次写入时分配，已消费的中间梯度随即释放。反向重算 im2col 默认关闭：w16、cifar stem 的最大驻留 batch 可由 46 提高到 93，但步时增加 14%–24%。
+- TF32、FP16/BF16 存储与 Winograd F(2×2,3×3) 只作实验后端：它们走 CuPy 的通用卷积路径，本机小规模训练都比原生 cuBLAS 卷积慢，不作为默认值。
 
 ## 10. 数值精度与 CUDA 第 19 讲改进（2026-10-22）
 
@@ -176,16 +179,14 @@ ResNet18、MobileNetV2 与 AlexNet 可读取按 torchvision 名称保存的 NPZ 
 
 - 默认 dtype：层参数与 BN 统计量默认 float32（`MyFlows.set_default_dtype` 可改为 float64）。此前默认 float64，`apps/train` 的 ResNet18 因此整网以 FP64 计算。
 - 规约：BN 统计量、BN/卷积/Linear 的 bias 梯度、交叉熵的 log-sum-exp、MSE、全局平均池化与全局梯度范数都在 FP64 中按固定顺序累加，再舍入一次。BN 的均值以两个 float 的和保存，`x − mean` 按 `(x − hi) − lo` 计算，均值远大于标准差时 x̂ 不再丢失精度。
-- 融合 kernel（`MyFlows/ops/fused.py`）：BN 前向为一次统计 + 一次归一化，反向为一次规约 + 一次 dX，不再为每层保存 x̂；softmax、log-sum-exp 与逐行损失在一个 kernel 内完成，标签越界时该行损失为 NaN 而不在主机端同步检查；Adam 每个参数一次 kernel，CPU 回退与 GPU 逐位一致。
+- BN 用 FP64 统计与 hi/lo 均值计算归一化。开启图优化可将归一化、残差加和 ReLU 合并，反向在规约及 dX 内应用 ReLU 门控。softmax、log-sum-exp 与逐行损失共用一个 kernel。Adam 可在一次 CUDA launch 内更新多个参数及两个矩，支持各组自己的学习率，CPU 回退沿用逐步显式舍入。
 - Adam 改为 Kingma & Ba 的标准形式（矩估计从 0 开始、偏差修正）。旧实现首步令 v = g、s = g² 后仍做修正，首步步长约为标准值的 0.32 倍，且 g₁² 在 s 中被放大 1000 倍、上千步才衰减；此前的实验结果均基于旧实现。
 - 原生库：卷积尾处理用 32×33 共享内存 tile 把 NHWC 行转成 NCHW，同时加 bias 与 ReLU/LeakyReLU；反向在同一 kernel 内做激活门控、dY 转置和 FP64 bias 部分和（warp shuffle）；输入 `requires_grad=False` 时跳过 dX 的 GEMM 与 col2im。
 - 训练入口：`apps/train` 按 `--dtype` 设置默认 dtype，`--conv-backend auto` 在 CUDA + float32 时选 `cuda_native_register`（`cuda_native_cublas` 可显式指定，控制台“新建训练”页同样提供这两项）；输入与标签不求梯度；全局梯度范数只在需要记录时计算；`train_step_ms` 改用 CUDA event，每步只在读回 loss 时同步一次。
 - 确定性：原生路径与 CuPy 的 col2im（改为 gather kernel，不再用原子加的 `add.at`）结果逐位可复现。
-- GEMM 引擎：第 19 讲的寄存器分块 kernel 推广为 NN/NT/TN 三种布局、五种 tile，输出小而 K 长时按 K 切分，再在 FP64 中归约（`native.gemm`）。`cuda_native_register` 后端用它做卷积与 `Dense` 的 GEMM，`cuda_native_cublas` 则调用 cuBLAS，两者的 ResNet18 每步耗时相同。Triton 扩展决定不做。
+- GEMM 引擎：第 19 讲的寄存器分块 kernel 推广为 NN/NT/TN 三种布局（`native.gemm`）。`gemm_tiles.inc` 编译 17 种输出块、线程寄存器块与 K 块组合，其中 5 种为原有基础 tile。输出小而 K 长时按 K 切分，再按固定顺序在 FP64 中归约；输出不超过 32,768 个元素且切分不少于 48 份时，改由 8 个 warp 交错累加后按固定顺序合并，结果仍可逐位复现。RTX 4060 Laptop GPU 上 ResNet18 的卷积形状使用 `ada_plans.py` 中实测的计划，其他设备或形状用解析规则；`MYFLOWS_GEMM_AUTOTUNE=1` 时逐形状实测并按设备、运行库与原生源码哈希缓存。不切分时累加顺序与 tile 无关；改变切分数会改变舍入。`cuda_native_register` 后端用它做卷积与 `Dense` 的 GEMM，`cuda_native_cublas` 则调用 cuBLAS。Triton 扩展决定不做。
 
 ### 训练监控记录（2026-11-05）
-
-运行详情的耗时图按数据、前向、反向、优化器四段展示，阶段占比按共同的阶段采样步累计并除以含读取的总步时。分母在后端降采样之前计算。硬件资源页显示整卡显存与采样峰值。Compare 页可选择 S5 框架归档，分别查看固定张量吞吐、含数据传输的吞吐和逐种子验证曲线。
 
 训练图在首次收到贡献时写入梯度，多条反向路径汇合时继续累加。每个算子反传后释放已消费的中间梯度，Grad-CAM 通过 retain_grad 显式保留特征梯度。设置 MYFLOWS_RECOMPUTE_IM2COL=1 可在反向按原输入重建卷积展开矩阵。默认选择保存矩阵，实测的显存与速度取舍见第三阶段记录。
 

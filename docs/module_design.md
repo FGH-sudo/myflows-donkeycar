@@ -23,9 +23,13 @@
 | MyFlows/distributed/tasks/ | synthetic、mnist_mlp、donkey_cnn、donkey_resnet18 任务适配与预处理数据读取 |
 | MyFlows/examples/stage1_cnn.py | 同 seed、全链路 FP32 的 32 样本 CNN 训练 fixture |
 | MyFlows/layers/resnet.py、mobilenet.py | ResNet18、MobileNetV2、AlexNet 的 torchvision 兼容结构、张量名称与阶段划分 |
-| MyFlows/utils/pretrained.py | 校验并载入转换后的 ImageNet 权重，构建任务头，冻结阶段参数与 BN，生成冻结张量指纹 |
+| MyFlows/transfer/registry.py、loader.py、manager.py | 注册三种 ImageNet 骨干，预检名称、形状与权重哈希，构建任务并保存迁移状态。MyFlows/utils/pretrained.py 保留兼容入口 |
+| MyFlows/transfer/freeze.py、adapters.py、heads.py、cache.py | 按阶段或模块名冻结，独立控制 BN，适配特征与任务头，并按权重、预处理、样本清单校验离线特征 |
+| MyFlows/ops/precision.py、winograd.py | 显式 cuBLAS TF32、FP16/BF16 操作数与 FP32 输出，以及 F(2×2,3×3) 卷积和反向变换 |
+| MyFlows/ops/cuda_native/autotune.py | 按布局与形状实测 register tile 和 split-K。按设备、运行库、源码及调优协议保存测量结果 |
+| MyFlows/ops/cuda_native/ada_plans.py、gemm_tiles.inc | RTX 4060 Laptop GPU 上 ResNet18 卷积 GEMM 的实测起始计划（布局与 M、N、K 精确匹配），以及编译进原生库的 17 种 register tile 几何 |
 | MyFlows/monitoring/nvtx.py | 按全局 step 控制 cudaProfilerApi，标注训练阶段与节点，保存相对源码位置 |
-| MyFlows/train/ | SGD、Momentum、AdaGrad、RMSProp、Adam 和正则化；Adam 为标准实现（零初始化矩估计 + 偏差修正，2026-10-22 起），每个参数一次融合更新 |
+| MyFlows/train/ | 优化器与正则化、按组学习率与权重衰减、Adam 逐参数步数。独立连续的 FP32 CUDA 张量共用一次更新，loss_scaling.py 管理半精度训练的溢出跳步与恢复 |
 | MyFlows/utils/checkpoint.py | JSON + NPZ checkpoint 保存和恢复；参数与优化器状态按当前模型的 dtype 恢复 |
 | MyFlows/utils/onnx_exporter.py | ONNX 导出 |
 | MyFlows/utils/metrics_core/ | 分类、回归和 DonkeyCar 指标 |
@@ -41,6 +45,8 @@
 | apps/autopilot/ | campaign、trial、attempt 持久状态，规划、调度、执行、验证、证据与报告，TPE 条件搜索与 TrainingState 回滚 |
 | apps/autopilot/agents/、dsh/ | GPU、算子、数据并行、基准与迁移规则，以及可选 dsh 工具适配 |
 | apps/common/splits.py | 时间段或随机划分、样本指纹、固定划分文件的创建和验证 |
+| apps/common/cifar10.py、apps/train/train_classify.py | 校验并读取 CIFAR-10 二进制档，训练小型 CNN 或 ResNet18，独立保存验证表现与锁定后的测试结果 |
+| apps/train/transfer_probe.py | 在已有训练分区内部切分时间块和拟合线性探测，供迁移 Agent 生成候选 |
 | apps/train/transfer_classify.py、evaluate_donkey.py | 转向分档分类迁移实验与固定测试集上的回归模型评估 |
 | apps/train/common/ | 验证、早停、checkpoint 路径和训练日志 |
 | apps/train/__main__.py | `python -m apps.train` 的短入口，等价调用 train_myflows_donkey |
@@ -85,6 +91,10 @@
 | MyFlows/transfer/lora.py | 在 layer4 卷积和任务头训练 A、B 两个因子，合并到原有权重后导出单输入 ONNX |
 | tools/timeline_gaps.py | 合并同设备各 stream 上的 kernel/拷贝/清零忙区间，将空闲段按 CPU NVTX 来源拆分，输出图表和分阶段占比 |
 | tools/run_tests.py | 同时收集 unittest 和函数式测试的统一入口 |
+| benchmark/compare_frameworks_resnet.py、framework_worker.py | 共用 FP32 初值、数据与批序，分别启动 MyFlows、确定性与自动调优 PyTorch 进程，汇总对齐、训练和资源证据 |
+| benchmark/memory_study.py、adam_study.py、autotune_study.py、experimental_backends.py | 单因素交替测量、WDDM 边界、优化器、Nsight Compute 占用率、六种子 FP64 梯度与实验后端训练曲线 |
+| benchmark/perf_gate.py、tools/sanitize_native.py | 手工 GPU 门槛与按设备/版本保存的基线，原生套件 memcheck、racecheck、synccheck 动态检查 |
+| benchmark/gemm_ncu.py、qualify_register_plans.py | 在 Nsight Compute 锁频、清缓存条件下按 NVTX 区间比较 register 与 cuBLAS 的 GEMM 周期，并对超限形状实测候选计划；后者用生产调用与 CUDA Event 复核候选 |
 | tools/restore_stage1_source.py | 按运行 manifest 校验并恢复实际源码，不覆盖现有目录 |
 | tools/build_native_cuda.py | 手动构建原生 CUDA 库（调用 `MyFlows/ops/cuda_native/build.py`）：Windows 用 MSVC 生成 `native_cublas.dll`，Linux 用 GCC/Clang 生成 `native_cublas.so`；`--if-needed` 只在缺失或过期时构建 |
 | tools/generate_distributed_proto.py | 从 proto/ 生成 generated/grpc/ 下的 gRPC 代码 |
