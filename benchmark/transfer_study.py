@@ -249,6 +249,51 @@ def donkey_phase(out, tree, source, phase):
     return rows
 
 
+def best_epoch_rows(rows):
+    """Best validation epoch per run, and the first epoch reaching the same-seed manual baseline's best value."""
+    target = {r["seed"]: min(e["val_angle_mae"] for e in r["epochs"]) for r in group(rows, "scratch-cifar")}
+    result = []
+    for r in rows:
+        trace = [e["val_angle_mae"] for e in r["epochs"]]
+        best = min(trace)
+        reach = next((n + 1 for n, value in enumerate(trace) if value <= target[r["seed"]]), None)
+        result.append({"method": r["method"], "seed": r["seed"], "best": best, "best_epoch": trace.index(best) + 1,
+                       "target": target[r["seed"]], "reach_epoch": reach,
+                       "reach_step": reach * r["steps_per_epoch"] if reach is not None else None})
+    return result
+
+
+def donkey_best_epoch_section(rows):
+    """Markdown comparing the runs at their best validation epoch (the last epoch degrades for most methods)."""
+    best = best_epoch_rows(rows)
+    methods = list(dict.fromkeys(r["method"] for r in best))
+    last = statistics.fmean(r["final"] for r in group(rows, "scratch-cifar"))
+    lines = ["## 按最佳验证轮的补充统计", "",
+             f"学习率 1e-3、batch 2 时多数配置在第 3 轮验证误差回升，人工基线 scratch-cifar 末轮均值为 {last:.5f}。"
+             "上表的“最终验证 MAE”与到达时间都以末轮为准，到达目标因此偏宽。下表取每个种子 3 轮内的最佳验证角度 MAE，"
+             "到达时间以同 seed 人工基线的最佳值为目标，3 轮内未到达记为“未达”。训练保存的 best checkpoint 按验证 loss"
+             "（转向与油门的 MSE）选择，其角度 MAE 可能与逐轮最小值不同。本节只用验证集，不增加测试集评估。", "",
+             "| 配置 | 各 seed 最佳验证 MAE（轮） | 均值 ± 样本标准差 | 达到同 seed 基线最佳的 epoch / step |",
+             "| --- | --- | --- | --- |"]
+    for method in methods:
+        g = [r for r in best if r["method"] == method]
+        values = [r["best"] for r in g]
+        reach = ", ".join(f"{r['reach_epoch']}/{r['reach_step']}" if r["reach_epoch"] is not None else "未达" for r in g)
+        per_seed = ", ".join("{:.5f}（{}）".format(r["best"], r["best_epoch"]) for r in g)
+        lines.append(f"| {method} | {per_seed} | "
+                     f"{statistics.fmean(values):.5f} ± {statistics.stdev(values):.5f} | {reach} |")
+    lines += ["", "同结构的 scratch-imagenet 与预训练配置按最佳验证 MAE 配对，差值取预训练减从零训练，"
+              "95% 区间用 t 分布（自由度 2）。", "", "| 配置 | 配对差均值 | 95% 区间 | 负迁移判定 |", "| --- | --- | --- | --- |"]
+    scratch = {r["seed"]: r["best"] for r in best if r["method"] == "scratch-imagenet"}
+    for method in [m for m in methods if m.startswith("pretrained-")]:
+        diff = [r["best"] - scratch[r["seed"]] for r in best if r["method"] == method]
+        mean = statistics.fmean(diff)
+        margin = 4.303 * statistics.stdev(diff) / math.sqrt(len(diff))
+        lines.append(f"| {method} | {mean:+.5f} | [{mean - margin:+.5f}, {mean + margin:+.5f}] | "
+                     f"{'负迁移' if mean - margin > 0 else '未检出'} |")
+    return lines
+
+
 def donkey_report(out,rows):
     import matplotlib
     matplotlib.use("Agg")
@@ -280,6 +325,7 @@ def donkey_report(out,rows):
         diff=[r["final"]-baseline[r["seed"]] for r in group(rows,method)]
         mean=statistics.mean(diff); margin=4.303*statistics.stdev(diff)/math.sqrt(3)
         lines.append(f"| {method} | {mean:+.5f} | [{mean-margin:+.5f}, {mean+margin:+.5f}] | {'负迁移' if mean-margin>0 else '未检出'} |")
+    lines+=["",*donkey_best_epoch_section(rows)]
     locked=read(out/"formal/locked.json")
     lines+=["",f"按验证集锁定 {locked['method']}，闭环评估使用该配置 seed {locked['seed']} 的最佳验证 checkpoint。"
             "表中终值使用最后一轮 checkpoint。一次性测试清单包含部署候选的单独记录。","","原始结果分别在 pilot/ 与 formal/，每个 attempt 保存命令、完整 "
