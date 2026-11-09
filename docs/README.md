@@ -4,8 +4,12 @@
 
 | 文档 | 作用 | 状态 |
 | --- | --- | --- |
-| [semester_spec.md](semester_spec.md) | 本学期范围、任务依赖与进度；后续计划继续审核 | v0.6 同步至 2026-11-04 |
-| [stage3_plan.md](stage3_plan.md) | 第三阶段开发规划：第 19 讲（下）课程任务二、第 24 讲迁移学习与遗留基础项的任务拆分、验收与执行顺序 | v0.2（2026-11-05），已记入用户决定 |
+| [semester_spec.md](semester_spec.md) | 本学期范围、任务依赖、进度与最终验收清单；第 8 节列出后续开发选项 | v0.7 同步至 2026-11-09 |
+| [stage3_plan.md](stage3_plan.md) | 第三阶段开发规划：第 19 讲（下）课程任务二、第 24 讲迁移学习与遗留基础项的任务拆分、验收与执行顺序 | v0.3（2026-11-09）：S1–S11 已完成并合入 main |
+| [stage3_progress.md](stage3_progress.md) | 第三阶段的实施事实、验收证据与运行记录 | 2026-11-09 |
+| [final_report.md](final_report.md) | 最终报告：系统设计、测试过程与结果、各项实验、跨框架复测、限制与后续工作 | 2026-11-09 |
+| [test_plan.md](test_plan.md) | 测试计划：B1–B7、E1–E3 与第三阶段各项对应的测试、命令、频率、通过标准与证据位置 | 2026-11-09 |
+| [第三阶段实验](experiments/semester_2026_fall/) | monitoring、transfer、frameworks、closed_loop、classification、operators、autopilot、e2_transfer 下各次运行的报告 | 2026-11-05～11-09 |
 | [stage1_cuda_ps_spec.md](stage1_cuda_ps_spec.md) | CUDA 卷积/池化、CPU PS、Nsight 的实现约定与验收 | v0.2 已交付（2026-09-05） |
 | [stage1_distributed_gpu_spec.md](stage1_distributed_gpu_spec.md) | 同步 PS、Ring AllReduce、GPU Worker 与同条件评测 | v0.3 已交付（2026-09-19），ResNet 严格轨迹项未通过 |
 | [PS / Ring 双任务实测报告（优化版主结果）](experiments/semester_2026_fall/distributed_gpu/20260919_optimized/README.md) | MNIST、ResNet18 道路任务；PS/Ring gRPC/protobuf 优化对照、课件表、逐 epoch 数据、Nsight 与验收边界；第四周汇报 PPT 为本地文件，不纳入 Git | 2026-09-19：56 个正式档案、42 次性能重复、204 项回归；保留 ResNet 严格轨迹超差说明 |
@@ -17,11 +21,11 @@
 | [原生 cuBLAS 路径报告](experiments/semester_2026_fall/stage1/native_cublas_report.md) | C/C++ DLL 调度 im2col/col2im 与 cuBLAS GEMM 的实测 | 2026-09-06，当前卷积后端 |
 | [原生池化对照报告](experiments/semester_2026_fall/stage1/native_pool_report.md) | 原生 C/C++ 调度最大池化与 CuPy 对照 | 2026-09-06 |
 | [CUDA 第 19 讲实验报告](experiments/semester_2026_fall/cuda_lecture19/README.md) | 按 CUDA 编程课件修正数值实现（Adam、默认 dtype、BN、交叉熵、FP64 规约）；矩阵乘 kernel 精度/性能与 Nsight Compute；与修改前代码的算子精度、ResNet18 梯度与每步耗时对照；寄存器分块 GEMM 接入原生卷积（与 cuBLAS 并列，默认寄存器分块）；Triton 决定不做 | 2026-10-22 |
-| [autopilot_agent_spec.md](autopilot_agent_spec.md) | AutoPilot Agent 开发 Spec：规则内核（六组件、五个子 Agent）、控制台集成、DeepSeek Harness 接入（含最小验证结论与权限设计）、测试与里程碑 | v0.3（2026-10-23），M0–M6 于 2026-10-27 全部实现 |
-| [system_design.md](system_design.md) | 当前系统结构，不包含尚未实现的能力 | 部分过时：未包含 AutoPilot、E2、E3，第 9 节的限制有已解决项；同步列入第三阶段规划 |
-| [module_design.md](module_design.md) | 当前有效模块和运行入口 | 部分过时：未包含 `apps/autopilot`、预训练与迁移相关模块；同步列入第三阶段规划 |
+| [autopilot_agent_spec.md](autopilot_agent_spec.md) | AutoPilot Agent 开发 Spec：规则内核（六组件、五个子 Agent）、控制台集成、DeepSeek Harness 接入（含最小验证结论与权限设计）、测试与里程碑 | v0.3（2026-10-23），M0–M6 于 2026-10-27 全部实现；第三阶段 S10 增量于 2026-11-08 实现 |
+| [system_design.md](system_design.md) | 当前系统结构，不包含尚未实现的能力 | 当前有效（2026-11-09 按代码同步） |
+| [module_design.md](module_design.md) | 当前有效模块和运行入口 | 当前有效（2026-11-09 按代码同步） |
 | [development_environment.md](development_environment.md) | Python、CUDA、Nsight、控制台前端 Node 工程与依赖锁定 | 当前有效（2026-09-23） |
-| [system_design.md 第 8 节](system_design.md#8-训练控制台2026-09-23) | 训练控制台：数据来源、实时推送、任务启停与 Worker 视图；入口 `python -m apps.console.server` | 2026-09-23 |
+| [system_design.md 第 8 节](system_design.md#8-训练控制台2026-09-23) | 训练控制台：数据来源、实时推送、任务启停与 Worker 视图；入口 `python -m apps.console.server` | 2026-09-23；第三阶段加入 v1 格式、四段耗时占比与跨框架对比页 |
 | presentations/ | 每周汇报稿 | 本地文件，不纳入 Git |
 | [深度学习框架-16 综合项目III.pdf](<深度学习框架-16 综合项目III.pdf>) | 教师提供的本学期目标 | 本地课件，不纳入 Git |
 | 深度学习框架-18 / 18-2 分布式训练课件 PDF | PS 架构与 Ring AllReduce 课件 | 本地课件，不纳入 Git |
@@ -31,7 +35,8 @@
 
 - PDF 说明课程希望完成什么。
 - semester_spec.md 说明本组准备怎么做，审核通过后再作为开发依据。
-- stage1_cuda_ps_spec.md 与 stage1_distributed_gpu_spec.md 是已交付阶段的实现约定与验收记录；Agent 设计见 autopilot_agent_spec.md（v0.3，已实现）；第三阶段的开发依据是 stage3_plan.md。阶段产物不代表学期全部目标完成。
+- stage1_cuda_ps_spec.md 与 stage1_distributed_gpu_spec.md 是已交付阶段的实现约定与验收记录；Agent 设计见 autopilot_agent_spec.md（v0.3，已实现）；第三阶段的开发依据是 stage3_plan.md（已完成，实施记录见 stage3_progress.md）。阶段产物不代表学期全部目标完成。
+- 2026-11-09 起，本目录的规格、规划与索引由开发者随代码同步维护。
 - system_design.md 和 module_design.md 只记录当前代码事实，不能提前写成“已经实现”。
 - 按用户确认，之前学期目标已完成；缺失的往期交付材料不列为本学期待办。本学期新增功能与改进结论使用对应代码重新验证。
 - 新实验报告统一放到 docs/experiments/semester_2026_fall/，并记录代码版本、命令、环境、输入数据和原始结果。

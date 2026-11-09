@@ -1,30 +1,30 @@
 # 本学期开发 Spec
 
-- 状态：v0.6 进度同步。基础项 B1（AutoPilot）、B2（CUDA 卷积/池化）、B3（PS）与拓展项 E1（Ring AllReduce）、E2（三种预训练 CNN 与迁移训练）、E3（TPE、TrainingState 与自动回滚）已实现并有实验证据；B7 的 12 项指标已采集，但第 19 讲（下）要求的交付物未收尾；B4、B5 的图像分类测试与 B6 未完成。剩余工作的任务拆分见 [第三阶段开发规划](stage3_plan.md)
-- 日期：2026-11-04（v0.5：2026-09-23；v0.4：2026-09-05）
+- 状态：v0.7，第三阶段完成。基础项 B1–B7 与拓展项 E1–E3 均已实现并有实验证据。第三阶段（S1–S11）于 2026-11-09 快进合入两个仓库的 main，GitHub 托管 CPU CI 通过。实验结果与限制见 [最终报告](final_report.md)，实施记录见 [第三阶段开发记录](stage3_progress.md)，后续开发选项见第 8 节
+- 日期：2026-11-09（v0.6：2026-11-04；v0.5：2026-09-23；v0.4：2026-09-05）
 - 依据：[深度学习框架-16 综合项目III.pdf](<深度学习框架-16 综合项目III.pdf>)；[深度学习框架-19 CUDA 编程（下）.pdf](<深度学习框架-19 CUDA 编程（下）.pdf>) 第 70–82 页“课程任务二：监控与瓶颈分析”；[深度学习框架-24迁移学习.pdf](<深度学习框架-24迁移学习.pdf>)
-- 代码基线：根仓库 aaedaf2，MyFlows ce63df5
+- 代码基线：根仓库 c8071f7（第三阶段合入 main），MyFlows 724d0dd
 - 当前应用：DonkeyCar 自动驾驶
 - 当前主模型：ResNet18
-- 已交付阶段：[第一阶段 Spec：CUDA 算子、PS 模拟与 Nsight](stage1_cuda_ps_spec.md)、[分布式 GPU Spec：同步 PS、Ring AllReduce 与评测](stage1_distributed_gpu_spec.md)、[AutoPilot Agent Spec](autopilot_agent_spec.md)（M0–M6 已完成）
-- 阶段成果：[第一阶段实验报告](experiments/semester_2026_fall/stage1/README.md)、[PS / Ring 双任务实测报告](experiments/semester_2026_fall/distributed_gpu/20260919_optimized/README.md)、[CUDA 第 19 讲实验报告](experiments/semester_2026_fall/cuda_lecture19/README.md)；AutoPilot 正式 campaign 与 E2 迁移训练的结果目前只在本地 `runs/`（不纳入 Git），整理成可提交的报告列在第三阶段规划中
+- 已交付阶段：[第一阶段 Spec：CUDA 算子、PS 模拟与 Nsight](stage1_cuda_ps_spec.md)、[分布式 GPU Spec：同步 PS、Ring AllReduce 与评测](stage1_distributed_gpu_spec.md)、[AutoPilot Agent Spec](autopilot_agent_spec.md)（M0–M6 已完成）、[第三阶段开发规划](stage3_plan.md)（S1–S11 已完成）
+- 阶段成果：[第一阶段实验报告](experiments/semester_2026_fall/stage1/README.md)、[PS / Ring 双任务实测报告](experiments/semester_2026_fall/distributed_gpu/20260919_optimized/README.md)、[CUDA 第 19 讲实验报告](experiments/semester_2026_fall/cuda_lecture19/README.md)、[最终报告](final_report.md)（第三阶段的全部测试与实验）；AutoPilot 正式 campaign 与 E2 迁移训练的结果已整理为 [formal-full-002](experiments/semester_2026_fall/autopilot/formal-full-002/report.md) 与 [historical-001](experiments/semester_2026_fall/e2_transfer/historical-001/report.md)
 - 规划边界：按用户说明，之前学期的进度目标已经完成；不因本地缺少往期交付材料重新列缺口。
 
 ## 1. 最终目标
 
 在现有 MyFlows 基础上，先完成课程基础项，再按剩余容量推进拓展项。下表区分课程要求与本组建议，验收数值是本组拟议标准，不是 PDF 原文规定。
 
-| ID | PDF 依据 | 本组验收范围 | 层级 | 状态（2026-11-04） |
+| ID | PDF 依据 | 本组验收范围 | 层级 | 状态（2026-11-09） |
 | --- | --- | --- | --- | --- |
-| B1 | 第 3、11 页 | 训练调优 Agent：六个核心组件、专业任务适配器、自动实验、诊断、选择与报告 | 基础 | 已完成（M0–M6，正式 campaign 见 2.6 节） |
-| B2 | 第 3、9 页 | CUDA C/C++ Conv2D、MaxPool2D 的前向和反向；NumPy/CuPy/CUDA C 误差和性能比较 | 基础 | 已完成；2026-10-22 起寄存器分块 GEMM 为原生卷积的默认引擎（2.4 节） |
+| B1 | 第 3、11 页 | 训练调优 Agent：六个核心组件、专业任务适配器、自动实验、诊断、选择与报告 | 基础 | 已完成（M0–M6，正式 campaign 见 2.6 节；第三阶段加入失败归类、算子瓶颈分类与迁移先验，见 2.10 节） |
+| B2 | 第 3、9 页 | CUDA C/C++ Conv2D、MaxPool2D 的前向和反向；NumPy/CuPy/CUDA C 误差和性能比较 | 基础 | 已完成；2026-10-22 起寄存器分块 GEMM 为原生卷积的默认引擎（2.4 节），第三阶段的 GPU 性能门槛全部通过（2.10 节） |
 | B3 | 第 3、8 页 | 单机多进程同步 PS，包含 PS、Worker、Launcher、Monitor | 基础 | 已完成；2026-10-23 并入 `apps.train` 正式训练（2.5 节） |
-| B4 | 第 3 页 | 持续优化 DonkeyCar；同条件比较其他框架的训练时间和资源 | 基础 | 未完成：跨框架比较仍是 VGG11 旧脚本；没有闭环评估入口 |
-| B5 | 第 4 页 | Agent 自动调优、新算子可用性与效率、图像分类的系统测试 | 基础 | 部分：Agent 系统测试与算子正确性测试已完成；算子性能回归门槛、图像分类测试、测试计划未完成 |
-| B6 | 第 4、7 页 | 更新系统/Agent/可视化设计和报告；第 4、8、12 个汇报节点 | 基础 | 部分：system_design.md 与 module_design.md 未包含 AutoPilot、E2、E3；最终报告未写 |
-| B7 | 第 10 页，关联第 5 页；第 19 讲（下）第 70–81 页 | 完整 GPU/CPU/训练阶段监控，并完成一次有前后对照的瓶颈改进；按第 19 讲（下）交付监控模块与落盘格式说明、时间线与指标表、定位到文件与行号的瓶颈判断和优化前后对比 | 纳入基础 | 部分：12 项指标已采集落盘；格式定版、命令行运行的资源采样、监控开销、时间线定位与前后对照未完成 |
+| B4 | 第 3 页 | 持续优化 DonkeyCar；同条件比较其他框架的训练时间和资源 | 基础 | 已完成：MyFlows 与 PyTorch 的 ResNet18 同条件比较；模拟器闭环评估入口与配对实验（2.10 节） |
+| B5 | 第 4 页 | Agent 自动调优、新算子可用性与效率、图像分类的系统测试 | 基础 | 已完成：CIFAR-10 系统测试、成文的测试计划、GPU 性能回归门槛与 GitHub 托管 CPU CI（2.10 节） |
+| B6 | 第 4、7 页 | 更新系统/Agent/可视化设计和报告；第 4、8、12 个汇报节点 | 基础 | 已完成：设计文档按 2026-11-09 的代码同步，最终报告完成（2.10 节） |
+| B7 | 第 10 页，关联第 5 页；第 19 讲（下）第 70–81 页 | 完整 GPU/CPU/训练阶段监控，并完成一次有前后对照的瓶颈改进；按第 19 讲（下）交付监控模块与落盘格式说明、时间线与指标表、定位到文件与行号的瓶颈判断和优化前后对比 | 纳入基础 | 已完成：v1 落盘格式与说明、命令行运行的资源采样、监控开销、时间线定位与冻结前后对照（2.10 节） |
 | E1 | 第 5 页；分布式课件 II 第 4 页 | All-Reduce 模式的单机多进程模拟 | 拓展；课件 II 要求完整实现，已于 2026-09-19 随分布式阶段交付 | 已完成 |
-| E2 | 第 5 页；第 24 讲 | 至少三种 ImageNet 预训练 CNN；参数导入、冻结/解冻、迁移训练；按第 24 讲补齐迁移组件与微调方法（4.6 节） | 拓展 | 部分：三种模型、权重导入、按阶段冻结与 M6 冻结搜索已完成；第 24 讲的组件与方法、主任务上的正式迁移对照未完成；冻结阶段仍执行完整反向 |
+| E2 | 第 5 页；第 24 讲 | 至少三种 ImageNet 预训练 CNN；参数导入、冻结/解冻、迁移训练；按第 24 讲补齐迁移组件与微调方法（4.6 节） | 拓展 | 已完成：第 24 讲的组件与微调方法、冻结阶段的反向截断、主任务上的正式迁移对照（未检出负迁移，2.10 节） |
 | E3 | 第 5 页 | TPE 多超参搜索、实时异常检测和自动回滚 | 拓展 | 已完成（2.8 节） |
 
 第 5 页将 GPU 优化列在拓展中，但第 10 页明确要求采集指标，所以 B7 纳入基础。PDF 未指定 CNN 名单、分类数据集、worker 数、试验次数或硬性加速比；这些由本组方案确定。
@@ -43,14 +43,14 @@ PDF 把任务分成基础部分和拓展优化。本草案按下面的顺序推�
 
 拓展内容仍列入完整计划，但不能为了赶拓展功能而省略正确性测试、原始结果或基础部分。
 
-实际进度：AutoPilot 设计确认后（2026-10-23）开发目标不按汇报节点裁剪，E1–E3 先于 B4–B6 完成。剩余的基础项（B4、B5 的图像分类与测试计划、B6、B7 收尾）和第 19 讲（下）、第 24 讲的新要求，按 [第三阶段开发规划](stage3_plan.md) 的依赖顺序推进。
+实际进度：AutoPilot 设计确认后（2026-10-23）开发目标不按汇报节点裁剪，E1–E3 先于 B4–B6 完成。剩余的基础项（B4、B5 的图像分类与测试计划、B6、B7 收尾）和第 19 讲（下）、第 24 讲的新要求，按 [第三阶段开发规划](stage3_plan.md) 的依赖顺序推进。第三阶段于 2026-11-09 完成并合入 main，结果见 2.10 节。
 
 ### 当前执行阶段
 
-第三阶段（2026-11-04 起）：B7 收尾（第 19 讲（下）课程任务二）、冻结阶段的反向截断与第 24 讲的迁移组件、跨框架同条件比较与 DonkeyCar 闭环评估（B4）、图像分类测试与测试计划（B5）、文档与报告（B6）。任务拆分、验收与执行顺序见 [stage3_plan.md](stage3_plan.md)；本文继续维护学期范围、状态与最终验收。剩余工作不再按汇报节点安排。
+第三阶段（2026-11-04～11-09）已完成。它覆盖 B7 收尾（第 19 讲（下）课程任务二）、冻结阶段的反向截断与第 24 讲的迁移组件、跨框架同条件比较与 DonkeyCar 闭环评估（B4）、图像分类测试与测试计划（B5）、文档与报告（B6）。任务拆分与验收见 [stage3_plan.md](stage3_plan.md)，结果见 2.10 节。本文继续维护学期范围、状态与最终验收。下一阶段尚未排期，候选见第 8 节的后续开发选项。
 
 - 已实现的内容见第 2 节。第一阶段与分布式阶段的细节见 [stage1_cuda_ps_spec.md](stage1_cuda_ps_spec.md) 与 [stage1_distributed_gpu_spec.md](stage1_distributed_gpu_spec.md)，AutoPilot 见 [autopilot_agent_spec.md](autopilot_agent_spec.md)。
-- 仍保留的已知缺口：分布式实验中 ResNet18 独立整批与分片的逐步梯度等价未通过；没有异步 PS、多 GPU 或多机实验；Linux 上还没有跑过完整回归。
+- 仍保留的已知缺口：分布式实验中 ResNet18 独立整批与分片的逐步梯度等价未通过；没有异步 PS、多 GPU 或多机实验；Linux 上的完整回归只覆盖 CPU 测试（WSL 与 GitHub CI），CUDA 测试只在本机 Windows 上运行。
 - 正式实验仍需完整的精度、状态和复现条件（第 6 节）；全量数据的运行要先通知用户，等用户腾出机器。
 
 ## 2. 开发起点与最新进展
@@ -143,6 +143,43 @@ PDF 把任务分成基础部分和拓展优化。本草案按下面的顺序推�
   - E2：冻结只把参数标为不训练。`requires_grad` 在构造时就固定，`Graph.backward` 为全部节点清零梯度并逐个反向，原生卷积总是计算 dW，所以冻结阶段仍执行完整的反向，只省下优化器更新。优化器没有参数组（无分层学习率），没有渐进解冻与特征提取缓存，`transfer_classify` 没有数据增强。
   - 显存：卷积的 im2col 缓冲一直保留到反向；反向开始时为所有节点一次性分配梯度。
   - B4、B5、B6：见 4.8–4.10 节与第 7 节。
+
+### 2.10 第三阶段（2026-11-05～11-09）
+
+按 [stage3_plan.md](stage3_plan.md) 完成了 S1–S11。2026-11-09 两个仓库快进合入 main（根仓库 c8071f7，MyFlows 724d0dd）。逐项证据见 [最终报告](final_report.md) 与 [开发记录](stage3_progress.md)。
+
+- B7（S1）：
+  - 定版 v1 落盘格式并写了说明；训练入口自带 0.5 s 资源采样，TensorBoard 显示资源曲线。
+  - 9 次交替测量中，采样开销的中位数为 0.601%。
+  - Nsight 时间线的每个 GPU 空闲段都定位到 step、阶段与源码行。
+  - 见 [监控交付](experiments/semester_2026_fall/monitoring/README.md)。
+- E2（S2–S4）：
+  - 冻结边界之前的子图不再反向。冻结前三段后每步 kernel 数从 494 降到 373，未冻结参数的梯度与更新逐字节不变。
+  - `MyFlows/transfer/` 提供注册、载入、冻结、任务头与特征适配、参数组、渐进解冻、特征缓存与 LoRA。
+  - DonkeyCar 主任务做了 21 个全量试验。按各种子的最佳验证轮，冻结 4 段为 0.02327 ± 0.00108，人工基线为 0.03436 ± 0.01525。配对差的 95% 区间跨零，未检出负迁移。
+- B4（S5、S6）：
+  - 跨框架：MyFlows 与 PyTorch 在相同初值、输入与 batch 下比较 ResNet18。初次三种子的端到端吞吐为 MyFlows 444.46、PyTorch 确定性模式 365.83 samples/s，之后每项主要优化完成后都复测。
+  - 闭环：`apps/eval/closed_loop.py` 在 Unity 模拟器中做配对评估，固定油门 0.2，每次最多 30 秒。三模型 30 次与四模型 40 次全部跑满时限且无碰撞。
+  - 闭环结论的范围：离线 MAE 与闭环 CTE 的排序在部分模型间相反；同一模型在两次仿真会话间的平均 |CTE| 差别很大。因此结论只用于同一会话内的配对比较。
+- B5（S7、S9）：
+  - CIFAR-10 上 MyFlows 与同构 PyTorch 的验证准确率均为 60.22%，官方测试集为 60.13%。
+  - [测试计划](test_plan.md) 已成文。
+  - GPU 性能门槛按 Nsight Compute 锁频周期逐形状比较：64 个卷积 GEMM 都不超过 cuBLAS 的 1.20 倍，三个 ResNet18 配置的步时比值都不超过 1.10。
+  - Windows 统一回归 534 项连续三轮通过，GitHub 托管 CPU CI 通过。
+- S8（算子与显存优化）：
+  - 显存：首次写入时才分配梯度，w16 的最大驻留 batch 从 37 提到 46；重算 im2col 后可到 93。
+  - 速度：多张量 Adam；BN、残差与 ReLU 融合。
+  - 正确性：三种 sanitizer 均为 0 错误。
+  - GEMM：tile 与 split-K 改用实测计划；split-K 归约改为 FP32 与整数求和，结果逐位不变；加入 cp.async 流水。
+  - TF32、FP16/BF16 与 Winograd 只作实验后端。
+- B1（S10）：
+  - 失败按平台、代码、训练、配置四类分栏。
+  - 算子子 Agent 按 Nsight Compute 指标判断访存受限还是计算受限。
+  - 迁移子 Agent 用线性探测给出冻结级别与学习率倍率的先验，并在配对种子下判断负迁移。
+- B6（S11）：
+  - formal-full-002 与历史迁移结果已整理为可提交的报告。
+  - 控制台适配 v1 格式，显示四段耗时占比与 12 项指标，Compare 页可加载跨框架结果。
+  - system_design.md 与 module_design.md 已按 2026-11-09 的代码同步。
 
 ## 3. 本学期不做什么
 
@@ -262,6 +299,7 @@ PDF 把任务分成基础部分和拓展优化。本草案按下面的顺序推�
 - 硬件侧：`MyFlows/monitoring/gpu.py` 的 `GpuSampler`（NVML 优先，nvidia-smi 兜底；不支持的项保存 null 与原因）和 `ResourceRecorder`。控制台与 AutoPilot 为每个任务每 0.5 s 采样一次，写 `<run-dir>/resources.jsonl`：GPU 利用率、显存、温度、功耗与功耗上限、CPU 利用率、内存与各进程 RSS。
 - 训练侧：`metrics.jsonl` 的 step 行含 `data_load_ms`、`train_step_ms`（CUDA Event）、`step_time_ms`、`samples_per_sec`；每 `--phase-timing-every` 步（默认 20）再加 `forward_ms`、`backward_ms`、`optimizer_ms` 与 CuPy 显存池的区间峰值。`result.json` 汇总吞吐与显存峰值。AutoPilot 的 GPU Monitor 据此诊断数据读取、显存换页与功耗墙。
 - 未完成：TensorBoard 资源曲线；命令行直接运行 `apps.train` 时的资源采样；单独运行时 result.json 中的 GPU 型号、驱动与依赖版本（AutoPilot 的 trial 已记录）；正式训练路径的监控开销；下文第 19 讲（下）的交付要求。
+- 更新（2026-11-09）：上述未完成项与第 19 讲（下）的交付要求已在第三阶段 S1 完成，见 [监控交付](experiments/semester_2026_fall/monitoring/README.md) 与 2.10 节。
 
 第 19 讲（下）第 70–81 页把本项细化为“课程任务二”，按先打通采集通路、再做成模块、最后定位瓶颈的顺序推进：
 
@@ -365,6 +403,8 @@ All-Reduce 在 Parameter Server 正确后实现；已于 2026-09-19 随分布式
 
 现状（2026-11-04）：三种模型、官方权重的转换与输出比对、按名称载入、替换任务头、按阶段冻结、冻结前后指纹、迁移训练与 AutoPilot 的冻结搜索均已完成（2.7 节），本节原有的完成标准已满足；图像分类数据集用 DonkeyCar 转向分档代替 CIFAR-10。第 24 讲带来的补充要求见本节末尾。
 
+更新（2026-11-09）：本节末尾第 24 讲的补充要求已在第三阶段 S2–S4 完成，补充的完成标准均已满足。CIFAR-10 已下载，分类迁移实验在 CIFAR-10 平衡子集与道路转向分档上进行（[classify-001](experiments/semester_2026_fall/transfer/classify-001/report.md)），证据见 2.10 节。
+
 本学期拟实现三种不包含 VGG 的 CNN：
 
 1. ResNet18：先补齐官方结构兼容模式，再做权重映射。
@@ -426,6 +466,8 @@ All-Reduce 在 Parameter Server 正确后实现；已于 2026-09-19 随分布式
 
 现状（2026-11-04）：已按 autopilot_agent_spec.md 完成 M0–M6，本节的完成标准全部满足（证据见 2.6、2.8 节）。后续只随第三阶段做增量：Transfer Learning 子 Agent 的策略先验、报告中区分平台原因与代码原因的失败归类（见 stage3_plan.md）。
 
+更新（2026-11-09）：这两项增量与算子瓶颈分类已在 S10 实现，见 [诊断示例](experiments/semester_2026_fall/autopilot/diagnostics-001/report.md)。
+
 第一版完成 PDF 中要求的六部分：
 
 - Planner：根据训练目标、可用时间和允许尝试次数，确定本轮要试哪些参数。
@@ -481,6 +523,8 @@ DonkeyCar 分两步处理。
 
 现状（2026-11-04）：已有按时间段划分、带独立测试集的离线评估（`apps/train/evaluate_donkey.py`），驾驶端固定油门 0.2；没有闭环评估入口。`mycar/manage.py` 已通过 gym_donkeycar 连接本地模拟器，其每步 info 含 `cte`、`hit`、`lap_count` 等字段，可以作为闭环评估的 telemetry 来源；能否控制起点与随机种子仍需探测。
 
+更新（2026-11-09）：S6 已提供 `apps/eval/sim_probe.py` 与 `apps/eval/closed_loop.py`，完成 721 帧标定与两组配对实验（[baseline-001](experiments/semester_2026_fall/closed_loop/baseline-001/report.md)、[transfer-001](experiments/semester_2026_fall/closed_loop/transfer-001/report.md)），每种配置 10 次。Unity 接口不能指定道路种子与任意起点，已按完成标准如实记录，并只在同一会话内做配对比较。变速数据与 MobileNetV2 驾驶模型没有做。
+
 第一步：固定油门基线。
 
 - 沿用固定执行油门 0.2；保留原始数据中的 0.5，它是采集标签而非执行速度命令。离线主要比较转向指标，油门误差单列；不为“对齐”篡改原始标签或直接提速。训练监督是否屏蔽油门头作为一个单变量消融实验。
@@ -513,6 +557,8 @@ DonkeyCar 分两步处理。
 
 决定（2026-11-05）：不安装 PaddlePaddle，本项只比较 MyFlows 与 PyTorch；旧的 VGG 脚本及其测试删除，由 ResNet18 版本取代。下文涉及 PaddlePaddle 的要求不再适用。
 
+更新（2026-11-09）：S5 的 `benchmark/compare_frameworks_resnet.py` 已按本节协议完成三种子比较，并在每项主要优化完成后复测，见 [协议与结果](experiments/semester_2026_fall/frameworks/resnet18-001/report.md) 与最终报告第 4 节。
+
 三种实现必须使用：
 
 - 同一份训练集、验证集和样本顺序。
@@ -543,6 +589,8 @@ DonkeyCar 分两步处理。
 
 现状（2026-11-04）：统一入口 `tools/run_tests.py` 覆盖框架、应用与 `tests/system/`（AutoPilot 的预算、恢复、异常识别、回滚、TPE、dsh 守卫等），共 446 项。未完成：图像分类系统测试（CIFAR-10 已于 2026-11-05 下载并校验）、模拟器闭环测试、新增算子的性能回归门槛、成文的测试计划与定期执行（没有 CI；2026-11-05 决定接入只跑 CPU 测试的 GitHub Actions）。
 
+更新（2026-11-09）：统一回归共 534 项，Windows 上连续三轮通过。CIFAR-10 系统测试、模拟器闭环评估、GPU 性能回归门槛、成文的 [测试计划](test_plan.md) 与 GitHub 托管 CPU CI 均已完成（2.10 节）。
+
 测试分为以下几类：
 
 - 框架基础测试：现有计算图、算子、优化器和 checkpoint 不退化。
@@ -563,7 +611,7 @@ DonkeyCar 分两步处理。
 
 ## 5. 时间安排
 
-2026-11-04 起，剩余工作不再按汇报节点安排，而是按 [stage3_plan.md](stage3_plan.md) 的依赖顺序推进。下表保留为 v0.5 的历史安排。
+2026-11-04 起，剩余工作不再按汇报节点安排，而是按 [stage3_plan.md](stage3_plan.md) 的依赖顺序推进，第三阶段已于 2026-11-09 完成。下表保留为 v0.5 的历史安排。
 
 | 时间 | 主要工作 | 汇报时应展示 |
 | --- | --- | --- |
@@ -602,25 +650,25 @@ PDF 第 7 页分别写第 4 次课、第 8 次课和第 12 次周；这里保留
 
 ## 7. 最终验收清单
 
-状态更新于 2026-11-04。
+状态更新于 2026-11-09。
 
 ### 必须完成
 
-- [x] 当前基础测试稳定通过；127 项统一回归连续三轮，见阶段报告。（2026-11-04：446 项统一回归通过。）
+- [x] 当前基础测试稳定通过；127 项统一回归连续三轮，见阶段报告。（2026-11-09：534 项统一回归连续三轮通过。）
 - [x] 默认测试入口覆盖框架函数式测试，seed/dtype/稳定状态接口通过验证。（2026-10-22 起默认 float32 全链路；稳定参数名与 TrainingState 见 4.0、2.8 节。）
 - [x] CUDA C/C++ Conv2D 和 MaxPool2D 前向、反向正确（第一阶段 FP32 支持范围）。
 - [x] NumPy、CuPy、CUDA C 性能和误差报告完成（固定算子矩阵；第 19 讲的矩阵乘数据表见 CUDA 第 19 讲实验报告）。
 - [x] Nsight 分析完成（小/中规模与一次 dX 优化，不代替完整训练监控）。
 - [x] Parameter Server 支持 1、2、4 个 worker（GPU Worker，Socket JSON / gRPC；MNIST MLP 与 DonkeyCar ResNet18，见第 2.3 节）。
-- [ ] GPU、CPU 和训练阶段监控指标齐全。（NVML 0.5 s 采样、阶段计时与显存峰值已接入控制台与 AutoPilot 运行的训练；TensorBoard 资源曲线、命令行运行的资源采样与监控开销测量未完成。）
-- [ ] 第 19 讲（下）课程任务二：落盘格式说明、时间线与指标表、定位到文件与行号的瓶颈判断、同口径的优化前后对比。
+- [x] GPU、CPU 和训练阶段监控指标齐全。（v1 格式、训练入口自带采样、TensorBoard 资源曲线与监控开销见[监控交付](experiments/semester_2026_fall/monitoring/README.md)。）
+- [x] 第 19 讲（下）课程任务二：落盘格式说明、时间线与指标表、定位到文件与行号的瓶颈判断、同口径的优化前后对比。（同上；优化前后对照见 [freeze-001](experiments/semester_2026_fall/monitoring/freeze-001/report.md)。）
 - [x] AutoPilot Agent 基础版可以自动运行多次训练并生成报告。
 - [x] Agent 包含六组件和专业任务适配器，能根据指标诊断、在预算内选配置，并恢复调度记录。
-- [ ] MyFlows 与 PyTorch 同条件对比完成。（2026-11-05 决定不比较 PaddlePaddle。）
-- [ ] 图像分类系统测试完成。
-- [ ] DonkeyCar 闭环评估和对比完成。
-- [ ] 测试计划成文并定期执行，新增算子有性能回归门槛，CPU 测试接入 CI。
-- [ ] 系统设计、测试过程、实验结果和最终报告完成。
+- [x] MyFlows 与 PyTorch 同条件对比完成。（2026-11-05 决定不比较 PaddlePaddle；见 [resnet18-001](experiments/semester_2026_fall/frameworks/resnet18-001/report.md) 及之后的 7 次复测。）
+- [x] 图像分类系统测试完成。（CIFAR-10，见 [cifar10-001](experiments/semester_2026_fall/classification/cifar10-001/report.md)。）
+- [x] DonkeyCar 闭环评估和对比完成。（见 [baseline-001](experiments/semester_2026_fall/closed_loop/baseline-001/report.md)、[transfer-001](experiments/semester_2026_fall/closed_loop/transfer-001/report.md)；会话间差异见报告。）
+- [x] 测试计划成文并定期执行，新增算子有性能回归门槛，CPU 测试接入 CI。（见 [test_plan.md](test_plan.md)、[gate-profile-004](experiments/semester_2026_fall/operators/gate-profile-004/report.md)；GitHub Actions 运行 42640093233 通过。）
+- [x] 系统设计、测试过程、实验结果和最终报告完成。（见 [final_report.md](final_report.md)；设计文档按 2026-11-09 的代码同步。）
 
 ### 完成基础部分后继续
 
@@ -628,9 +676,9 @@ PDF 第 7 页分别写第 4 次课、第 8 次课和第 12 次周；这里保留
 - [x] ResNet18、MobileNetV2、AlexNet 三种预训练模型可用。
 - [x] 参数载入、冻结和迁移训练通过测试。
 - [x] AutoPilot Agent 使用 TPE、处理训练异常并自动恢复。
-- [ ] 冻结阶段的反向截断：反向耗时随冻结阶段数下降，未冻结参数的梯度逐位不变。
-- [ ] 第 24 讲的迁移组件与微调方法（分层学习率、渐进解冻、特征提取缓存）。
-- [ ] DonkeyCar 主任务上的正式迁移对照（从零训练与预训练、不同冻结级别，3 个 seed）。
+- [x] 冻结阶段的反向截断：反向耗时随冻结阶段数下降，未冻结参数的梯度逐位不变。（见 [freeze-001](experiments/semester_2026_fall/monitoring/freeze-001/report.md)。）
+- [x] 第 24 讲的迁移组件与微调方法（分层学习率、渐进解冻、特征提取缓存）。（另有 LoRA；见 [cache-001](experiments/semester_2026_fall/transfer/cache-001/report.md)、[lora-001](experiments/semester_2026_fall/transfer/lora-001/report.md)。）
+- [x] DonkeyCar 主任务上的正式迁移对照（从零训练与预训练、不同冻结级别，3 个 seed）。（见 [donkey-001](experiments/semester_2026_fall/transfer/donkey-001/report.md)，未检出负迁移。）
 
 任何一项只有设计或截图、没有可运行代码和原始结果，都不算完成。
 
@@ -638,7 +686,7 @@ PDF 第 7 页分别写第 4 次课、第 8 次课和第 12 次周；这里保留
 
 | 决策 | 本稿建议 | 需要进一步确认的部分 |
 | --- | --- | --- |
-| 当前顺序 | CUDA/PS/Nsight → AutoPilot → E2/E3 已完成；第三阶段按 stage3_plan.md 推进 | — |
+| 当前顺序 | CUDA/PS/Nsight → AutoPilot → E2/E3 → 第三阶段（stage3_plan.md）均已完成 | 下一阶段尚未排期，候选见下文的后续开发选项 |
 | 基础与拓展 | 按 PDF 保持 E1/E2/E3 为拓展；完整监控纳入基础 | 分布式课件 II 要求完整实现 Ring AllReduce，E1 已随分布式阶段交付 |
 | CUDA 接入 | 原生 C/C++ DLL：Driver API 加载 NVRTC 编译的自写 kernel；GEMM 默认用自写寄存器分块引擎，cuBLAS 可选 | 已实施（2026-09-06；寄存器分块引擎 2026-10-22）；Triton 不做 |
 | 数值 | 默认 float32；Adam 为教科书形式；规约在 FP64 中按固定顺序累加，结果逐位可复现 | 已实施（2026-10-22） |
@@ -651,8 +699,17 @@ PDF 第 7 页分别写第 4 次课、第 8 次课和第 12 次周；这里保留
 | 预训练 | ResNet18 → MobileNetV2 → AlexNet | 已实施（2.7 节） |
 | AutoPilot 口径 | 人工基线 lr 1e-3、batch 2、num_workers 0；seed 联调 2 个、正式 3 个；每个 campaign 的 token 上限 414,000 | 已确认并实施（autopilot_agent_spec.md 第 16 节） |
 | 资源 | 单 GPU 串行 trial；开发与验证先用小规模数据跑通 | 2026-11-05：第三阶段期间电脑全程空闲，全量运行与模拟器可以直接进行；人数、每人周工时与结项日期仍待确认 |
+| 文档维护 | 本文、autopilot_agent_spec.md、docs/README.md 与阶段规划由开发者随代码同步维护 | 已确定（2026-11-09） |
 
-第一阶段已实施并形成实验包，剩余学期范围继续按依赖推进。
+第一阶段到第三阶段均已实施并形成实验包。
+
+### 后续开发选项（未排期）
+
+以下选项已经识别，尚未排期。开工前按第 4 节的写法补充验收口径。
+
+| 选项 | 内容 | 依据与成本 | 状态 |
+| --- | --- | --- | --- |
+| 控制台闭环评估结果页 | 在训练控制台新增一页，读取 `apps.eval.closed_loop` 的输出（manifest.json、result.json、episodes.jsonl、frames.jsonl）。页面包括：<br>- 模型汇总表：平均与最大 \|CTE\|、出界次数、存活时间、行驶距离、终止原因、推理延迟 P50/P95，可与离线 MAE 并列；<br>- 相对基线的逐场景配对差；<br>- 单次运行的 CTE 与转向曲线，以及按 \|CTE\| 着色、标出出界点的俯视轨迹；<br>- 在多次评估之间切换，如 closed_loop/baseline-001 与 transfer-001 | 来自第三阶段 S11.3 的“如有余力”项。<br>只读已有结果，不需要模拟器与 GPU。<br>后端读取接口、前端页面、测试与前端构建约需 1–2 小时。<br>便于演示会话间差异以及离线与闭环排序不一致，不改变任何结论 | 2026-11-09 列为候选，未排期 |
 
 ## 9. 可执行任务拆分
 
@@ -670,7 +727,7 @@ PDF 第 7 页分别写第 4 次课、第 8 次课和第 12 次周；这里保留
 | W7 / 应用 | apps/autopilot/ 六组件与专业任务适配器；持久 trial registry；小预算搜索 | W1/W4/W5；PS 适配依赖 W3 | 24-40 | 6 个以内候选自动执行；诊断/排序/预算/重启去重/故障测试 |
 | W8 / 全组 | tests/system/；Agent 联动 CUDA/PS；优化驾驶对比、正式实验包、设计报告 | W2-W7 | 24-40 | B1-B7 逐项证据；失败和限制可见；新环境复现检查 |
 
-状态（2026-11-04）：W0 完成（Linux 上的完整回归除外）；W1 完成最小范围（稳定名称、TrainingState、result.json，没有通用 TrainRunner）；W2、W3、W7 完成；W4 部分完成（4.3 节）；W5、W6 未开始；W8 部分完成（Agent 系统测试已覆盖，正式实验包与设计报告未完成）；E1–E3 完成。
+状态（2026-11-04）：W0 完成（Linux 上的完整回归除外）；W1 完成最小范围（稳定名称、TrainingState、result.json，没有通用 TrainRunner）；W2、W3、W7 完成；W4 部分完成（4.3 节）；W5、W6 未开始；W8 部分完成（Agent 系统测试已覆盖，正式实验包与设计报告未完成）；E1–E3 完成。更新（2026-11-09）：W4、W5、W6、W8 已在第三阶段完成（分别对应 S1；S5、S7；S6；S9–S11）。
 
 基础合计约 192-300 人时；按 25% 集成/返工余量，容量约 240-375 人时。可用容量 = 人数 × 每人每周项目小时 × 剩余周数；例如 3 人 × 8 小时 × 12 周 = 288 人时，仅可作为基础目标的中间估算，不能再默认塞入全部拓展。
 
@@ -684,6 +741,6 @@ PDF 第 7 页分别写第 4 次课、第 8 次课和第 12 次周；这里保留
 
 拓展按可用容量单独选择；E1→E2→E3 是默认候选顺序，不要求同时开工。完整目标另需 92-148 人时，仍需预留返工。
 
-第一阶段 C0-C7 的实现、验收与交付见 [阶段报告](experiments/semester_2026_fall/stage1/README.md)。分布式阶段的实现与交付见 [PS / Ring 双任务实测报告](experiments/semester_2026_fall/distributed_gpu/20260919_optimized/README.md)。完整 ResNet FP32/BN、状态接口与 AutoPilot 已完成（第 2 节）；下一步按 [stage3_plan.md](stage3_plan.md) 推进剩余的监控交付、迁移学习、跨框架比较、闭环评估、分类测试与报告。
+第一阶段 C0-C7 的实现、验收与交付见 [阶段报告](experiments/semester_2026_fall/stage1/README.md)。分布式阶段的实现与交付见 [PS / Ring 双任务实测报告](experiments/semester_2026_fall/distributed_gpu/20260919_optimized/README.md)。完整 ResNet FP32/BN、状态接口与 AutoPilot 已完成（第 2 节）；第三阶段（[stage3_plan.md](stage3_plan.md)）完成了剩余的监控交付、迁移学习、跨框架比较、闭环评估、分类测试与报告（2.10 节）。
 
 若容量不足，先削减超参候选/模型规模/拓展数量，保留 B1-B7 的可运行闭环、正确性和基本重复实验；不能以旧学期资产缺失为理由增加补材料任务。

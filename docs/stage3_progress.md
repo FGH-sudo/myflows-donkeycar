@@ -1,6 +1,6 @@
 # 第三阶段开发记录
 
-本文记录 `stage3_plan.md` 的实施事实、验收证据与待办；规划、学期规格、AutoPilot 规格和文档索引仍由用户审核维护。
+本文记录 `stage3_plan.md` 的实施事实、验收证据与待办。2026-11-09 起，规划、学期规格、AutoPilot 规格和文档索引也由开发者随代码同步维护。
 
 ## 基线与执行约定
 
@@ -66,11 +66,14 @@
 | 2026-11-09 | S9.2 剩余 dW GEMM | MyFlows `724d0dd`：split-K 归约结果仍与固定顺序 FP64 求和逐位相同，但 2 份切分用 FP32 计算，3–32 份用 64 位整数精确求和（指数跨度超限、Inf/NaN 或次正规结果回到 FP64 循环）；TN 布局新增 3 种 cp.async 多级流水 tile，4 项 Ada 计划只换 tile、切分数不变。整网对拍 before-after-001 中 4 种配置 × 3 个 batch 的 82 个梯度数组与 loss 前后逐位相同；`tools.run_tests --scope framework` 311 项通过。完整门槛 [gate-profile-004](experiments/semester_2026_fall/operators/gate-profile-004/report.md)：步时比值 1.007、0.994、1.001，64 个 GEMM 全部不超过 1.20（最高 1.173），加权合计 0.963；原超限 4 项为 1.112、1.153、0.967、1.136。见 [gemm-ncu-002](experiments/semester_2026_fall/operators/gemm-ncu-002/report.md)。 |
 | 2026-11-09 | 合并前复核 | 根仓库 `0290d6c`、MyFlows `724d0dd`。复核了 split-K 归约的逐位证明与 cp.async 流水的同步顺序；原生 GEMM、cuBLAS、计划表与门槛测试 36 项通过。[sanitizer-002](experiments/semester_2026_fall/operators/sanitizer-002/report.md) 三种工具各 28 项，0 错误、0 竞争。before-after-001 只覆盖 w16 的 1 项计划变动，另在 4 个生产形状上直接比较新旧计划与旧引擎，16 组输入逐位相同。WSL 独立 checkout 收集 534 项，463 项通过、71 项带原因跳过，226.0 s（`runs/stage3/wsl-stage3-merge.log`）。Windows `--scope all --repeat 3` 每轮 534 项全部通过，无跳过，580.0 s、587.1 s、578.1 s（`runs/stage3/s9-merge-repeat3.log`）。两个仓库待推送内容的隐私扫描无命中。 |
 | 2026-11-09 | 合入 main 与 S9.3 托管运行 | 按用户决定，两个仓库快进合入 main 并推送：MyFlows `ce63df5..724d0dd` 先推送，根仓库 `918e042..c8071f7` 后推送。推送触发的首次 GitHub Actions 运行 [42640093233](https://github.com/FGH-sudo/myflows-donkeycar/actions/runs/42640093233) 通过：ubuntu-22.04、Python 3.11，作业 4 分 4 秒，其中依赖安装 22 s、统一回归 3 分 32 s。测试日志 artifact 已上传，运行未使用密钥。GitHub 上的日志需登录才能查看，同一代码在 WSL 独立 checkout 中列出 71 项跳过及原因。 |
+| 2026-11-09 | 文档交接与同步 | 用户把规划、学期规格、AutoPilot 规格与文档索引交给开发者维护。按本记录同步了 `stage3_plan.md`（v0.3）、`semester_spec.md`（v0.7）、`autopilot_agent_spec.md` 与 `docs/README.md`。控制台闭环评估结果页列为后续开发选项，未排期。 |
 
-## 待用户审核的规划文档更新建议
+## 规划文档同步
 
-- 完成各工作包后，将本记录的已验收条目同步到 `stage3_plan.md` 第 8 节与 `semester_spec.md` 第 7 节。
-- S9.2 的逐形状 GEMM 比较已按规划 2.3 节改用 Nsight Compute 锁频周期；建议在规划 S9.2 中写明这一测量方法，以及 WDDM 上约 20 分钟的耗时。
-- 逐形状 register/cuBLAS ≤ 1.20 已在 gate-profile-004 中全部通过（4 个 dW GEMM 经结果逐位不变的归约与 cp.async 流水修正）。建议把规划 S9.2 中的 4 个已知超限改为已通过，并注明余量最小的是 TN 512×256×640（1.153）。
-- S9.3 的 GitHub 托管 CI 已通过（运行 42640093233），第三阶段已快进合入两个仓库的 main。建议在规划第 8 节记为完成。
+- 2026-11-09 已同步：
+  - `stage3_plan.md` v0.3：第 8 节进度记录、S9.2 的测量方法与结果、S9.3 的结果、2.6 节的文档维护约定；
+  - `semester_spec.md` v0.7：状态、2.10 节、第 4 节各项现状、第 7 节验收清单、第 8 节的文档维护决定与后续开发选项；
+  - `autopilot_agent_spec.md` 的 S10 增量；
+  - `docs/README.md` 的文档索引。
+- 后续开发选项（控制台闭环评估结果页）记在 `semester_spec.md` 第 8 节，未排期。
 - 暂无需要新增依赖的决定。

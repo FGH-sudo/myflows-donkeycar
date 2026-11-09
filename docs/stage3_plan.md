@@ -1,6 +1,6 @@
 # 第三阶段开发规划：课程任务二、迁移学习与遗留任务
 
-- 状态：v0.2（2026-11-05），已记入用户对第 6 节各事项的决定，交给开发者执行
+- 状态：v0.3（2026-11-09）。S1–S11 全部完成并通过验收；两个仓库于 2026-11-09 快进合入 main（根仓库 c8071f7，MyFlows 724d0dd），GitHub 托管 CPU CI 通过。进度见第 8 节，实施细节见 [第三阶段开发记录](stage3_progress.md)。v0.2（2026-11-05）记入了用户对第 6 节各事项的决定
 - 依据：[semester_spec.md](semester_spec.md) v0.6（第 1、4.3、4.6、4.8–4.10、7 节）；[深度学习框架-19 CUDA 编程（下）.pdf](<深度学习框架-19 CUDA 编程（下）.pdf>) 第 47–82 页；[深度学习框架-24迁移学习.pdf](<深度学习框架-24迁移学习.pdf>) 第 15–48 页；[深度学习框架-16 综合项目III.pdf](<深度学习框架-16 综合项目III.pdf>) 第 3–6 页
 - 代码基线：根仓库 aaedaf2，MyFlows ce63df5；统一回归 446 项通过（2026-11-04）。文中的行号以这两个提交为准
 - 范围：第 19 讲（下）的课程任务二（监控与瓶颈分析）与优化清单；第 24 讲的迁移学习组件、方法与实验；此前遗留的基础项 B4（跨框架比较、闭环评估）、B5（图像分类测试、测试计划）、B6（文档与报告）
@@ -80,7 +80,7 @@
 
 ### 2.6 文档
 
-- `docs/semester_spec.md`、`docs/autopilot_agent_spec.md`、`docs/README.md` 与本文由用户审核和提交；开发中发现需要改动时，在报告中提出。
+- `docs/semester_spec.md`、`docs/autopilot_agent_spec.md`、`docs/README.md` 与本文原由用户审核和提交；2026-11-09 起交给开发者随代码同步维护。
 - `docs/system_design.md` 与 `docs/module_design.md` 只写当前代码事实，不能提前写成“已经实现”。
 
 ## 3. 当前基线（复测对照用）
@@ -504,6 +504,8 @@
   - ResNet18 的几个固定配置，每步耗时不比基线慢 10% 以上；
   - 卷积与池化的单算子耗时。
 - 测量按 2.3 节的方法交替进行。性能相关的改动合入前运行一次。
+- 逐形状 GEMM 的实际测量方法（2026-11-09）：`benchmark/gemm_ncu.py` 用 Nsight Compute 锁定 GPC 基频，每个 kernel 前清缓存；把 NVTX 区间内 GEMM 与 split-K 归约的 `sm__cycles_elapsed.max` 相加，两引擎交替 7 次取中位数。CUDA Event 计时在同一轮内可差 2 倍，只作参考。WDDM 上 64 个形状约需 20 分钟。
+- 结果：[gate-profile-004](experiments/semester_2026_fall/operators/gate-profile-004/report.md) 中三个配置的步时比值为 1.007、0.994、1.001，64 个 GEMM 都不超过 1.20（最高 1.173）。余量最小的切分形状是 TN 512×256×640，为 1.153。
 
 **S9.3 CI：GitHub Actions，只跑 CPU（2026-11-05 决定纳入）**
 
@@ -525,6 +527,7 @@
   - 单次运行不超过约 15 分钟；
   - 不需要任何密钥。
 - 工作流文件随正常提交推送；推送仍按 2.5 节先征得用户同意。
+- 结果（2026-11-09）：合入 main 后的首次托管运行 [42640093233](https://github.com/FGH-sudo/myflows-donkeycar/actions/runs/42640093233) 通过，作业用时 4 分 4 秒，未使用任何密钥。
 
 **S9.4 定期执行**
 
@@ -608,6 +611,18 @@
 | 日期 | 工作包 | 提交（根仓库 / MyFlows） | 结论 | 证据 |
 | --- | --- | --- | --- | --- |
 | 2026-11-05 | S7 准备 | — | CIFAR-10 二进制版本已下载并解压；MD5 与官方一致；训练集每类 5,000 条、测试集每类 1,000 条 | `runs/datasets/cifar10/` |
+| 2026-11-05 | S1 课程任务二 | cb3d691、9cdb103、3c16500、66b5a1b / 0a06459、0e642cf | v1 落盘格式与说明；训练入口自带 0.5 s 资源采样，TensorBoard 有资源曲线；9 次交替测量的采样开销中位数 0.601%；Nsight 时间线中每个空闲段都定位到 step、阶段与源码行 | [监控交付](experiments/semester_2026_fall/monitoring/README.md) |
+| 2026-11-05 | S2 冻结反向截断 | 89d6f7c / e49d4e3 | 冻结前三段后每步 kernel 数 494→373；40 组数值试验中 2,012 组梯度与更新逐字节一致 | [freeze-001](experiments/semester_2026_fall/monitoring/freeze-001/report.md) |
+| 2026-11-06～11-08 | S3 迁移组件与微调 | f788e98、b045741、e133baf / 056a1e4、4dc8838、d540ed9 | `MyFlows/transfer/` 的各组件由 TransferLearningManager 串联；支持参数组、渐进解冻、特征缓存与 LoRA，秩 4 合并 ONNX 的最大输出差 8.20×10⁻⁷ | [cache-001](experiments/semester_2026_fall/transfer/cache-001/report.md)、[lora-001](experiments/semester_2026_fall/transfer/lora-001/report.md) |
+| 2026-11-07～11-09 | S4 迁移实验 | 8902daa / — | 分类 24 个试验，主任务 21 个全量试验。按各种子最佳验证轮，冻结 4 段 0.02327 ± 0.00108，人工基线 0.03436 ± 0.01525，未检出负迁移 | [classify-001](experiments/semester_2026_fall/transfer/classify-001/report.md)、[donkey-001](experiments/semester_2026_fall/transfer/donkey-001/report.md) |
+| 2026-11-05～11-09 | S5 跨框架比较 | 44920fb / — | 62 个梯度与一次 Adam 更新对齐；初次三种子端到端吞吐 MyFlows 444.46、PyTorch 确定性模式 365.83 samples/s；S8 各项完成后复测 7 次 | [resnet18-001](experiments/semester_2026_fall/frameworks/resnet18-001/report.md) |
+| 2026-11-05～11-09 | S6 闭环评估 | b26dd0a、616023a / — | 721 帧标定；三模型 30 次、四模型 40 次配对评估，全部存活 30 s 且无碰撞。离线 MAE 与闭环 CTE 排序不一致，不同仿真会话之间差异大 | [baseline-001](experiments/semester_2026_fall/closed_loop/baseline-001/report.md)、[transfer-001](experiments/semester_2026_fall/closed_loop/transfer-001/report.md) |
+| 2026-11-07 | S7 CIFAR-10 | 34e6f16 / — | 32 样本过拟合门槛通过；MyFlows 与同构 PyTorch 的验证准确率均为 60.22%，官方测试集 60.13% | [cifar10-001](experiments/semester_2026_fall/classification/cifar10-001/report.md) |
+| 2026-11-08～11-09 | S8 算子与显存优化 | f515d04、80da1d4、bc133a3、29aa8c0、98d4aa0、cac6927、e032648、0f19c48、9db82b2、0290d6c / 832e3c3、cb4a62b、9531e04、5196b69、28e5572、34a8b89、25de44a、f9344b5、724d0dd | 驻留 batch 37→46→93；多张量 Adam 3.435→2.337 ms；BN 融合使步时降低 2.7%–4.3%；三种 sanitizer 各 28 项，0 错误；GEMM 调优与 Ada 实测计划；TF32、混合精度与 Winograd 只作对照 | [最终报告](final_report.md)第 3 节 |
+| 2026-11-07～11-09 | S9 测试计划与 CI | c33329f、98d4aa0、3ea4f1f、0290d6c / 724d0dd | 测试计划成文；GPU 门槛全部通过；Windows `--repeat 3` 每轮 534 项通过；GitHub 托管 CPU CI 通过 | [测试计划](test_plan.md)、[gate-profile-004](experiments/semester_2026_fall/operators/gate-profile-004/report.md) |
+| 2026-11-08 | S10 AutoPilot 增量 | 00e38f0 / — | 失败分为四类；算子瓶颈分类；线性探测给出迁移先验，并按配对种子判断负迁移 | [diagnostics-001](experiments/semester_2026_fall/autopilot/diagnostics-001/report.md) |
+| 2026-11-05～11-09 | S11 文档与报告 | 66b5a1b、49d1f63、de1f1e6 / — | formal-full-002 与历史迁移结果已归档；控制台适配 v1 格式，显示四段耗时，并可加载 S5 对比结果；设计文档已同步；最终报告完成 | [最终报告](final_report.md) |
+| 2026-11-09 | 合入 main | 918e042..c8071f7 / ce63df5..724d0dd | 按用户决定，两个仓库快进合入 main 并推送；首次 GitHub Actions 运行 42640093233 通过 | [开发记录](stage3_progress.md) |
 
 ## 9. 风险
 

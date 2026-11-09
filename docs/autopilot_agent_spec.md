@@ -1,10 +1,14 @@
 # MyFlows AutoPilot Agent Spec
 
 - 状态：v0.3 开发 Spec，已实现：M0–M6 于 2026-10-27 全部完成，各里程碑的完成情况见第 14 节。第 16 节列出的待定项已于 2026-10-23 逐项确认。v0.1（2026-10-22）为初版设计稿，v0.2 加入了 dsh 最小验证的结论
-- 日期：2026-10-23（2026-11-04 补记实施状态）
+- 日期：2026-10-23（2026-11-04 补记实施状态，2026-11-09 补记第三阶段增量）
 - 依据：[深度学习框架-16 综合项目III.pdf](<深度学习框架-16 综合项目III.pdf>) 第 2、4、5、8、9、10、11 页；[semester_spec.md](semester_spec.md) 第 4.0、4.7、4.10、9 节（W7、E3）
 - 代码基线：根仓库 80d02af，MyFlows ffb3378；DeepSeek Harness（下称 dsh）0.2.1-rc.2，上游提交 687f282e86。实现完成于根仓库 5aeb3ab、MyFlows f19ef79（2026-10-27）
-- 后续增量：Transfer Learning 子 Agent 的策略先验、报告中区分平台原因与代码原因的失败归类，见 [stage3_plan.md](stage3_plan.md)
+- 第三阶段增量（S10，2026-11-08 已实现）：
+  - 失败按平台、代码、训练、配置四类分栏；
+  - Operator Optimization 子 Agent 按 Nsight Compute 指标把热点 kernel 分为访存受限或计算受限，并给出对应的手法类别；
+  - Transfer Learning 子 Agent 用线性探测给出冻结级别与学习率倍率的先验，并在配对种子下判断负迁移。
+  - 见 [stage3_plan.md](stage3_plan.md) S10 与[诊断示例](experiments/semester_2026_fall/autopilot/diagnostics-001/report.md)。
 - 范围：细化 semester_spec 第 4.7 节；B1/B5 的验收口径不变
 
 ## 1. 定位与已确定的决策
