@@ -6,7 +6,7 @@
 
 - 开工日期：2026-11-05。
 - 根仓库基线：`2c20a5a`；MyFlows 基线：`ce63df5`。两个工作区开工时均干净。
-- 当前开发分支：两个仓库均为 `codex/stage3-development`。按工作包保存本地提交，先 MyFlows 后根仓库；公开推送留待具体交付完成并经用户同意。
+- 开发分支：两个仓库均为 `codex/stage3-development`。按工作包保存本地提交，先 MyFlows 后根仓库。2026-11-09 经用户同意，两个仓库都快进合入 main 并推送到公开远端。
 - 使用仓库 `.venv`，不运行 `uv sync`；GPU 训练、测试、计时与模拟器串行。
 - 全量训练和模拟器使用已获用户授权。原始运行放在 `runs/stage3/` 或规划指定的本地实验目录；只提交报告和源码。
 - 每次中断前更新本文，继续时先读本文及最近的实验报告，不重复已完成验收。
@@ -24,7 +24,7 @@
 | S6 闭环评估 | 探测与两组正式实验完成 | 721 帧标定，三模型 30 次。加入 S4 候选后在同一仿真会话轮换四个模型，共 40 次、24,011 帧。[配对结果与会话差异](experiments/semester_2026_fall/closed_loop/transfer-001/report.md) |
 | S7 CIFAR-10 系统测试 | 全量验收已测 | 32 样本过拟合门槛通过。45,000/5,000 训练与验证、同构 PyTorch 比较、锁定后官方 10,000 张测试均已完成。[报告](experiments/semester_2026_fall/classification/cifar10-001/report.md) |
 | S8 算子与显存优化 | S8.1–S8.8 已实测 | 最大驻留 batch 为 37→46→93。多张量 Adam、BN 融合完成对拍。三种 sanitizer 28 项均 0 错误，见 [sanitizer-002](experiments/semester_2026_fall/operators/sanitizer-002/report.md)。自动调优测了 4,365 个组合及 17 个占用率样本。Ada 计划经锁频计数修正 3 项，另有 4 项改用 cp.async 流水 tile，结果逐位不变。见[逐形状结果](experiments/semester_2026_fall/operators/autotune-001/report.md)、[锁频对比](experiments/semester_2026_fall/operators/gemm-ncu-001/report.md)与[归约与流水](experiments/semester_2026_fall/operators/gemm-ncu-002/report.md)。[TF32/FP16/BF16](experiments/semester_2026_fall/operators/precision-001/report.md)与[Winograd](experiments/semester_2026_fall/operators/winograd-001/report.md)只作对照 |
-| S9 测试计划与 CI | 本地验收完成，托管 CI 待推送后运行 | GEMM 门槛改用 Nsight Compute 锁频周期，逐形状门槛在 [gate-profile-004](experiments/semester_2026_fall/operators/gate-profile-004/report.md) 中全部通过。WSL Ubuntu 22.04 独立 checkout 与 Windows 三轮统一回归见运行记录。用户已同意推送并合入 main，托管运行结果推送后记录 |
+| S9 测试计划与 CI | 已验收 | GEMM 门槛改用 Nsight Compute 锁频周期，逐形状门槛在 [gate-profile-004](experiments/semester_2026_fall/operators/gate-profile-004/report.md) 中全部通过。Windows 三轮统一回归与 WSL 独立 checkout 见运行记录。GitHub 托管 CI 首次运行 [42640093233](https://github.com/FGH-sudo/myflows-donkeycar/actions/runs/42640093233) 通过，作业 4 分 4 秒 |
 | S10 AutoPilot 增量 | 已实现并专项验证 | M4、M6 和新增诊断规则 26 项通过。真实线性探测、配对差与算子指标见[报告示例](experiments/semester_2026_fall/autopilot/diagnostics-001/report.md) |
 | S11 设计与最终报告 | S11.1–S11.4 已整合 | 设计文档按 2026-11-09 的代码更新。[最终报告](final_report.md)覆盖系统设计、测试、B2–B7、E1–E3、S4–S10 与限制 |
 
@@ -65,11 +65,12 @@
 | 2026-11-09 | S9.3 本地复验 | WSL Ubuntu 22.04 独立 checkout（根仓库 `8902daa`、MyFlows `f9344b5`）收集 530 项，463 项通过、67 项带原因跳过，209.3 s；此前失败的恢复测试已改为确定性场景并通过。日志 `runs/stage3/wsl-stage3-final.log`。 |
 | 2026-11-09 | S9.2 剩余 dW GEMM | MyFlows `724d0dd`：split-K 归约结果仍与固定顺序 FP64 求和逐位相同，但 2 份切分用 FP32 计算，3–32 份用 64 位整数精确求和（指数跨度超限、Inf/NaN 或次正规结果回到 FP64 循环）；TN 布局新增 3 种 cp.async 多级流水 tile，4 项 Ada 计划只换 tile、切分数不变。整网对拍 before-after-001 中 4 种配置 × 3 个 batch 的 82 个梯度数组与 loss 前后逐位相同；`tools.run_tests --scope framework` 311 项通过。完整门槛 [gate-profile-004](experiments/semester_2026_fall/operators/gate-profile-004/report.md)：步时比值 1.007、0.994、1.001，64 个 GEMM 全部不超过 1.20（最高 1.173），加权合计 0.963；原超限 4 项为 1.112、1.153、0.967、1.136。见 [gemm-ncu-002](experiments/semester_2026_fall/operators/gemm-ncu-002/report.md)。 |
 | 2026-11-09 | 合并前复核 | 根仓库 `0290d6c`、MyFlows `724d0dd`。复核了 split-K 归约的逐位证明与 cp.async 流水的同步顺序；原生 GEMM、cuBLAS、计划表与门槛测试 36 项通过。[sanitizer-002](experiments/semester_2026_fall/operators/sanitizer-002/report.md) 三种工具各 28 项，0 错误、0 竞争。before-after-001 只覆盖 w16 的 1 项计划变动，另在 4 个生产形状上直接比较新旧计划与旧引擎，16 组输入逐位相同。WSL 独立 checkout 收集 534 项，463 项通过、71 项带原因跳过，226.0 s（`runs/stage3/wsl-stage3-merge.log`）。Windows `--scope all --repeat 3` 每轮 534 项全部通过，无跳过，580.0 s、587.1 s、578.1 s（`runs/stage3/s9-merge-repeat3.log`）。两个仓库待推送内容的隐私扫描无命中。 |
+| 2026-11-09 | 合入 main 与 S9.3 托管运行 | 按用户决定，两个仓库快进合入 main 并推送：MyFlows `ce63df5..724d0dd` 先推送，根仓库 `918e042..c8071f7` 后推送。推送触发的首次 GitHub Actions 运行 [42640093233](https://github.com/FGH-sudo/myflows-donkeycar/actions/runs/42640093233) 通过：ubuntu-22.04、Python 3.11，作业 4 分 4 秒，其中依赖安装 22 s、统一回归 3 分 32 s。测试日志 artifact 已上传，运行未使用密钥。GitHub 上的日志需登录才能查看，同一代码在 WSL 独立 checkout 中列出 71 项跳过及原因。 |
 
 ## 待用户审核的规划文档更新建议
 
 - 完成各工作包后，将本记录的已验收条目同步到 `stage3_plan.md` 第 8 节与 `semester_spec.md` 第 7 节。
 - S9.2 的逐形状 GEMM 比较已按规划 2.3 节改用 Nsight Compute 锁频周期；建议在规划 S9.2 中写明这一测量方法，以及 WDDM 上约 20 分钟的耗时。
 - 逐形状 register/cuBLAS ≤ 1.20 已在 gate-profile-004 中全部通过（4 个 dW GEMM 经结果逐位不变的归约与 cp.async 流水修正）。建议把规划 S9.2 中的 4 个已知超限改为已通过，并注明余量最小的是 TN 512×256×640（1.153）。
-- S9.3 的 GitHub 托管运行需要把 MyFlows 与根仓库的第三阶段提交推送到公开远端，推送前需用户同意（规划 2.5 节）。
+- S9.3 的 GitHub 托管 CI 已通过（运行 42640093233），第三阶段已快进合入两个仓库的 main。建议在规划第 8 节记为完成。
 - 暂无需要新增依赖的决定。

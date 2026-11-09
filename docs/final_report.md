@@ -24,7 +24,7 @@
 | CPU 回归（WSL Ubuntu 22.04 独立 checkout，与 CI 相同依赖与环境变量） | 根仓库 0290d6c、MyFlows 724d0dd：收集 534 项，463 项通过，71 项带原因跳过（缺 CUDA/CuPy 50 项、缺 torch 12 项、缺固定版本的 dsh 克隆或 Node.js 8 项、缺本地 CIFAR-10 数据 1 项），测试 226.0 s，墙钟 233 s |
 | 原生 CUDA 动态检查 | 根仓库 0290d6c、MyFlows 724d0dd 上，memcheck、racecheck、synccheck 各运行 28 项原生测试（含 split-K 归约与 cp.async 流水 tile），错误与竞争告警均为 0。[报告](experiments/semester_2026_fall/operators/sanitizer-002/report.md) |
 | GPU 性能门槛 | 三个 ResNet18 配置与对照代码树交替 6 轮，步时比值 1.007、0.994、1.001，均在 1.10 以内。64 个卷积 GEMM 在 Nsight Compute 锁频计数下逐形状 register/cuBLAS 均不超过 1.20（最高 1.173），加权合计 0.963；此前超限的 4 个 dW GEMM 降到 0.967–1.153，输出逐位不变。[门槛](experiments/semester_2026_fall/operators/gate-profile-004/report.md) |
-| GitHub 托管 CI | 工作流 `.github/workflows/tests.yml` 已就绪，尚未推送到公开远端运行 |
+| GitHub 托管 CI | 根仓库 main 推送 c8071f7（MyFlows 724d0dd）后，工作流 `.github/workflows/tests.yml` 的首次运行 [42640093233](https://github.com/FGH-sudo/myflows-donkeycar/actions/runs/42640093233) 通过：ubuntu-22.04、Python 3.11，作业共 4 分 4 秒，其中依赖安装 22 s、统一回归 3 分 32 s。测试日志与 skip 原因作为 artifact 上传，运行不使用任何密钥 |
 
 ## 3. 实验结果
 
@@ -69,6 +69,6 @@ S5 使用 batch 8，其 GEMM 形状不在 Ada 实测计划表中，最后一次�
 
 **迁移与闭环结论的范围。** 迁移对照只有 3 个种子，学习率 1e-3、batch 2 时多数配置在第 3 轮验证误差回升，各配置差值的 95% 区间都跨过零。生成道路的 Unity 接口只能控制客户端种子与默认 reset，同一模型（manual-t002）的平均绝对 CTE 在两次仿真会话中从 0.554 变为 29.823，模型排序只解释同一会话内的配对观测。分类准确率、离线回归 MAE 与闭环 CTE 回答的是不同问题，三者排序不一致。
 
-**功能边界。** 原生 CUDA 路径不支持 FP64、分组与空洞卷积；TF32、FP16/BF16 与 Winograd 没有接入原生卷积调度器，本机上都比 FP32 原生卷积慢。分布式训练只在单机回环上验证，所有 Worker 共享一张 GPU，没有 SyncBN。CPU CI 只在本地 WSL 的独立 checkout 中验证过，GitHub 托管运行要在推送公开远端后进行。
+**功能边界。** 原生 CUDA 路径不支持 FP64、分组与空洞卷积；TF32、FP16/BF16 与 Winograd 没有接入原生卷积调度器，本机上都比 FP32 原生卷积慢。分布式训练只在单机回环上验证，所有 Worker 共享一张 GPU，没有 SyncBN。GitHub 托管 CI 只运行不需要 GPU 的测试；CUDA 路径、PyTorch 对照与 dsh 克隆相关的测试只在本机运行。
 
-**后续工作。** 迁移实验加入学习率衰减或早停并增加种子；闭环评估在固定的 Unity 会话中增加重复，或寻找可指定道路种子的场景；把混合精度的打包与 Winograd 变换写进原生调度器后再评估速度；推送后确认托管 CI 的耗时与 skip 列表。
+**后续工作。** 迁移实验加入学习率衰减或早停并增加种子；闭环评估在固定的 Unity 会话中增加重复，或寻找可指定道路种子的场景；把混合精度的打包与 Winograd 变换写进原生调度器后再评估速度。
