@@ -17,6 +17,14 @@ STEP_LIMIT = 1.10
 GEMM_LIMIT = 1.20
 
 
+def gemm_ratio(row):
+    """register/cuBLAS of one GEMM row: SM cycles under Nsight Compute when present, else CUDA-event time."""
+    keys = ("register_cycles", "cublas_cycles") if "register_cycles" in row else ("register_ms", "cublas_ms")
+    if not all(isinstance(row.get(k), (int, float)) and math.isfinite(row[k]) and row[k] > 0. for k in keys):
+        raise ValueError("GEMM timings must be finite and positive")
+    return row[keys[0]] / row[keys[1]]
+
+
 def violations(step_ratios, gemm_rows):
     from benchmark.gemm_engines import GEMM_MODELS
 
@@ -32,9 +40,7 @@ def violations(step_ratios, gemm_rows):
         raise ValueError("duplicate GEMM shape within a measurement group")
     failed = [f"{name} step {ratio:.3f}×" for name, ratio in step_ratios.items() if ratio > STEP_LIMIT]
     for row in gemm_rows:
-        if not all(math.isfinite(row[k]) and row[k] > 0. for k in ("register_ms", "cublas_ms")):
-            raise ValueError("GEMM timings must be finite and positive")
-        ratio = row["register_ms"] / row["cublas_ms"]
+        ratio = gemm_ratio(row)
         if ratio > GEMM_LIMIT:
             failed.append(f"{row['model']} {row['part']} {row['layout']} {row['m']}×{row['n']}×{row['k']} {ratio:.3f}×")
     return failed
@@ -89,7 +95,8 @@ def run_gate(args):
             raise RuntimeError("a GPU identity is required to select a performance baseline")
         gpu_key = hashlib.sha256(devices[0]["uuid"].encode()).hexdigest()[:16]
         protocol = {"rounds": args.rounds, "steps": args.steps, "warmup": args.warmup, "configs": CONFIGS,
-                    "step_limit": STEP_LIMIT, "gemm_limit": GEMM_LIMIT}
+                    "step_limit": STEP_LIMIT, "gemm_limit": GEMM_LIMIT, "gemm_timer": args.gemm_timer,
+                    "gemm_reps": args.gemm_reps}
         archive = args.baselines/gpu_key/states["baseline"]["code_hash"]/out.name
         archive.mkdir(parents=True, exist_ok=False)
         write_json(out/"manifest.json", {"schema_version": 1, "environment": environment(), "trees": states,
@@ -105,7 +112,11 @@ def run_gate(args):
             for side in sides:
                 operators.extend({**r, "side": side, "round": rep} for r in measure_part(trees[side], args, "operators"))
                 write_json(out/"operators.json", operators)
-        gemms = measure_part(ROOT, args, "gemms")
+        if args.gemm_timer == "ncu":
+            from benchmark.gemm_ncu import compare, list_shapes
+            gemms, gemm_meta = compare(list_shapes(), out/"gemm-ncu", args.gemm_reps)
+        else:
+            gemms, gemm_meta = measure_part(ROOT, args, "gemms"), {}
         write_json(out/"gemms.json", gemms)
         write_json(archive/"baseline.json", {"gpu_key": gpu_key, "source": states["baseline"], "protocol": protocol,
                                              "steps": [r for r in steps if r["side"] == "baseline"],
@@ -127,11 +138,25 @@ def run_gate(args):
                 for side in trees]
         lines.append(f"| {case} | {phase} | {a:.4f} | {b:.4f} | {b/a:.3f} |")
     failed = violations(ratios, gemms)
-    lines += ["", f"逐形状检查覆盖 {len(gemms)} 项卷积 GEMM，按完整 GEMM 的 CUDA Event 耗时比较 register 与 cuBLAS，"
-              f"包含 split-K 归约。每项上限为 {GEMM_LIMIT:.2f} 倍。", "", "## 超限项目", ""]
+    if args.gemm_timer == "ncu":
+        method = (f"在 Nsight Compute 下比较 register 与 cuBLAS：GPC 时钟锁定在基频（实测 SM {gemm_meta['sm_ghz_median']:.3f} GHz），"
+                  f"每个 kernel 前清空缓存，每次调用的 GEMM 与 split-K 归约 kernel 按 NVTX 区间求和，两引擎交替 "
+                  f"{args.gemm_reps} 次，按 sm__cycles_elapsed.max 的中位数求比值")
+    else:
+        method = "按完整 GEMM 的 CUDA Event 耗时比较 register 与 cuBLAS，包含 split-K 归约"
+    weighted = (sum(r["count"] * r.get("register_cycles", r["register_ms"]) for r in gemms)
+                / sum(r["count"] * r.get("cublas_cycles", r["cublas_ms"]) for r in gemms))
+    lines += ["", f"逐形状检查覆盖 {len(gemms)} 项卷积 GEMM，{method}。每项上限为 {GEMM_LIMIT:.2f} 倍。"
+              f"按一步内出现次数加权的合计比值为 {weighted:.3f}。", "",
+              "| 模型 | 部分 | 布局 | M×N×K | tile / 切分 | 比值 |", "| --- | --- | --- | --- | --- | ---: |"]
+    for r in sorted(gemms, key=gemm_ratio, reverse=True)[:8]:
+        lines.append(f"| {r['model']} | {r['part']} | {r['layout']} | {r['m']}×{r['n']}×{r['k']} | "
+                     f"{r['tile']} / {r['slices']} | {gemm_ratio(r):.3f} |")
+    lines += ["", "## 超限项目", ""]
     lines += [f"- {v}" for v in failed] if failed else ["无。"]
     lines += ["", "原始比较在本目录的 steps.json、operators.json、gemms.json，本机基线按 GPU 标识和代码哈希保存。"]
     write_json(out/"result.json", {"passed": not failed, "step_ratios": ratios, "gemm_count": len(gemms),
+                                   "gemm_weighted_ratio": weighted, "gemm_timer": args.gemm_timer, "gemm": gemm_meta,
                                    "violations": failed, "baseline": str(archive)})
     (out/"report.md").write_text("\n".join(lines)+"\n", encoding="utf-8")
     return int(bool(failed))
@@ -145,6 +170,9 @@ def main(argv=None):
     ap.add_argument("--rounds", type=int, default=3)
     ap.add_argument("--warmup", type=int, default=5)
     ap.add_argument("--steps", type=int, default=20)
+    ap.add_argument("--gemm-timer", choices=("ncu", "events"), default="ncu",
+                    help="per-shape GEMM timer: Nsight Compute cycles at locked base clocks, or CUDA events")
+    ap.add_argument("--gemm-reps", type=int, default=7, help="alternating calls per engine under Nsight Compute")
     ap.add_argument("--worker", choices=("operators", "gemms"), help=argparse.SUPPRESS)
     ap.add_argument("--tree", type=Path, default=ROOT, help=argparse.SUPPRESS)
     args = ap.parse_args(argv)
@@ -152,8 +180,9 @@ def main(argv=None):
     if args.worker:
         print(json.dumps(operator_worker(args) if args.worker == "operators" else gemm_worker(args)))
         return 0
-    if not args.reference_tree or not args.out or args.rounds < 2 or min(args.steps, args.warmup) < 1:
-        ap.error("supply --reference-tree, --out, at least two rounds, and positive step counts")
+    if not args.reference_tree or not args.out or args.rounds < 2 or min(args.steps, args.warmup) < 1 \
+            or args.gemm_reps < 3:
+        ap.error("supply --reference-tree, --out, at least two rounds, positive step counts and three GEMM repeats")
     return run_gate(args)
 
 
