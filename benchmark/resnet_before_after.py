@@ -221,9 +221,11 @@ def _table(header, rows):
 
 def _gradient_rows(seed, run, trees, configs=GRAD_CONFIGS):
     """One training-mode step on the batch of ``seed`` for every tree and configuration."""
-    common = ["--stem", "imagenet", "--width", 16, "--batch", 8, "--height", 120, "--width-px", 160,
-              "--seed", seed]
-    if getattr(run, "config", {}).get("graph_opt"):
+    config = getattr(run, "config", {})
+    common = ["--stem", config.get("stem", "imagenet"), "--width", config.get("width", 16),
+              "--batch", config.get("batch", 8), "--height", config.get("height", 120),
+              "--width-px", config.get("width_px", 160), "--seed", seed]
+    if config.get("graph_opt"):
         common.append("--graph-opt")
     fixture, reference = run.path / f"grad-s{seed}-fixture.npz", run.path / f"grad-s{seed}-fp64.npz"
     _worker(ROOT, "reference", common + ["--fixture", fixture, "--output", reference])
@@ -270,8 +272,10 @@ def gradients(args, run, trees, configs=GRAD_CONFIGS):
         rows += seed_rows
     run.results["gradients"] = {"seeds": seeds, "rows": rows, "zero_gradient_params": np.flatnonzero(zero).tolist()}
     first = [r for r in rows if r["seed"] == seeds[0]]
+    cfg = getattr(run, "config", {})
     run.notes.append(
-        f"## 单步梯度相对 FP64 的误差（ResNet18 w16，imagenet stem，8×3×120×160，训练模式 BN，seed {seeds[0]}）\n\n"
+        f"## 单步梯度相对 FP64 的误差（ResNet18 w{cfg.get('width', 16)}，{cfg.get('stem', 'imagenet')} stem，"
+        f"{cfg.get('batch', 8)}×3×{cfg.get('height', 120)}×{cfg.get('width_px', 160)}，训练模式 BN，seed {seeds[0]}）\n\n"
         f"相同 float32 参数与 batch。{int((~zero).sum())} 个参数统计相对误差 ‖g − g64‖₂/‖g64‖₂ 的中位数、90 分位与最大值；"
         f"另 {int(zero.sum())} 个是紧接训练模式 BN 的卷积 bias，真实梯度恰为 0（BN 减去了通道均值），"
         "“零梯度噪声”列给出其中最大的 ‖g‖₂，以其余参数 ‖g64‖₂ 的中位数为单位（纯舍入噪声）。"
