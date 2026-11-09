@@ -7,7 +7,7 @@ Windows 命令在仓库根目录执行，表中的 `python` 取 `.venv/Scripts/p
 | 类别 | 触发时机 | 命令或入口 | 通过标准与时间口径 |
 | --- | --- | --- | --- |
 | 日常 CPU | 每个功能提交 | 针对变动模块运行 `python -m unittest -v <测试模块>`，函数式测试使用 `python -m tools.run_tests --scope framework --pattern <文件名>` | 所有目标用例通过。多数规则、序列化、API 组在数秒到一分钟内结束 |
-| 托管 CPU | main 推送、PR、手工 dispatch | `python -X utf8 -m tools.run_tests --scope all` | Ubuntu CPU 全部适用测试通过，skip 日志可追溯，目标约 15 分钟内完成。相同锁定依赖的 WSL 样本为 495 项、56 skip、214 s |
+| 托管 CPU | main 推送、PR、手工 dispatch | `python -X utf8 -m tools.run_tests --scope all` | Ubuntu CPU 全部适用测试通过，skip 日志可追溯，目标约 15 分钟内完成。相同锁定依赖的 WSL 样本为 534 项、71 skip、226 s |
 | 本机集成 | 每个工作包完成 | `python -X utf8 -m tools.run_tests --scope all` | CPU、实际 CUDA、可选本机资源的结果逐项列出。第三阶段已观测的完整运行约 9–10 分钟 |
 | GPU 性能 | 性能变动合入前、阶段报告前 | `python -m benchmark.perf_gate --reference-tree <固定对照代码树> --out runs/stage3/perf-<批次>`；只查 GEMM 时用 `python -m benchmark.gemm_ncu --out <目录>`，超限形状用 `--shapes <布局:M:N:K> --candidates` 复核全部 register 计划 | 同 GPU 与同会话交替，多配置步时比值 ≤ 1.10，同时记录卷积与池化前向、反向、合计耗时。逐形状 register/cuBLAS ≤ 1.20 按 Nsight Compute 计：GPC 锁定基频、每个 kernel 前清缓存，NVTX 区间内 GEMM 与 split-K 归约的 `sm__cycles_elapsed.max` 求和，两引擎交替 7 次取中位数。CUDA Event 计时在同一轮内可差 2 倍，只用 `--gemm-timer events` 作参考。WDDM 上 Nsight 约 1 s/kernel，64 个形状约 20 分钟 |
 | 阶段验收 | 最终报告前 | `python -X utf8 -m tools.run_tests --scope all --repeat 3`，再执行 GPU 性能门槛 | 三轮分别退出成功，记录每轮耗时和 skip 原因。性能超限项列出形状、实际比值与证据 |

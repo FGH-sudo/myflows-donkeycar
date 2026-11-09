@@ -61,7 +61,7 @@
 
 本轮使用根仓库 de1f1e6、MyFlows 724d0dd，对照代码树为根仓库 cac6927、MyFlows 28e5572（各自编译原生库）。三个 ResNet18 配置的步时比值为 1.007、0.994、1.001，逐形状门槛全部通过。64 个卷积 GEMM 按出现次数加权的合计比值为 0.963（w16 为 0.884，w64 为 1.015）；gate-profile-003 按同一周期数口径为 0.977、0.892、1.032（该报告中 w64 的 1.124 是按耗时加权的）。
 
-[gate-profile-003](../gate-profile-003/report.md) 的 4 个超限形状改用 [gemm-ncu-002](../gemm-ncu-002/report.md) 的计划：split-K 归约不再逐元素做 FP64 运算，TN 布局增加 cp.async 多级流水 tile。切分数与 K 块宽度不变，输出与改动前逐位相同。
+[gate-profile-003](../gate-profile-003/report.md) 的 4 个超限形状改用 [gemm-ncu-002](../gemm-ncu-002/report.md) 的计划：split-K 归约不再逐元素做 FP64 运算，TN 布局增加 cp.async 多级流水 tile。切分数不变（3 个切分形状的 K 块宽度也不变，不切分的 512×256×640 结果与 tile 无关），输出与改动前逐位相同。
 
 | 形状 | gate-profile-003 计划 | 比值 | 本轮计划 | register µs | cuBLAS µs | 比值 |
 | --- | --- | ---: | --- | ---: | ---: | ---: |

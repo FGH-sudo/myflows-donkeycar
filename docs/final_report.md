@@ -20,9 +20,9 @@
 
 | 项目 | 结果 |
 | --- | --- |
-| 本机统一回归（Windows，CPU + CUDA） | 阶段验收按测试计划运行 `--repeat 3`：根仓库 9db82b2、MyFlows f9344b5，每轮收集 530 项全部通过，无跳过，三轮耗时 557.7 s、546.4 s、567.8 s。阶段开工时为 443 项 |
-| CPU 回归（WSL Ubuntu 22.04 独立 checkout，与 CI 相同依赖与环境变量） | 根仓库 8902daa、MyFlows f9344b5：收集 530 项，463 项通过，67 项带原因跳过（缺 CUDA/CuPy 46 项、缺 torch 12 项、缺固定版本的 dsh 克隆 8 项、缺本地 CIFAR-10 数据 1 项），测试 209.3 s，墙钟 230 s |
-| 原生 CUDA 动态检查 | memcheck、racecheck、synccheck 各运行 24 项原生测试，错误与竞争告警均为 0。[报告](experiments/semester_2026_fall/operators/sanitizer-profile-001/report.md) |
+| 本机统一回归（Windows，CPU + CUDA） | 阶段验收按测试计划运行 `--repeat 3`：根仓库 0290d6c、MyFlows 724d0dd，每轮收集 534 项全部通过，无跳过，三轮耗时 580.0 s、587.1 s、578.1 s。阶段开工时为 443 项 |
+| CPU 回归（WSL Ubuntu 22.04 独立 checkout，与 CI 相同依赖与环境变量） | 根仓库 0290d6c、MyFlows 724d0dd：收集 534 项，463 项通过，71 项带原因跳过（缺 CUDA/CuPy 50 项、缺 torch 12 项、缺固定版本的 dsh 克隆或 Node.js 8 项、缺本地 CIFAR-10 数据 1 项），测试 226.0 s，墙钟 233 s |
+| 原生 CUDA 动态检查 | 根仓库 0290d6c、MyFlows 724d0dd 上，memcheck、racecheck、synccheck 各运行 28 项原生测试（含 split-K 归约与 cp.async 流水 tile），错误与竞争告警均为 0。[报告](experiments/semester_2026_fall/operators/sanitizer-002/report.md) |
 | GPU 性能门槛 | 三个 ResNet18 配置与对照代码树交替 6 轮，步时比值 1.007、0.994、1.001，均在 1.10 以内。64 个卷积 GEMM 在 Nsight Compute 锁频计数下逐形状 register/cuBLAS 均不超过 1.20（最高 1.173），加权合计 0.963；此前超限的 4 个 dW GEMM 降到 0.967–1.153，输出逐位不变。[门槛](experiments/semester_2026_fall/operators/gate-profile-004/report.md) |
 | GitHub 托管 CI | 工作流 `.github/workflows/tests.yml` 已就绪，尚未推送到公开远端运行 |
 
