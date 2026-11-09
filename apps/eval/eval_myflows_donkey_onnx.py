@@ -21,6 +21,8 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
+import json
 import sys
 import time
 from pathlib import Path
@@ -47,6 +49,7 @@ def main() -> None:
         help="评估用的 catalog 文件名（默认仅生成路网 catalog_generated.catalog）",
     )
     ap.add_argument("--checkpoint", type=str, required=True)
+    ap.add_argument("--report-json", type=Path, help="保存指标与模型、划分文件的 SHA-256")
     ap.add_argument("--fixed-throttle", type=float, default=0.5)
     ap.add_argument("--force-fixed-throttle", action="store_true", help="忽略 catalog 中的 user/throttle，强制使用 --fixed-throttle")
     ap.add_argument("--max-samples", type=int, default=1000, help="评估条数上限(0=catalog 全部)")
@@ -120,6 +123,7 @@ def main() -> None:
         steps = (n + B - 1) // B
 
         angle_se = 0.0
+        angle_ae = 0.0
         throttle_se = 0.0
         sign_correct = 0
         sign_total = 0
@@ -155,6 +159,7 @@ def main() -> None:
             t_true = y[:real_count, 1]
 
             angle_se += float(np.sum((a_pred - a_true) ** 2))
+            angle_ae += float(np.sum(np.abs(a_pred - a_true), dtype=np.float64))
             throttle_se += float(np.sum((t_pred - t_true) ** 2))
 
             for ai_pred, ai_true in zip(a_pred, a_true):
@@ -179,6 +184,7 @@ def main() -> None:
             "label": label,
             "path": str(model_path),
             "angle_mse": angle_se / n_eval,
+            "angle_mae": angle_ae / n_eval,
             "throttle_mse": throttle_se / n_eval,
             "angle_sign_accuracy": sign_correct / max(1, sign_total),
             "near_zero_accuracy": near_zero_true_correct / max(1, near_zero_true_total),
@@ -195,11 +201,23 @@ def main() -> None:
     elif int8_path:
         print(f"警告: INT8 模型不存在，跳过: {int8_path}")
 
+    if args.report_json:
+        def digest(path):
+            with Path(path).open("rb") as stream:
+                return hashlib.file_digest(stream, "sha256").hexdigest()
+
+        for row in results:
+            row["sha256"] = digest(row["path"])
+        destination = ROOT / args.report_json
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_text(json.dumps({"schema_version": 1, "split": args.split, "results": results,
+                                           "split_sha256": digest(ROOT/args.split_file) if args.split_file else None},
+                                          ensure_ascii=False, indent=2, allow_nan=False), encoding="utf-8")
     print("\n=== ONNX Eval Summary ===")
     print(f"input={w}x{h}")
     for r in results:
         print(f"\n--- {r['label']} ({r['path']}) ---")
-        print(f"angle_mse={r['angle_mse']:.6f} throttle_mse={r['throttle_mse']:.6f}")
+        print(f"angle_mae={r['angle_mae']:.6f} angle_mse={r['angle_mse']:.6f} throttle_mse={r['throttle_mse']:.6f}")
         print(
             f"angle_sign_accuracy={r['angle_sign_accuracy']:.4f} "
             f"(near-zero={r['near_zero_accuracy']:.4f})"

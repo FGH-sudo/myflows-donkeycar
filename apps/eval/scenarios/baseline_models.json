@@ -1,18 +1,22 @@
 [
   {
     "id": "current-pilot",
-    "path": "mycar/models/myflow_resnet18_best.onnx"
+    "path": "mycar/models/myflow_resnet18_best.onnx",
+    "offline_angle_mae": 0.03199813209893555,
+    "offline_weights_sha256": "50aeb2a1512de6d8fdc4542c8e1305efd3cee2ff6e3f11731284bc999346d9ee"
   },
   {
     "id": "manual-t002",
     "path": "runs/autopilot/formal-full-002/trials/t002/attempt-1/checkpoints/best",
     "config": "runs/autopilot/formal-full-002/trials/t002/attempt-1/config.json",
-    "offline_angle_mae": 0.022111520662670955
+    "offline_angle_mae": 0.022111520662670955,
+    "offline_weights_sha256": "04b281f9defcd2e1be83f0ff806e0f33117e39aea972f9d565ef1e1959efb74e"
   },
   {
     "id": "candidate-t012",
     "path": "runs/autopilot/formal-full-002/trials/t012/attempt-1/checkpoints/best",
     "config": "runs/autopilot/formal-full-002/trials/t012/attempt-1/config.json",
-    "offline_angle_mae": 0.021696293447981588
+    "offline_angle_mae": 0.021696293447981588,
+    "offline_weights_sha256": "9dd1bc809c72de6bf5fa66477878ed085ee4efa32f57a0ebc7e2d1f3b603db5f"
   }
 ]

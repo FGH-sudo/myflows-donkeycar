@@ -228,6 +228,8 @@ class RecoveryTest(CampaignTestCase):
     scenario = {"step_s": 0.15}
 
     def test_restart_keeps_finished_trials_and_reattaches_the_running_one(self):
+        self.h.set_scenario({"step_s": .15, "rules": [
+            {"when": {"seed": 1, "lr": .001, "batch": 2, "attempt": 1}, "behavior": "crash"}]})
         service = self.h.service
         cid = service.create_campaign(self.h.spec(strategy={"max_candidates": 1}))["campaign_id"]
         service.start_campaign(cid)
@@ -235,12 +237,18 @@ class RecoveryTest(CampaignTestCase):
                                          if t["trial_id"] == "t002" and t["status"] == "running"), None), timeout=60)
         self.assertIsNotNone(running)
         job_id = running["attempts"][0]["job_id"]
+        finished = next(t for t in service.trials(cid) if t["trial_id"] == "t001")
+        self.assertEqual(finished["status"], "done")
+        self.assertEqual(finished["verdict"]["status"], "valid")
+        finished_jobs = [a["job_id"] for a in finished["attempts"]]
+        self.assertEqual([a["status"] for a in finished["attempts"]], ["failed", "succeeded"])
         service = self.h.restart()
         self.assertEqual(service.get_campaign(cid)["status"], "running")
         campaign = self.h.wait(cid)
         self.assertEqual(campaign["status"], "completed")
         trials = _trials(self.h, cid)
-        self.assertEqual(len(trials["t001"]["attempts"]), 1)
+        self.assertEqual([a["job_id"] for a in trials["t001"]["attempts"]], finished_jobs)
+        self.assertEqual(trials["t001"]["verdict"], finished["verdict"])
         self.assertEqual([a["job_id"] for a in trials["t002"]["attempts"]], [job_id])
         self.assertEqual(trials["t002"]["verdict"]["status"], "valid")
         recovered = [e for e in service.events(cid) if e["kind"] == "campaign" and e.get("status") == "recovered"]

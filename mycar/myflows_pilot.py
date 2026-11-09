@@ -91,7 +91,12 @@ class MyFlowsResNet18Pilot:
             args.distributed = "none"
             self.input_dtype = np.dtype(args.dtype).type
             ms.set_default_dtype(self.input_dtype)
-            backend = train._resolve_conv_backend(args.conv_backend, actual_device, self.input_dtype)
+            requested = args.conv_backend
+            if actual_device == "cpu" and requested != "winograd":
+                requested = "numpy"
+            elif actual_device == "cuda" and requested == "numpy":
+                requested = "auto"
+            backend = train._resolve_conv_backend(requested, actual_device, self.input_dtype)
             self.x, _, self.model, self.out, _, _ = train._build_model(
                 args, 1, self.image_h, self.image_w, self.input_dtype, backend, load_pretrained=False)
         self.graph = ms.Graph(self.out)

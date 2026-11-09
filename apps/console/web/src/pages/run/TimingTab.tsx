@@ -161,6 +161,9 @@ export default function TimingTab({ detail, state, ranks }: { detail: RunDetail;
   }
 
   const pairHeight = Math.max(260, 150 + allRanks.length * 48)
+  const totals = state.phaseTotals
+  const singleShares = totals?.count ? SINGLE_STAGES.map(([field, label]) =>
+    `${label} ${(100 * totals[field] / totals.step_total_ms).toFixed(1)}%`).join(' · ') : ''
   return (
     <div>
       {distributed && allRanks.length > 1 ? (
@@ -196,10 +199,10 @@ export default function TimingTab({ detail, state, ranks }: { detail: RunDetail;
           </Col>
         ) : null}
         {shareOption ? (
-          <Col xs={24} xl={12}>
+          <Col xs={24} xl={distributed ? 12 : 24}>
             <ChartPanel title={distributed ? '各 Rank 阶段耗时占比' : '训练阶段耗时占比'}
-              subtitle={distributed ? '已加载 step 的累计占比' : `按 ${state.phaseTotals?.count} 个完整采样步的总耗时计算，含数据读取`}
-              option={shareOption} height={pairHeight} />
+              subtitle={distributed ? '已加载 step 的累计占比' : `${singleShares}（${totals?.count} 个完整采样步，分母含数据读取）`}
+              option={shareOption} height={distributed ? pairHeight : 215} />
           </Col>
         ) : null}
         {bytesOption ? (

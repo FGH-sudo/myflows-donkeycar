@@ -1085,7 +1085,8 @@ def _train_rank(plan: TrainPlan, rank, sync, device, profiler) -> dict:
         if not plan.resume_state and not plan.resume_found:
             from apps.train.transfer_probe import linear_probe
 
-            transfer["probe"] = linear_probe(model, x_var, plan.dataset, _load_training_sample)
+            manager.probe = linear_probe(model, x_var, plan.dataset, _load_training_sample)
+            transfer["probe"] = manager.probe
     cached_train = None
     cache_info = None
     if args.feature_cache:
@@ -1144,6 +1145,8 @@ def _train_rank(plan: TrainPlan, rank, sync, device, profiler) -> dict:
     history = TrainingHistory()
     global_step = plan.start_global_step
     inspect_done = False
+    if args.check_shape or args.check_content:
+        graph.materialize_intermediates()
     sync_verified = False
     train_span = _DeviceSpan(device)
     phases = _StepPhases(device, args.phase_timing_every, profiler=profiler)
@@ -1302,6 +1305,7 @@ def _train_rank(plan: TrainPlan, rank, sync, device, profiler) -> dict:
                 if not report["ok"]:
                     raise SystemExit("graph inspection failed")
                 inspect_done = True
+                graph.materialize_intermediates(False)
             if dashboard.active and dashboard.grad_interval > 0 and (global_step % dashboard.grad_interval == 0):
                 # 只在要记录时才算：全局范数要读回一个标量，会让 CPU 等 GPU 跑完整个反向
                 dashboard.tb.log_scalar("gradients/global_norm", global_gradient_norm(model), global_step)

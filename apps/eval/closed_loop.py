@@ -171,7 +171,7 @@ def aggregate(episodes, baseline):
 
 def _fingerprints(item):
     path = ROOT / item["path"]
-    files = [path] if path.suffix == ".onnx" else [path.with_suffix(".json"), path.with_suffix(".npz")]
+    files = [path] if path.suffix.lower() == ".onnx" else [path.with_suffix(".json"), path.with_suffix(".npz")]
     if item.get("config"):
         files.append(ROOT / item["config"])
     digests = {}
@@ -179,6 +179,16 @@ def _fingerprints(item):
         with file.open("rb") as handle:
             digests[file.name] = hashlib.file_digest(handle, "sha256").hexdigest()
     return digests
+
+
+def model_manifest(item):
+    files = _fingerprints(item)
+    row = {**item, "sha256": files}
+    path = Path(item["path"])
+    weights = path.name if path.suffix.lower() == ".onnx" else path.with_suffix(".npz").name
+    if item.get("offline_weights_sha256") and files[weights] != item["offline_weights_sha256"]:
+        row.update(offline_angle_mae=None, offline_missing_reason="offline score belongs to different weights")
+    return row
 
 
 def frame_statistics(path):
@@ -258,7 +268,8 @@ def main(argv=None):
     from apps.common.gpu_lock import GpuLock
     from apps.autopilot.provenance import code_state
 
-    manifest = {"schema_version": 1, "protocol": protocol, "models": [dict(m, sha256=_fingerprints(m)) for m in models],
+    models = [model_manifest(m) for m in models]
+    manifest = {"schema_version": 1, "protocol": protocol, "models": models,
                 "device": args.device, "code": code_state(ROOT)}
     write_json(out / "manifest.json", manifest)
     rows = []

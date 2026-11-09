@@ -3,10 +3,11 @@
 import io
 import json
 import unittest
+from unittest.mock import patch
 
 import numpy as np
 
-from apps.eval.closed_loop import EpisodeMetrics, aggregate, episode
+from apps.eval.closed_loop import EpisodeMetrics, aggregate, episode, model_manifest
 from apps.eval.sim_probe import summarize
 
 
@@ -35,6 +36,12 @@ class FakeStream:
 
 
 class ClosedLoopTest(unittest.TestCase):
+    def test_offline_score_follows_the_weights_when_a_deployment_model_is_replaced(self):
+        weights = {"path": "current.onnx", "offline_angle_mae": .032, "offline_weights_sha256": "archived"}
+        with patch("apps.eval.closed_loop._fingerprints", return_value={"current.onnx":"archived"}):
+            self.assertEqual(model_manifest(weights)["offline_angle_mae"], .032)
+        with patch("apps.eval.closed_loop._fingerprints", return_value={"current.onnx":"different"}):
+            self.assertIsNone(model_manifest(weights)["offline_angle_mae"])
     def test_episode_debounces_excursions_brakes_on_collision_and_logs_applied_actions(self):
         ctes = [2.1, 2.2, 2.3, 2.4, 1.5, 2.3, .5, .5, -2.1, -2.2, -2.3]
         stream = FakeStream([(v, "none") for v in ctes[:-1]] + [(ctes[-1], "wall")])

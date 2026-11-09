@@ -13,14 +13,16 @@
 
 | 模型 | 离线角度 MAE | 平均差 Δ存活秒 | Δ距离 | Δ平均绝对 CTE | Δ出界数 |
 | --- | --- | --- | --- | --- | --- |
-| current-pilot | 缺测 | 0.010 | 3.325 | -29.346 | -1.000 |
+| current-pilot | 0.03200 | 0.010 | 3.325 | -29.346 | -1.000 |
 | manual-t002 | 0.02211 | 0.000 | 0.000 | 0.000 | 0.000 |
 | candidate-t012 | 0.02170 | -0.000 | 2.959 | -29.239 | 0.000 |
 | transfer-pretrained-k4 | 0.02478 | 0.006 | 5.555 | -2.810 | 0.000 |
 
 manifest.json 记录规则、场景、模型来源和 SHA-256。frames.jsonl 保存逐帧遥测，episodes.jsonl 保存各次 reset 起点与结局，result.json 保存平均、最差和配对差异。Unity 场景随机种子和任意起点坐标无法通过当前接口指定。
 
-40 次运行共 24,011 帧，全部达到 30 秒时限，碰撞计数为零。迁移模型取全量迁移实验中按验证集选定的 pretrained-k4、seed 3 的最佳 checkpoint。其独立测试转向 MAE 为 0.02478，平均绝对 CTE 为 27.012，每次运行均触发一次走廊出界。candidate-t012 的平均绝对 CTE 为 0.584，十次均发生短时越界。current-pilot 的十次运行均在走廊内。
+40 次运行共 24,011 帧，全部达到 30 秒时限，碰撞计数为零。迁移模型取全量迁移实验中按验证集选定的 pretrained-k4、seed 3 的最佳 checkpoint。其独立测试转向 MAE 为 0.02478，平均绝对 CTE 为 27.012，每次运行均触发一次走廊出界。candidate-t012 的平均绝对 CTE 为 0.584，每次有 23–41 帧的绝对 CTE 超过 2.0。current-pilot 的十次运行均在走廊内。
+
+补测 current-pilot 使用与 manifest 相同的 ONNX 文件，并使用 formal-full-002 的同一份 1,000 帧测试清单，原始转向 MAE 为 0.03199813。本次未核实该旧模型原始训练集与这批帧是否重叠，其得分用于描述相同帧上的表现。离线排序首位是 candidate-t012，闭环平均绝对 CTE 最低的是 current-pilot。命令为 `python -m apps.eval.eval_myflows_donkey_onnx --checkpoint mycar/models/myflow_resnet18_best.onnx --split-file runs/autopilot/splits/donkey-all-val1000-test1000-tb50g5-s42.json --split test --max-samples 0 --device cuda --report-json runs/stage3/pilot-offline.json`。
 
 与 baseline-001 对照，原有三个模型的文件哈希和评估协议均相同，但新会话中 manual-t002 的平均绝对 CTE 从 0.554 变为 29.823。生成道路在 Unity 进程之间无法固定。报告采用同一会话内的逐场景配对结果，十次 reset 也没有提供十条独立、已知的道路。离线 MAE 与此会话平均绝对 CTE 在 manual-t002 和迁移模型之间给出相反排序。
 
