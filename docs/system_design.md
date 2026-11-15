@@ -1,6 +1,6 @@
 # 当前系统设计
 
-更新时间为 2026-11-09。
+更新时间为 2026-11-15。
 
 本文只说明仓库当前已经存在的系统。第一阶段已实现 CUDA C/C++ Conv/Pool 与 Nsight 实验入口；分布式阶段已按 [stage1_distributed_gpu_spec.md](stage1_distributed_gpu_spec.md) 实现 GPU Worker 的同步 PS（Socket JSON / gRPC）与 Ring AllReduce。训练控制台（第 8 节）已把运行记录、实时曲线、GPU 占用和任务启停集中到一个 Web 界面。训练控制台也承担 AutoPilot 任务调度。训练入口支持 ImageNet 参数迁移、精确恢复、资源采样与 NVTX 诊断。
 
@@ -76,6 +76,8 @@ PS 模式和 Ring 模式二选一；Ring 模式没有 PS 进程。所有进程�
 - gRPC 或 FastAPI 服务推理。
 
 服务化代码作为已有基础保留，本学期只做必要的回归测试，不继续扩展为主要开发方向。
+
+两个服务都没有鉴权，默认只监听 127.0.0.1；需要让其他机器访问时显式传 `--host`，容器入口传 `0.0.0.0`。FastAPI 在解析前按上传上限截断请求体（包括分块传输），图片先读文件头核对像素数，再交给 OpenCV 解码。
 
 ## 5. 当前 DonkeyCar 状态
 
@@ -153,12 +155,13 @@ flowchart LR
 - 任务：只接受框架支持的模式/传输组合与白名单参数；默认串行执行。分布式实验停止时发送 CTRL_BREAK，正式训练（单进程或多 Worker）写 `STOP_TRAINING` 让训练在同一步保存断点后退出；20 秒内未退出则结束整个进程树。正式训练用到原生后端而原生库缺失时，任务启动后先自动编译，新建页面会提示这一点。控制台重启后按 PID 与创建时间重新接管仍在运行的任务。
 - Worker 视图：分布式实验按 rank 显示曲线、阶段耗时占比、最新 step 与梯度同步占比；各 rank 在 `prepare.json` 中记录 PID，控制台据此把 GPU 进程和进程内存对应到 rank。多 Worker 的正式训练也写 `rank-*/prepare.json` 与 `steps.jsonl`，拓扑页显示各 Worker 的 step 耗时与同步占比，曲线仍取 rank 0 的 `metrics.jsonl`。
 - 单进程训练：`TrainingDashboard` 在 `--run-dir` 下同时写 `metrics.jsonl`，与 TensorBoard 记录内容一致。
+- 访问边界：控制台能启动训练进程，所以除了默认只绑定 127.0.0.1，还校验 Host 头（本机名称、绑定地址与 `--host` 指定的名称），并拒绝 Origin 与自身不一致或标为跨站的 `/api` 请求。提交的任务与 campaign 逐字段核对类型，campaign_id、trial_id 与闭环评估的归档名只能是单段目录名。
 
-运行详情的耗时图按数据、前向、反向、优化器四段展示，阶段占比按共同的阶段采样步累计并除以含读取的总步时。分母在后端降采样之前计算。硬件资源页显示整卡显存与采样峰值。Compare 页可选择 S5 框架归档，分别查看固定张量吞吐、含数据传输的吞吐和逐种子验证曲线。
+运行详情的耗时图按数据、前向、反向、优化器四段展示，阶段占比按共同的阶段采样步累计并除以含读取的总步时。分母在后端降采样之前计算。硬件资源页显示整卡显存与采样峰值。Compare 页可选择 S5 框架归档，分别查看固定张量吞吐、含数据传输的吞吐和逐种子验证曲线。Compare 页的“闭环评估”视图读取 `docs/experiments/semester_2026_fall/closed_loop/` 下归档的 `apps.eval.closed_loop` 输出（`apps/console/closed_loop.py`，只读）：模型汇总表把平均与最大 |CTE|、出界次数、存活时间、行驶距离、结束方式和推理延迟与离线转向 MAE 并列；配对差按场景显示各模型相对基线的差值；单次运行显示 CTE、转向与速度曲线，以及两轴等比例、按 |CTE| 着色并标出出界与碰撞帧的俯视轨迹。逐帧记录按模型与场景降采样后返回，出界区间的两端与碰撞帧始终保留。
 
 ### AutoPilot、迁移训练与恢复
 
-控制台将 campaign 交给 AutoPilot 服务。Planner 生成配置，Executor 通过 JobManager 串行执行 trial，Verifier 读取运行证据与在线异常，Scheduler 管理预算和恢复。Reporter 汇总人工基线、配对种子和独立测试集结果。持久化的 campaign、trial 和 attempt 记录支持重启后接续。TPE 使用已验证的历史结果搜索，回滚从通过校验的 TrainingState 恢复。[AutoPilot 规格](autopilot_agent_spec.md)
+控制台将 campaign 交给 AutoPilot 服务。Planner 生成配置，Executor 通过 JobManager 串行执行 trial，Verifier 读取运行证据与在线异常，Scheduler 管理预算和恢复。Reporter 汇总人工基线、配对种子和独立测试集结果。持久化的 campaign、trial 和 attempt 记录支持重启后接续。TPE 使用已验证的历史结果搜索，被预检拒绝的建议记入 campaign 状态、占用候选名额且不再重复提出，经验库预测会失败的配置在提出前跳过；回滚从通过校验的 TrainingState 恢复。时间块划分让训练、验证、测试三部分两两保持间隔，划分文件记录所遵守的约定（`contract`）；更早生成、只保证训练帧与留出帧间隔的文件仍可使用，并按旧约定验证。[AutoPilot 规格](autopilot_agent_spec.md)
 
 ResNet18、MobileNetV2 与 AlexNet 可读取按 torchvision 名称保存的 NPZ 权重。载入时核验骨干名称和形状并记录任务头替换。冻结阶段同时控制参数和 BN 统计量。分类验证使用转向分档任务，主任务使用 DonkeyCar 回归和固定划分。训练结果记录来源哈希、冻结等级与冻结前后指纹。
 

@@ -44,7 +44,7 @@
 | apps/train/train_myflows_donkey.py | ResNet18 正式训练入口：单进程与 `--distributed ps|ring --workers N` 数据并行共用同一个训练循环（`train_rank`）；断点记录续训位置（epoch、step、早停计数），验证集 loss 按真实样本精确计算，分布式时验证集按 Worker 切分后汇总 |
 | apps/autopilot/ | campaign、trial、attempt 持久状态，规划、调度、执行、验证、证据与报告，TPE 条件搜索与 TrainingState 回滚 |
 | apps/autopilot/agents/、dsh/ | GPU、算子、数据并行、基准与迁移规则，以及可选 dsh 工具适配 |
-| apps/common/splits.py | 时间段或随机划分、样本指纹、固定划分文件的创建和验证 |
+| apps/common/splits.py | 时间段或随机划分、样本指纹、固定划分文件的创建和验证；时间块划分让训练、验证、测试两两保持间隔（`contract` 2），`separate_held_out=False` 复现只隔开训练帧的旧划分（`contract` 1），`validate_time_split_gap` 按文件的约定核对已有划分 |
 | apps/common/cifar10.py、apps/train/train_classify.py | 校验并读取 CIFAR-10 二进制档，训练小型 CNN 或 ResNet18，独立保存验证表现与锁定后的测试结果 |
 | apps/train/transfer_probe.py | 在已有训练分区内部切分时间块和拟合线性探测，供迁移 Agent 生成候选 |
 | apps/train/transfer_classify.py、evaluate_donkey.py | 转向分档分类迁移实验与固定测试集上的回归模型评估 |
@@ -55,13 +55,14 @@
 | apps/eval/simulator.py、sim_probe.py、closed_loop.py | 管理本地 Unity 会话，核对实际发送的遥测字段，按锁定的阈值、去抖与场景清单配对评估 checkpoint 和 ONNX |
 | apps/eval/eval_myflows_donkey.py | MyFlows checkpoint 评估 |
 | apps/eval/eval_myflows_donkey_onnx.py | ONNX 模型评估 |
-| apps/serve/ | ONNX predictor、gRPC、FastAPI 和客户端 |
-| apps/console/server.py | 训练控制台入口 `python -m apps.console.server`：组装任务管理、运行索引、实时 GPU 采样并托管前端 |
-| apps/console/api.py | REST 与 SSE 路由：GPU 实时流、运行列表/详情、step/epoch/资源增量序列、日志尾部、任务提交与停止 |
+| apps/serve/ | ONNX predictor、gRPC、FastAPI 和客户端；服务默认监听 127.0.0.1（`--host` 可改），FastAPI 在解析前限制请求体并先核对图片文件头的像素数 |
+| apps/console/server.py | 训练控制台入口 `python -m apps.console.server`：组装任务管理、运行索引、实时 GPU 采样并托管前端；中间件校验 Host 头并拒绝跨站的 `/api` 请求 |
+| apps/console/api.py | REST 与 SSE 路由：GPU 实时流、运行列表/详情、step/epoch/资源增量序列、日志尾部、任务提交与停止、闭环评估归档的列表、详情与逐帧记录 |
+| apps/console/closed_loop.py | 只读地读取归档的闭环评估（manifest、result、episodes、frames）：模型汇总与离线 MAE、逐场景相对基线的差值、按模型与场景降采样的逐帧记录（保留出界区间两端与碰撞帧）；逐帧文件解析一次后缓存 |
 | apps/console/registry.py、readers.py | 发现控制台任务、分布式归档（run_index.json）与 TensorBoard 单进程日志；按游标增量读取 JSONL，统一 perf_counter 时间轴 |
 | apps/console/jobs.py | 任务排队（默认串行）、子进程启动、停止（分布式实验发 CTRL_BREAK，正式训练写暂停文件、所有 Worker 在同一步保存断点，超时后结束进程树）与重启后重新接管 |
 | apps/console/presets.py | 任务预设与提交校验：只接受框架支持的模式/传输组合和白名单参数（正式训练含并行方式、Worker 数与通信方式）；卷积后端选项（原生寄存器分块 / 原生 cuBLAS / CuPy / NumPy）及其与设备、dtype 的匹配；原生库状态（缺失时由任务自动编译） |
-| apps/console/web/ | React + Vite + Ant Design + ECharts 前端：总览、运行记录、运行详情（曲线/耗时/资源/拓扑/配置/日志）、新建训练、运行对比 |
+| apps/console/web/ | React + Vite + Ant Design + ECharts 前端：总览、运行记录、运行详情（曲线/耗时/资源/拓扑/配置/日志）、新建训练、运行对比（训练运行、跨框架实验、闭环评估三个视图） |
 | mycar/myflows_pilot.py | DonkeyCar 驾驶控制器；不是训练调优 Agent |
 | tools/analyze_donkey_data.py | 数据数量和标签分布检查 |
 | tools/export_resnet_onnx.py | 当前 ResNet18 ONNX 导出入口 |
