@@ -3,6 +3,7 @@ space, never repeated, conditional regularisation), and the time-block split wit
 
 from __future__ import annotations
 
+import contextlib
 import tempfile
 import unittest
 from pathlib import Path
@@ -10,9 +11,10 @@ from unittest import mock
 
 from apps.autopilot.data import describe_split, ensure_split, load_index
 from apps.autopilot.evidence import Evidence
+from apps.autopilot.memory import KnowledgeBase
 from apps.autopilot.service import CampaignError
 from apps.autopilot.spec import default_spec, in_space, validate_spec
-from apps.autopilot.strategies.tpe import TPEStrategy
+from apps.autopilot.strategies.tpe import TPEStrategy, record_rejection, rejected_proposals
 from apps.common.splits import (TIME_BLOCK_LEGACY, TIME_BLOCK_SEPARATED, build_time_block_split, frame_numbers,
                                 load_split, save_split, validate_time_split_gap)
 from tests.system.harness import Harness, make_tub
@@ -180,6 +182,36 @@ class TPEStrategyTest(unittest.TestCase):
         with self.assertRaises(Exception):
             validate_spec({"space": {"lr": [0.001], "batch": [2], "dropout": [0.1]}}, Path("."))
 
+    def test_refused_suggestions_and_known_failures_are_not_proposed_again(self):
+        spec = self.spec()
+        trials = [self.trial("t001", {"lr": 0.001, "batch": 2, "num_workers": 0}, 0.2)]
+        first = TPEStrategy(spec).ask(Evidence(spec=spec, state={}, trials=trials))
+        # Same history and nothing recorded: the same suggestion comes back (what stalled TPE campaigns).
+        self.assertEqual(TPEStrategy(spec).ask(Evidence(spec=spec, state={}, trials=trials)).delta, first.delta)
+        state = {}
+        seen = [first.delta]
+        for _ in range(6):
+            record_rejection(state, {**seen[-1], "num_workers": 0, "seed": 1}, ["预检拒绝"])
+            proposal = TPEStrategy(spec).ask(Evidence(spec=spec, state=state, trials=trials))
+            self.assertIsNotNone(proposal)
+            self.assertNotIn(proposal.delta, seen)
+            seen.append(proposal.delta)
+        self.assertEqual(len(rejected_proposals(state)), 6)
+        record_rejection(state, {**seen[0], "num_workers": 0, "seed": 9}, ["again"])
+        self.assertEqual(len(rejected_proposals(state)), 6, "one record per configuration")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            knowledge = KnowledgeBase(Path(tmp) / "knowledge.jsonl")
+            knowledge.add({"id": "test-oom-b4", "kind": "resource", "task": spec["task"], "model": {},
+                           "when": {"batch_min": 4}, "outcome": "oom", "fact": "batch 4 时显存不足"})
+            tpe = TPEStrategy(spec, knowledge=knowledge)
+            history = list(trials)
+            for i in range(10):
+                proposal = tpe.ask(Evidence(spec=spec, state={}, trials=history))
+                self.assertIsNotNone(proposal)
+                self.assertLess(proposal.delta["batch"], 4, "the knowledge base predicts batch 4 fails")
+                history.append(self.trial(f"t{i + 2:03d}", {**proposal.delta, "num_workers": 0}, 0.1 + 0.01 * i))
+
 
 class TPECampaignTest(unittest.TestCase):
     def test_tpe_campaign_runs_its_candidates(self):
@@ -197,6 +229,44 @@ class TPECampaignTest(unittest.TestCase):
                 self.assertTrue(all("weight_decay" in t["resolved_args"] for t in tpe))
             finally:
                 h.close()
+
+    def run_with_oom_fact(self, cid, **patches):
+        """A TPE campaign whose every suggestion (batch 4 or 8) is refused by an out-of-memory fact."""
+        with tempfile.TemporaryDirectory() as tmp:
+            h = Harness(Path(tmp), {"objective": {"lr_opt": -3.5}})
+            try:
+                h.service.knowledge.add({"id": "test-oom-b4", "kind": "resource", "task": "donkey_resnet18_single",
+                                         "model": {}, "when": {"batch_min": 4}, "outcome": "oom",
+                                         "fact": "batch 4 时显存不足"})
+                with mock.patch.multiple(TPEStrategy, **patches) if patches else contextlib.nullcontext():
+                    campaign = h.run(campaign_id=cid, timeout=240,
+                                     strategy={"name": "tpe", "max_candidates": 3, "seed": 1},
+                                     space={"lr": [0.0001, 0.001], "batch": [4, 8]}, budget={"max_trials": 8})
+                return campaign, h.service.trials(cid), h.service.events(cid, kinds=("precheck",))
+            finally:
+                h.close()
+
+    def test_refused_suggestions_use_up_candidates_and_the_campaign_goes_on(self):
+        # Without the knowledge filter every suggestion reaches the pre-check and is refused there.
+        campaign, trials, prechecks = self.run_with_oom_fact("tpe-refused", _known_failure=lambda self, params: False)
+        self.assertEqual(campaign["status"], "completed", campaign.get("stop_reason"))
+        self.assertNotEqual(campaign["stop_reason"], "没有可运行的候选")
+        phases = [entry["phase"] for entry in campaign["state"]["phase_log"]]
+        self.assertEqual(phases, ["explore", "exploit", "confirm", "done"])
+        rejected = campaign["state"]["tpe"]["rejected"]
+        self.assertEqual(len(rejected), 3, "three refusals use up the three candidates")
+        self.assertEqual(len({(r["params"]["lr"], r["params"]["batch"]) for r in rejected}), 3)
+        self.assertTrue(all("经验库" in r["reasons"][0] for r in rejected))
+        self.assertEqual(sum(1 for e in prechecks if not e["passed"]), 3)
+        self.assertEqual({t["phase"] for t in trials}, {"baseline"})
+
+    def test_known_failures_never_reach_the_precheck(self):
+        campaign, trials, prechecks = self.run_with_oom_fact("tpe-known")
+        self.assertEqual(campaign["status"], "completed", campaign.get("stop_reason"))
+        self.assertNotEqual(campaign["stop_reason"], "没有可运行的候选")
+        self.assertIn("TPE 没有新的候选", [entry["note"] for entry in campaign["state"]["phase_log"]])
+        self.assertTrue(all(e["passed"] for e in prechecks))
+        self.assertEqual({t["phase"] for t in trials}, {"baseline"})
 
 
 class TimeBlockSplitTest(unittest.TestCase):

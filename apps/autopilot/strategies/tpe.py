@@ -6,6 +6,11 @@ The space is conditional: ``lr`` (log scale between the listed extremes) and ``b
 regularisation branch — none, ``weight_decay`` or ``dropout`` (each only when listed in the space) — with its
 own value only on that branch; ``augment`` independently when listed. Every suggestion lies inside the space
 (the same range check as the pre-check) and never repeats a configuration already tried.
+
+A suggestion the pre-check refuses never becomes a trial, so the history alone would make the next ``ask``
+return it again. Two things prevent that: suggestions the knowledge base already predicts to fail (an
+out-of-memory fact, say) are skipped inside ``ask`` (spec §6.4), and the service records every refused
+suggestion in ``state["tpe"]["rejected"]``, which ``ask`` treats as tried.
 """
 
 from __future__ import annotations
@@ -13,7 +18,7 @@ from __future__ import annotations
 import math
 
 from ..agents.base import Proposal
-from ..spec import ACCURACY_KEYS, TPE_KEYS, TRANSFER_KEYS, baseline_params
+from ..spec import ACCURACY_KEYS, TPE_KEYS, TRANSFER_KEYS, SpecError, baseline_params, resolve_args
 
 MAX_DRAWS = 64
 REGULARIZERS = ("weight_decay", "dropout")
@@ -22,6 +27,20 @@ REGULARIZERS = ("weight_decay", "dropout")
 def _accuracy_view(params: dict) -> tuple:
     keys = (*ACCURACY_KEYS, *TPE_KEYS, *TRANSFER_KEYS)
     return tuple((k, params.get(k)) for k in keys if params.get(k) not in (None, 0, 0.0, False))
+
+
+def rejected_proposals(state: dict) -> list[dict]:
+    """TPE suggestions the pre-check refused (``{"params", "reasons"}``), as the service recorded them."""
+    return list((state.get("tpe") or {}).get("rejected") or [])
+
+
+def record_rejection(state: dict, params: dict, reasons: list[str]) -> None:
+    """Remember a refused TPE suggestion in the campaign state (called under the store's state lock)."""
+    tpe = state.get("tpe") if isinstance(state.get("tpe"), dict) else {}
+    rejected = list(tpe.get("rejected") or [])
+    if not any(_accuracy_view(item.get("params") or {}) == _accuracy_view(params) for item in rejected):
+        rejected.append({"params": dict(params), "reasons": list(reasons)[:3]})
+    state["tpe"] = {**tpe, "rejected": rejected}
 
 
 class TPEStrategy:
@@ -125,10 +144,12 @@ class TPEStrategy:
         distributions = self._distributions()
         import warnings
 
+        rejected = rejected_proposals(ev.state)
         with warnings.catch_warnings():  # multivariate + group (conditional spaces) are marked experimental
             warnings.simplefilter("ignore", optuna.exceptions.ExperimentalWarning)
-            sampler = optuna.samplers.TPESampler(seed=self.seed + len(ev.trials), multivariate=True, group=True,
-                                                 n_startup_trials=3)
+            # The seed moves with every trial and every refused suggestion, so no two asks repeat a draw.
+            sampler = optuna.samplers.TPESampler(seed=self.seed + len(ev.trials) + len(rejected),
+                                                 multivariate=True, group=True, n_startup_trials=3)
         study = optuna.create_study(direction="minimize" if ev.minimize else "maximize", sampler=sampler)
         warm = 0
         for trial in ev.valid():
@@ -140,10 +161,12 @@ class TPEStrategy:
             warm += 1
         tried = {_accuracy_view(t.get("params") or {}) for t in ev.trials}
         tried.add(_accuracy_view(baseline_params(self.spec, self.spec["baseline"]["seeds"][0])))
+        tried.update(_accuracy_view(item.get("params") or {}) for item in rejected)
+        base = {**baseline_params(self.spec, self.spec["baseline"]["seeds"][0]), **(ev.state.get("adopted") or {})}
         for _ in range(MAX_DRAWS):
             trial = study.ask()
             params = self._suggest(trial)
-            if _accuracy_view(params) in tried or not self._inside(params):
+            if _accuracy_view(params) in tried or not self._inside(params) or self._known_failure({**base, **params}):
                 study.tell(trial, state=optuna.trial.TrialState.PRUNED)
                 continue
             # A branch not taken is simply absent: the baseline has no regularisation, apps.train defaults to 0.
@@ -153,6 +176,16 @@ class TPEStrategy:
                           + "、".join(f"{k}={v:g}" if isinstance(v, float) else f"{k}={v}" for k, v in params.items()),
                 expected=f"在已有结果的基础上改进 {ev.metric}")
         return None
+
+    def _known_failure(self, params: dict) -> bool:
+        """Whether the knowledge base predicts this configuration fails here (the pre-check would refuse it)."""
+        if self.knowledge is None:
+            return False
+        try:
+            args = resolve_args(self.spec, params, check_split=False)
+        except SpecError:
+            return False  # not ours to judge: the pre-check reports it with its reason
+        return self.knowledge.predicted_failure(self.spec["task"], args) is not None
 
     def _inside(self, params: dict) -> bool:
         from ..spec import in_space

@@ -37,6 +37,7 @@ from .provenance import code_state, environment, fingerprint
 from .scheduler import Scheduler, budget_state
 from .spec import SpecError, resolve_args, validate_spec
 from .state import drop_states
+from .strategies.tpe import record_rejection
 from .verifier import (CONFIG_FAILURES, INFRA_FAILURES, ONLINE_FINDING_KINDS, postcheck, precheck,
                        replay_online_findings)
 
@@ -642,7 +643,12 @@ class AutoPilotService:
                 origin = {"strategy": p.strategy, "agent": p.agent, "source": "rule", "base_trial": p.base_trial,
                           "finding_ids": p.finding_ids, "rationale": p.rationale, "expected": p.expected,
                           "delta": p.delta, "kind": p.kind}
-                self._admit(store, doc, phase=p.phase, params=p.params, delta=p.delta or None, origin=origin)
+                record, check = self._admit(store, doc, phase=p.phase, params=p.params, delta=p.delta or None,
+                                            origin=origin)
+                if record is None and p.strategy == "tpe":
+                    # Not a trial, so not in the history TPE is rebuilt from: without this record the next ask
+                    # would return the same suggestion and the campaign would idle out of the explore phase.
+                    store.update_state(lambda s, p=p, check=check: record_rejection(s, p.params, check["reasons"]))
             trials = store.trials()
             used = budget_state(trials)
             if used["trials_started"] >= spec["budget"]["max_trials"] or used["run_s"] >= spec["budget"]["wall_time_s"]:

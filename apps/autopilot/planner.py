@@ -15,6 +15,7 @@ from .scheduler import budget_fraction
 from .spec import ACCURACY_KEYS, THROUGHPUT_KEYS, TRANSFER_DEFAULTS, baseline_params
 from .strategies.candidate_list import CandidateList
 from .strategies.rule_refine import RuleRefine
+from .strategies.tpe import rejected_proposals
 
 EXPLORE_BUDGET_SHARE = 0.7
 PHASES = ("baseline", "explore", "exploit", "confirm", "done")
@@ -129,8 +130,11 @@ class Planner:
             if self._open(ev, "explore"):
                 return []
             done = [t for t in ev.trials if t.get("phase") == "explore" and t.get("status") in ("done", "skipped")]
-            if len(done) >= self.spec["strategy"]["max_candidates"]:
-                self._phase(ev, "exploit", "TPE 候选用完")
+            # A suggestion the pre-check refused uses up a candidate too: the search stays bounded when the
+            # refusals keep coming (a space that mostly runs out of memory, for example).
+            refused = len(rejected_proposals(ev.state))
+            if len(done) + refused >= self.spec["strategy"]["max_candidates"]:
+                self._phase(ev, "exploit", "TPE 候选用完" + (f"（其中 {refused} 个被预检拒绝）" if refused else ""))
                 return []
             if initial and not done:
                 return [initial]
