@@ -6,9 +6,9 @@ requires-python = ">=3.11,<3.12"
 dependencies = [
     "numpy==2.2.6",
     "cupy-cuda12x==14.0.1",
-    "Pillow==12.1.1",
+    "Pillow==13.0.0",
     "scikit-learn==1.8.0",
-    "onnx==1.21.0",
+    "onnx==1.22.0",
     "tensorboard==2.20.0",
     "psutil==7.2.2",
     "matplotlib==3.10.8",
@@ -34,8 +34,8 @@ dev = [
     "httpx>=0.27.0",
     "python-multipart>=0.0.9",
     "ruff>=0.13.0",
-    # Match the separately installed torch 2.11.0+cu128 wheel's constraint.
-    "setuptools<82",
+    # PyTorch 2.13+ supports the security-fixed setuptools releases.
+    "setuptools>=84.1.0",
 ]
 donkeycar = [
     # mycar/manage.py 模拟器驾驶；manage.py 直接调用 gymnasium 版 gym-donkeycar（GitHub 提交，见 tool.uv.sources）。
