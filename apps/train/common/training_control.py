@@ -4,6 +4,14 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import math
+
+
+def _finite_score(value):
+    current = float(value)
+    if not math.isfinite(current):
+        raise ValueError("training score must be finite")
+    return current
 
 
 @dataclass
@@ -20,11 +28,13 @@ class EarlyStopping:
     def __init__(self, patience: int = 5, min_delta: float = 0.0):
         self.patience = max(1, int(patience))
         self.min_delta = float(min_delta)
+        if not math.isfinite(self.min_delta) or self.min_delta < 0:
+            raise ValueError("min_delta must be finite and nonnegative")
         self.best: float | None = None
         self.bad_epochs = 0
 
     def update(self, value: float) -> EarlyStoppingResult:
-        current = float(value)
+        current = _finite_score(value)
         if self.best is None or current < self.best - self.min_delta:
             self.best = current
             self.bad_epochs = 0
@@ -40,7 +50,7 @@ class BestScore:
         self.best: float | None = None
 
     def update(self, value: float) -> bool:
-        current = float(value)
+        current = _finite_score(value)
         if self.best is None or current < self.best:
             self.best = current
             return True

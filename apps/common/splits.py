@@ -5,6 +5,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
+import operator
 from pathlib import Path
 from typing import Any, Sequence
 
@@ -12,16 +14,34 @@ import numpy as np
 
 
 SPLIT_NAMES = ("train", "val", "test")
+# What a saved time-block split promises (its ``contract`` field). Legacy: training rows keep the gap from
+# validation and test rows. Separated: validation and test rows keep it from each other as well.
+TIME_BLOCK_LEGACY = 1
+TIME_BLOCK_SEPARATED = 2
 
 
 def _count_from_ratio(total: int, ratio: float) -> int:
-    ratio = max(0.0, float(ratio or 0.0))
+    ratio = float(ratio)
+    if not math.isfinite(ratio) or not 0 <= ratio <= 1:
+        raise ValueError("split ratio must be finite and within [0, 1]")
     return int(round(total * ratio))
 
 
+def _count(value, name, minimum=0):
+    try:
+        count = operator.index(value)
+    except TypeError as exc:
+        raise ValueError(f"{name} must be an integer") from exc
+    if isinstance(value, bool) or count < minimum:
+        raise ValueError(f"{name} must be at least {minimum}")
+    return count
+
+
 def _resolve_count(total: int, size: int | None, ratio: float) -> int:
-    if size is not None and int(size) > 0:
-        return int(size)
+    if size is not None:
+        size = _count(size, "split size")
+        if size:
+            return size
     return _count_from_ratio(total, ratio)
 
 
@@ -70,39 +90,63 @@ def build_time_block_split(
     block_size: int = 50,
     gap: int = 5,
     seed: int = 42,
+    separate_held_out: bool = True,
 ) -> dict[str, list[int]]:
     """Split by contiguous time blocks, so neighbouring frames never land on both sides.
 
     ``frames[i]`` is the time position of row ``i`` (DonkeyCar: the frame index in the image name). Rows are
     ordered by it and cut into blocks of ``block_size``; whole blocks are shuffled with ``seed`` and handed to
     the test set until it holds ``test_size`` rows, then to validation until ``val_size``, the rest to training.
-    Up to ``gap`` rows at each side of a boundary between two different splits are purged (in no split), so a
-    validation frame is never the next camera frame of a training one. Returns row indices like build_split,
-    plus ``"purged"``.
+    Training rows within ``gap`` of either held-out set are purged, including gaps spanning several small
+    blocks. Returns row indices like build_split, plus ``"purged"``.
+
+    ``separate_held_out`` (the default) also keeps validation blocks more than ``gap`` rows from test blocks and
+    rejects requests with too few separated validation blocks. ``False`` reproduces the splits written before
+    that rule existed (``TIME_BLOCK_LEGACY``): validation takes the next blocks of the shuffle, so a validation
+    block may touch a test block.
     """
     total = len(frames)
+    val_size = _count(val_size, "val_size")
+    test_size = _count(test_size, "test_size")
+    block_size = _count(block_size, "block_size", 1)
+    gap = _count(gap, "gap")
     if val_size + test_size > total:
         raise ValueError("validation + test split is larger than dataset")
     order = sorted(range(total), key=lambda i: (frames[i], i))
-    blocks = [order[k:k + block_size] for k in range(0, total, max(1, int(block_size)))]
+    blocks = [order[k:k + block_size] for k in range(0, total, block_size)]
     rng = np.random.default_rng(int(seed))
     shuffled = list(rng.permutation(len(blocks)))
     owner = ["train"] * len(blocks)
     counts = {"test": 0, "val": 0}
-    for b in shuffled:
-        for name, want in (("test", test_size), ("val", val_size)):
-            if counts[name] < want:
-                owner[b] = name
-                counts[name] += len(blocks[b])
+    test_intervals = []
+    for name, want in (("test", test_size), ("val", val_size)):
+        for b in shuffled:
+            if counts[name] >= want:
                 break
+            if owner[b] != "train":
+                continue
+            first, last = b * block_size, b * block_size + len(blocks[b]) - 1
+            if separate_held_out and name == "val" and any(first <= end + gap and last >= start - gap
+                                                           for start, end in test_intervals):
+                continue
+            owner[b] = name
+            counts[name] += len(blocks[b])
+            if name == "test":
+                test_intervals.append((first, last))
+        if counts[name] < want:
+            raise ValueError("not enough separated blocks; reduce split sizes or gap, or change seed")
+    owners = [owner[b] for b, rows in enumerate(blocks) for _ in rows]
+    purged = set()
+    for positions in (range(total), range(total - 1, -1, -1)):
+        nearest = None
+        for pos in positions:
+            if owners[pos] != "train":
+                nearest = pos
+            elif nearest is not None and abs(pos - nearest) <= gap:
+                purged.add(pos)
     split = {"train": [], "val": [], "test": [], "purged": []}
-    for b, rows in enumerate(blocks):
-        name = owner[b]
-        left = b > 0 and owner[b - 1] != name
-        right = b + 1 < len(blocks) and owner[b + 1] != name
-        for j, row in enumerate(rows):
-            near = (left and j < gap) or (right and j >= len(rows) - gap)
-            split["purged" if near and name == "train" else name].append(int(row))
+    for pos, row in enumerate(order):
+        split["purged" if pos in purged else owners[pos]].append(int(row))
     return {name: sorted(rows) for name, rows in split.items()}
 
 
@@ -113,6 +157,39 @@ def frame_numbers(rels: Sequence[str]) -> list[int]:
         head = Path(str(rel)).name.split("_", 1)[0]
         out.append(int(head) if head.isdigit() else i)
     return out
+
+
+def time_block_contract(payload: dict) -> int:
+    """Which separation a saved time-block split promises: ``TIME_BLOCK_SEPARATED`` or ``TIME_BLOCK_LEGACY``.
+
+    Files written before the contract was recorded carry no ``contract`` field and are legacy splits.
+    """
+    contract = payload.get("contract", TIME_BLOCK_LEGACY)
+    if type(contract) is not int or contract not in (TIME_BLOCK_LEGACY, TIME_BLOCK_SEPARATED):
+        raise ValueError("unsupported time-block split contract")
+    return contract
+
+
+def validate_time_split_gap(frames, splits, gap, *, separate_held_out: bool = True):
+    """Reject an existing split whose rows from different sets are too close in time.
+
+    Training rows must always stay more than ``gap`` rows from validation and test rows. Validation and test
+    rows must keep that distance from each other too, unless ``separate_held_out`` is False (a legacy split).
+    """
+    gap = _count(gap, "gap")
+    owners = {row: name for name in SPLIT_NAMES for row in splits.get(name, [])}
+    previous: dict[str, int] = {}
+    for pos, row in enumerate(sorted(range(len(frames)), key=lambda i: (frames[i], i))):
+        name = owners.get(row)
+        if name is None:
+            continue
+        for other, last in previous.items():
+            if other == name or pos - last > gap:
+                continue
+            if separate_held_out or "train" in (name, other):
+                raise ValueError(f"time-block split keeps {name} and {other} rows within {gap} rows of each "
+                                 "other; regenerate it")
+        previous[name] = pos
 
 
 def split_enabled(

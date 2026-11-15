@@ -24,7 +24,7 @@ def run_loss_validation(
     step_fn: Callable,
     num_workers: int = 0,
 ) -> ValidationResult | None:
-    """Iterate validation data and let ``step_fn`` perform model-specific forward."""
+    """``step_fn`` returns the mean loss of its real (unpadded) samples and their count."""
 
     if not dataset:
         return None
@@ -40,9 +40,12 @@ def run_loss_validation(
     samples = 0
     for x_items, y_items in loader:
         loss_value, real_count = step_fn(x_items, y_items)
-        total_loss += float(loss_value)
+        real_count = int(real_count)
+        if not 0 < real_count <= len(x_items):
+            raise ValueError("validation step returned an invalid real sample count")
+        total_loss += float(loss_value) * real_count
         batches += 1
         samples += int(real_count)
     if batches == 0:
         return None
-    return ValidationResult(total_loss / batches, batches, samples)
+    return ValidationResult(total_loss / samples, batches, samples)

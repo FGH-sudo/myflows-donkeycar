@@ -32,6 +32,9 @@ from .readers import read_json, tail_text
 from .registry import ACTIVE_STATUSES, RunRef, RunRegistry
 
 
+MAX_LABEL_CHARS = 200
+
+
 def _clean(value: Any) -> Any:
     if isinstance(value, float):
         return value if math.isfinite(value) else None
@@ -284,6 +287,9 @@ def build_router(*, registry: RunRegistry, jobs: JobManager, live, sampler, repo
     @router.post("/jobs")
     def submit_job(body: dict = Body(...)):
         job_type = body.get("type")
+        label = body.get("label")
+        if label is not None and (not isinstance(label, str) or len(label) > MAX_LABEL_CHARS):
+            raise HTTPException(422, f"label 必须是不超过 {MAX_LABEL_CHARS} 个字符的字符串")
         try:
             if job_type == "distributed":
                 config = validate_distributed(body.get("config") or {})

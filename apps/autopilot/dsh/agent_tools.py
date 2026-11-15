@@ -50,8 +50,7 @@ class AgentTools:
         started = time.time()
         # The campaign a refused call named still gets the record.
         named = args.get("campaign_id") or campaign_hint or self.context()
-        cid = named if (name not in GLOBAL_TOOLS and isinstance(named, str)
-                        and self.service.store(named).exists()) else None
+        cid = named if name not in GLOBAL_TOOLS and self._exists(named) else None
         try:
             if name not in tooldefs.TOOLS:
                 raise AgentToolError(f"未知工具：{name}", 404)
@@ -73,12 +72,22 @@ class AgentTools:
         self._record(name, cid, args, source, started, error=None)
         return result
 
+    def _exists(self, cid) -> bool:
+        """Whether ``cid`` names a stored campaign; a malformed id (the model wrote a title, say) is just absent."""
+        if not isinstance(cid, str):
+            return False
+        try:
+            return self.service.store(cid).exists()
+        except CampaignError:
+            return False
+
     def _campaign_id(self, args: dict, hint: str | None, *, required: bool = True) -> str | None:
         cid = args.get("campaign_id") or hint or self.context()
         if not cid and required:
             raise AgentToolError("需要 campaign_id（当前没有上下文 campaign，可先用 list_campaigns 查看）", 422)
-        if cid and not self.service.store(cid).exists():
-            raise AgentToolError(f"campaign 不存在：{cid}", 404)
+        if cid and not self._exists(cid):
+            raise AgentToolError(f"campaign 不存在：{cid}（campaign_id 由小写字母、数字、- 和 _ 组成，"
+                                 "可先用 list_campaigns 查看）", 404)
         return cid
 
     def _record(self, name: str, cid: str | None, args: dict, source: str, started: float, *, error) -> None:
@@ -86,7 +95,7 @@ class AgentTools:
                   "write": name in WRITE_TOOLS, "duration_s": round(time.time() - started, 3)}
         if error is not None:
             fields["error"] = error[:500]
-        if cid and self.service.store(cid).exists():
+        if self._exists(cid):
             self.service.store(cid).event("llm_action", **fields)
         else:
             append_jsonl(self.service.root / "llm_actions.jsonl", {"unix_s": time.time(), **fields})

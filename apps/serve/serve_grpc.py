@@ -33,6 +33,8 @@ from apps.serve.config import (
     DEFAULT_IMAGE_H,
     DEFAULT_IMAGE_W,
     DEFAULT_MAX_PIXELS,
+    exposure_warning,
+    grpc_bind_address,
     resolve_repo_path,
 )
 from apps.serve.logger import JsonlLogger
@@ -96,6 +98,10 @@ class InferServicer(infer_pb2_grpc.InferServiceServicer):
             context.set_code(grpc.StatusCode.INVALID_ARGUMENT)
             context.set_details(error)
             return infer_pb2.PredictResponse()
+        except Exception as exc:
+            status = "error"
+            error = f"{type(exc).__name__}: {exc}"
+            raise
         finally:
             latency_ms = (time.perf_counter() - start) * 1000.0
             self.metrics.record(latency_ms, ok=status == "ok")
@@ -118,6 +124,8 @@ def main() -> None:
     ap.add_argument("--image-w", type=int, default=DEFAULT_IMAGE_W)
     ap.add_argument("--image-h", type=int, default=DEFAULT_IMAGE_H)
     ap.add_argument("--port", type=int, default=DEFAULT_GRPC_PORT)
+    ap.add_argument("--host", type=str, default=DEFAULT_BIND_HOST,
+                    help="监听地址，默认只监听本机；对其他机器开放时传 0.0.0.0")
     ap.add_argument("--workers", type=int, default=4)
     ap.add_argument("--log-file", type=str, default=DEFAULT_GRPC_LOG_FILE)
     ap.add_argument("--max-pixels", type=int, default=DEFAULT_MAX_PIXELS)
@@ -137,8 +145,12 @@ def main() -> None:
         InferServicer(predictor, resolve_repo_path(args.log_file), max_pixels=args.max_pixels),
         server,
     )
-    addr = f"[::]:{args.port}" if DEFAULT_BIND_HOST == "0.0.0.0" else f"{DEFAULT_BIND_HOST}:{args.port}"
-    server.add_insecure_port(addr)
+    addr = grpc_bind_address(args.host, args.port)
+    warning = exposure_warning(args.host)
+    if warning:
+        print(warning, file=sys.stderr)
+    if server.add_insecure_port(addr) == 0:
+        raise SystemExit(f"无法监听 {addr}")
     server.start()
     print(f"gRPC InferService listening on {addr}, model={model_path}")
     server.wait_for_termination()

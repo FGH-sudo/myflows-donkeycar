@@ -157,9 +157,14 @@ def validate_distributed(config: dict) -> dict:
     from benchmark.config_paths import resolve_config_paths
     from MyFlows.distributed.launcher import normalize_config
 
+    if not isinstance(config, dict):
+        raise ValidationError("分布式配置必须是 JSON 对象")
     unknown = set(config) - DISTRIBUTED_KEYS
     if unknown:
         raise ValidationError(f"不支持的配置项：{', '.join(sorted(unknown))}")
+    for key in ("task", "mode", "transport", "device", "optimizer", "conv_backend"):
+        if key in config and config[key] is not None and not isinstance(config[key], str):
+            raise ValidationError(f"{key} 必须是字符串")
     # Data and BN paths may be relative to the repository or recorded by another checkout.
     config = resolve_config_paths(copy.deepcopy(config))
     task = config.get("task")
@@ -170,7 +175,7 @@ def validate_distributed(config: dict) -> dict:
         raise ValidationError(f"非法的模式/传输组合 {mode}/{transport}")
     try:
         workers = int(config.get("train_workers", 1))
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         raise ValidationError("train_workers 必须是整数")
     if mode == "single" and workers != 1:
         raise ValidationError("单进程模式只能有 1 个 worker")
@@ -183,13 +188,18 @@ def validate_distributed(config: dict) -> dict:
         _check_conv_backend(config["conv_backend"], config["device"], None)
     if config.get("optimizer", "mbgd") not in ("mbgd", "adam"):
         raise ValidationError("optimizer 只能是 mbgd 或 adam")
-    if float(config.get("learning_rate", 0.01)) <= 0:
-        raise ValidationError("learning_rate 必须为正数")
+    try:
+        lr = float(config.get("learning_rate", 0.01))
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise ValidationError("learning_rate 必须为有限正数") from exc
+    if not math.isfinite(lr) or lr <= 0:
+        raise ValidationError("learning_rate 必须为有限正数")
+    config["learning_rate"] = lr
     shards = config.get("shard_sizes")
     if shards is not None:
-        if not isinstance(shards, list) or len(shards) != workers or any(int(s) <= 0 for s in shards):
+        if not isinstance(shards, list) or len(shards) != workers or any(type(s) is not int or s <= 0 for s in shards):
             raise ValidationError("shard_sizes 必须是长度等于 worker 数的正整数列表")
-        if sum(int(s) for s in shards) != int(config.get("global_batch", 32)):
+        if sum(shards) != config.get("global_batch", 32):
             raise ValidationError("shard_sizes 之和必须等于 global_batch")
     if task != "synthetic":
         prepared = config.get("prepared_dir")
@@ -199,12 +209,14 @@ def validate_distributed(config: dict) -> dict:
         raise ValidationError(f"BN 统计量文件不存在：{config['bn_statistics']}")
     try:
         normalize_config(**config)
-    except (ValueError, TypeError) as exc:
+    except (ValueError, TypeError, OverflowError) as exc:
         raise ValidationError(str(exc)) from exc
     return config
 
 
 def validate_single(args: dict, repo_root: Path) -> dict:
+    if not isinstance(args, dict):
+        raise ValidationError("训练参数必须是 JSON 对象")
     out = {}
     for key, value in (args or {}).items():
         caster = SINGLE_ARGS.get(key)
@@ -212,10 +224,14 @@ def validate_single(args: dict, repo_root: Path) -> dict:
             raise ValidationError(f"不支持的训练参数：{key}")
         if value is None:
             continue
+        if caster is bool and type(value) is not bool:
+            raise ValidationError(f"参数 {key} 必须是布尔值")
         try:
             out[key] = bool(value) if caster is bool else caster(value)
         except (TypeError, ValueError, OverflowError):
             raise ValidationError(f"参数 {key} 的值无效：{value}")
+        if caster is int and (isinstance(value, bool) or isinstance(value, float) and value != out[key]):
+            raise ValidationError(f"参数 {key} 必须是整数")
         if caster is float and not math.isfinite(out[key]):
             raise ValidationError(f"参数 {key} 必须是有限数值：{value}")
     if out.get("device", "auto") not in ("auto", "cpu", "cuda"):

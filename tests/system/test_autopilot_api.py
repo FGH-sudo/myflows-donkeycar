@@ -105,6 +105,38 @@ class AutoPilotApiTest(unittest.TestCase):
         status = c.get("/api/autopilot/dsh/status").json()
         self.assertFalse(status["llm_ready"])
 
+    def test_ids_cannot_leave_the_autopilot_root_and_stray_folders_do_not_break_the_list(self):
+        c = self.client
+        root = self.h.tmp / "autopilot"
+        outside = self.h.tmp / "console" / "campaign.json"
+        outside.parent.mkdir(parents=True, exist_ok=True)
+        outside.write_text('{"spec": {}, "state": {}}', encoding="utf-8")
+        for cid in ("..%2Fconsole", "..%5Cconsole", "%2E%2E", "UPPER-case", "a", "x" * 65, "has.dot", "has%20space"):
+            for route in ("", "/trials", "/findings", "/events", "/report", "/pending", "/report/figures/a.png"):
+                response = c.get(f"/api/autopilot/campaigns/{cid}{route}")
+                self.assertEqual(response.status_code, 404, (cid, route, response.text))
+            # An encoded slash makes the path match no POST route at all (405 from the page fallback).
+            self.assertIn(c.post(f"/api/autopilot/campaigns/{cid}/start").status_code, (404, 405), cid)
+            self.assertEqual(c.get(f"/api/autopilot/campaigns/{cid}/stream").status_code, 404, cid)
+        for cid in ("../escape", "Bad Id", "x" * 65, "a.b", 12, None if False else ["list"]):
+            created = c.post("/api/autopilot/campaigns", json=self.h.spec(campaign_id=cid))
+            self.assertEqual(created.status_code, 422, (cid, created.text))
+        self.assertFalse((self.h.tmp / "escape").exists())
+        for body in ({"llm": {"enabled": "yes"}}, {"rollback": {"enabled": 1}}, {"fixed": [1]}, {"mode": ["dev"]},
+                     {"task": {"x": 1}}, {"specialists": [1]}, {"objective": {"metric": ["val_angle_mae"]}}):
+            response = c.post("/api/autopilot/campaigns", json=self.h.spec(campaign_id="typed-values", **body))
+            self.assertEqual(response.status_code, 422, (body, response.text))
+        c.post("/api/autopilot/campaigns", json=self.h.spec(campaign_id="kept-campaign"))
+        for name in ("Copied By Hand", "x" * 70):
+            stray = root / name
+            stray.mkdir()
+            (stray / "campaign.json").write_text((root / "kept-campaign" / "campaign.json").read_text("utf-8"), "utf-8")
+        listed = c.get("/api/autopilot/campaigns")
+        self.assertEqual(listed.status_code, 200, listed.text)
+        self.assertEqual([item["campaign_id"] for item in listed.json()], ["kept-campaign"])
+        self.assertEqual(c.post("/api/autopilot/campaigns/kept-campaign/trials/..%5Cx/stop").status_code, 404)
+        self.assertEqual(c.post("/api/autopilot/campaigns/kept-campaign/trials/t1x/stop").status_code, 404)
+
 
 if __name__ == "__main__":
     unittest.main()

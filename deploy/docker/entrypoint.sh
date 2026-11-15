@@ -9,4 +9,4 @@ if [ "$MODE" = "fastapi" ]; then
   exec python -m apps.serve.serve_fastapi --model "$MODEL" --port "${FASTAPI_PORT:-8000}" --host 0.0.0.0 --device "$DEVICE"
 fi
 
-exec python -m apps.serve.serve_grpc --model "$MODEL" --port "$PORT" --device "$DEVICE"
+exec python -m apps.serve.serve_grpc --model "$MODEL" --port "$PORT" --host 0.0.0.0 --device "$DEVICE"

@@ -14,6 +14,7 @@ Every JSON write goes through a temporary file and ``os.replace``.
 
 from __future__ import annotations
 
+import re
 import threading
 import time
 from collections.abc import Callable
@@ -23,15 +24,26 @@ from .files import append_jsonl, read_json, read_jsonl, write_json
 
 TRIAL_SCHEMA_VERSION = 1
 KNOWLEDGE_SEMANTICS_VERSION = 1
+# A campaign id is a directory name under the AutoPilot root and part of URLs: one path segment, no dots.
+CAMPAIGN_ID = re.compile(r"[a-z0-9][a-z0-9_-]{2,63}")
+TRIAL_ID = re.compile(r"t[0-9]+")
+
+
+def valid_campaign_id(value) -> bool:
+    return isinstance(value, str) and CAMPAIGN_ID.fullmatch(value) is not None
 
 
 class CampaignStore:
     """Files of one campaign. Thread-safe: the driver thread and HTTP handlers share it."""
 
     def __init__(self, root: Path, campaign_id: str):
+        if not valid_campaign_id(campaign_id):
+            raise ValueError("invalid campaign_id")
         self.root = Path(root)
         self.campaign_id = campaign_id
         self.dir = self.root / campaign_id
+        if self.dir.resolve().parent != self.root.resolve():
+            raise ValueError("campaign directory escaped its root")
         self.campaign_path = self.dir / "campaign.json"
         self.events_path = self.dir / "events.jsonl"
         self.trials_dir = self.dir / "trials"
@@ -89,7 +101,12 @@ class CampaignStore:
 
     # ---- trials ---------------------------------------------------------------------
     def trial_dir(self, trial_id: str) -> Path:
-        return self.trials_dir / trial_id
+        if not isinstance(trial_id, str) or TRIAL_ID.fullmatch(trial_id) is None:
+            raise ValueError("invalid trial_id")
+        path = self.trials_dir / trial_id
+        if path.resolve().parent != self.dir.resolve() / "trials":
+            raise ValueError("trial directory escaped its campaign")
+        return path
 
     def attempt_dir(self, trial_id: str, attempt: int) -> Path:
         return self.trial_dir(trial_id) / f"attempt-{attempt}"
@@ -108,7 +125,11 @@ class CampaignStore:
             write_json(self.trial_dir(record["trial_id"]) / "trial.json", record)
 
     def load_trial(self, trial_id: str) -> dict | None:
-        return read_json(self.trial_dir(trial_id) / "trial.json")
+        try:
+            path = self.trial_dir(trial_id)
+        except ValueError:
+            return None
+        return read_json(path / "trial.json")
 
     def trials(self) -> list[dict]:
         if not self.trials_dir.exists():

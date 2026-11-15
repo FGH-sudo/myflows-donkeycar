@@ -14,9 +14,10 @@ import argparse
 import sys
 from contextlib import asynccontextmanager
 from pathlib import Path
+from urllib.parse import urlsplit
 
-from fastapi import FastAPI
-from fastapi.responses import FileResponse, HTMLResponse
+from fastapi import FastAPI, Request
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from apps.autopilot.service import AutoPilotService
@@ -45,7 +46,8 @@ _NOT_BUILT = """<!doctype html><meta charset="utf-8"><title>MyFlows 训练控制
 def create_app(*, repo_root: Path = REPO_ROOT, console_root: Path | None = None, registry: RunRegistry | None = None,
                sampler: GpuSampler | None = None, python: str | None = None, max_running: int = 1,
                start_background: bool = True, web_dist: Path = WEB_DIST, autopilot_root: Path | None = None,
-               train_module: str | None = None, dsh_host=None, enable_dsh: bool = True) -> FastAPI:
+               train_module: str | None = None, dsh_host=None, enable_dsh: bool = True,
+               allowed_hosts: tuple[str, ...] = ()) -> FastAPI:
     repo_root = Path(repo_root)
     console_root = Path(console_root) if console_root else repo_root / "runs" / "console"
     autopilot_root = Path(autopilot_root) if autopilot_root else repo_root / "runs" / "autopilot"
@@ -90,6 +92,28 @@ def create_app(*, repo_root: Path = REPO_ROOT, console_root: Path | None = None,
         sampler.close()
 
     app = FastAPI(title="MyFlows 训练控制台", lifespan=lifespan)
+
+    @app.middleware("http")
+    async def browser_boundary(request: Request, call_next):
+        # Loopback binding alone does not prevent DNS rebinding or cross-site form posts.
+        server = request.scope.get("server")
+        trusted = {"localhost", "127.0.0.1", "::1", *allowed_hosts}
+        if server:
+            trusted.add(server[0])
+        try:
+            host = urlsplit("//" + request.headers.get("host", "")).hostname
+        except ValueError:
+            host = None
+        if host not in trusted:
+            return JSONResponse({"detail": "Invalid Host header"}, status_code=400)
+        if request.url.path == "/api" or request.url.path.startswith("/api/"):
+            origin = request.headers.get("origin")
+            expected = f"{request.url.scheme}://{request.url.netloc}"
+            if (request.headers.get("sec-fetch-site") == "cross-site"
+                    or origin is not None and origin.lower() != expected.lower()):
+                return JSONResponse({"detail": "Cross-origin API requests are not allowed"}, status_code=403)
+        return await call_next(request)
+
     app.state.jobs, app.state.registry, app.state.live, app.state.sampler = jobs, registry, live, sampler
     app.state.autopilot, app.state.dsh_host = autopilot, dsh_host
     app.include_router(build_router(registry=registry, jobs=jobs, live=live, sampler=sampler, repo_root=repo_root,
@@ -132,6 +156,7 @@ def main(argv: list[str] | None = None) -> None:
               file=sys.stderr)
     app = create_app(console_root=Path(args.console_root).resolve() if args.console_root else None,
                      max_running=args.max_running, enable_dsh=not args.no_dsh,
+                     allowed_hosts=(args.host,),
                      autopilot_root=Path(args.autopilot_root).resolve() if args.autopilot_root else None)
     app.state.port = args.port
     print(f"MyFlows 训练控制台: http://{args.host}:{args.port}  (GPU 采样: {app.state.sampler.backend_name})")

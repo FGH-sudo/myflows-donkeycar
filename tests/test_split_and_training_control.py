@@ -3,6 +3,9 @@ import tempfile
 import unittest
 from pathlib import Path
 
+import numpy as np
+
+from apps.common.donkey_data import image_rel_path, parse_angle_from_filename
 from apps.common.splits import (
     build_split,
     load_split,
@@ -10,7 +13,8 @@ from apps.common.splits import (
     save_split,
     select_split,
 )
-from apps.train.common.training_control import EarlyStopping
+from apps.train.common.training_control import BestScore, EarlyStopping
+from apps.train.common.validation import run_loss_validation
 
 
 class SplitAndTrainingControlTest(unittest.TestCase):
@@ -49,6 +53,52 @@ class SplitAndTrainingControlTest(unittest.TestCase):
         improved = stopper.update(0.80)
         self.assertTrue(improved.improved)
         self.assertFalse(improved.should_stop)
+
+    def test_scores_and_split_requests_must_be_finite_and_well_typed(self):
+        # NaN compares false with everything: it would never count as an improvement nor as a bad epoch.
+        for bad in (float("nan"), float("inf"), -float("inf")):
+            with self.assertRaises(ValueError):
+                EarlyStopping(patience=2).update(bad)
+            with self.assertRaises(ValueError):
+                BestScore().update(bad)
+            with self.assertRaises(ValueError):
+                EarlyStopping(patience=2, min_delta=bad)
+        with self.assertRaises(ValueError):
+            EarlyStopping(patience=2, min_delta=-0.1)
+        tracker = BestScore()
+        self.assertEqual([tracker.update(v) for v in (0.5, 0.6, 0.4)], [True, False, True])
+        for kwargs in ({"val_ratio": 1.5}, {"val_ratio": -0.1}, {"val_ratio": float("nan")}, {"test_ratio": 2},
+                       {"val_size": -1}, {"val_size": 2.5}, {"test_size": True}, {"val_size": "3"}):
+            with self.assertRaises(ValueError, msg=kwargs):
+                build_split(10, **kwargs)
+        self.assertEqual(len(build_split(10, val_size=0, val_ratio=0.2)["val"]), 2, "size 0 falls back to the ratio")
+        self.assertEqual(len(build_split(10, val_size=np.int64(3))["val"]), 3)
+
+    def test_validation_mean_weights_batches_by_their_real_samples(self):
+        # Three samples per batch, the last batch holds one: the mean is over the 7 samples, not the 3 batches.
+        losses = iter([1.0, 1.0, 8.0])
+        counts = iter([3, 3, 1])
+        result = run_loss_validation(list(range(7)), 3, load_fn=lambda item: (item, item),
+                                     step_fn=lambda xs, ys: (next(losses), next(counts)))
+        self.assertEqual((result.batches, result.samples), (3, 7))
+        self.assertAlmostEqual(result.mean_loss, (3 * 1.0 + 3 * 1.0 + 8.0) / 7)
+        self.assertIsNone(run_loss_validation([], 3, load_fn=lambda item: (item, item), step_fn=lambda xs, ys: (0., 1)))
+        for count in (0, -1, 4):
+            with self.assertRaises(ValueError, msg=count):
+                run_loss_validation(list(range(3)), 3, load_fn=lambda item: (item, item),
+                                    step_fn=lambda xs, ys: (1.0, count))
+
+    def test_donkey_index_refuses_paths_outside_images_and_non_finite_labels(self):
+        self.assertEqual(image_rel_path("images\\7_0.1.jpg").as_posix(), "images/7_0.1.jpg")
+        self.assertEqual(image_rel_path("somewhere/else/7_0.1.jpg").as_posix(), "images/7_0.1.jpg")
+        self.assertEqual(image_rel_path("../../secret/7_0.1.jpg").as_posix(), "images/7_0.1.jpg")
+        for escaping in ("images/../../secret.jpg", "images\\..\\x.jpg"):
+            with self.assertRaises(ValueError, msg=escaping):
+                image_rel_path(escaping)
+        self.assertEqual(parse_angle_from_filename("12_−0,25.jpg"), -0.25)
+        for name in ("3_nan.jpg", "3_inf.jpg", "3_-inf.jpg"):
+            with self.assertRaises(ValueError, msg=name):
+                parse_angle_from_filename(name)
 
     def test_loaded_splits_reject_overlap_duplicates_and_invalid_indices(self):
         with tempfile.TemporaryDirectory() as tmp:

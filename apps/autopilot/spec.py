@@ -5,11 +5,12 @@ from __future__ import annotations
 import copy
 import itertools
 import math
-import re
 import time
 from pathlib import Path
 
 from apps.console.presets import MAX_FREEZE_STAGES, SINGLE_ARGS, ValidationError, pretrained_path, validate_single
+
+from .memory import valid_campaign_id
 
 SCHEMA_VERSION = 3
 TASKS = {
@@ -48,7 +49,6 @@ DEFAULT_MAX_TOTAL_TOKENS = 414_000
 TRIAL_DEFAULTS = {"checkpoint_every": 0, "no_tensorboard": True}
 # Campaign-level split settings: they shape the split file, they are not apps.train arguments.
 SPLIT_KEYS = ("val_size", "split_seed", "test_size", "split_kind", "block_size")
-_ID = re.compile(r"^[a-z0-9][a-z0-9_-]{2,63}$")
 
 
 class SpecError(ValueError):
@@ -153,22 +153,26 @@ def validate_spec(raw: dict, repo_root: Path) -> dict:
     if not isinstance(raw, dict):
         raise SpecError("campaign 配置必须是 JSON 对象")
     mode = raw.get("mode", "dev")
-    if mode not in MODES:
+    if not isinstance(mode, str) or mode not in MODES:
         raise SpecError("mode 只能是 dev 或 formal")
+    defaults = default_spec(mode)
+    for key, value in raw.items():
+        if isinstance(defaults.get(key), dict) and not isinstance(value, dict):
+            raise SpecError(f"{key} 必须是 JSON 对象")
     unknown = set(raw) - set(default_spec())
     if unknown:
         raise SpecError(f"不支持的字段：{', '.join(sorted(unknown))}")
     spec = _merge(default_spec(mode), raw)
     spec["schema_version"] = SCHEMA_VERSION
 
+    if not isinstance(spec["task"], str) or spec["task"] not in TASKS:
+        raise SpecError(f"未知任务：{spec['task']}")
     if spec["campaign_id"] is None:
         spec["campaign_id"] = new_campaign_id(spec["task"])
-    if not isinstance(spec["campaign_id"], str) or not _ID.match(spec["campaign_id"]):
+    if not valid_campaign_id(spec["campaign_id"]):
         raise SpecError("campaign_id 只能由小写字母、数字、- 和 _ 组成，长度 3～64")
-    if spec["task"] not in TASKS:
-        raise SpecError(f"未知任务：{spec['task']}")
     metric, direction = spec["objective"].get("metric"), spec["objective"].get("direction")
-    if metric not in TASKS[spec["task"]]["metrics"]:
+    if not isinstance(metric, str) or metric not in TASKS[spec["task"]]["metrics"]:
         raise SpecError(f"任务 {spec['task']} 不支持目标指标 {metric}")
     if direction not in ("minimize", "maximize"):
         raise SpecError("objective.direction 只能是 minimize 或 maximize")
@@ -276,23 +280,25 @@ def validate_spec(raw: dict, repo_root: Path) -> dict:
         confirm["seeds"] = [_number(s, "confirm.seeds", kind=int, minimum=0) for s in confirm["seeds"]]
 
     specialists = spec["specialists"]
-    if not isinstance(specialists, list) or set(specialists) - set(SPECIALISTS):
+    if (not isinstance(specialists, list) or any(not isinstance(s, str) for s in specialists)
+            or set(specialists) - set(SPECIALISTS)):
         raise SpecError(f"specialists 只能取 {', '.join(SPECIALISTS)}")
     spec["specialists"] = list(dict.fromkeys(specialists))
 
     llm = spec["llm"]
-    llm["enabled"] = bool(llm.get("enabled"))
+    if type(llm.get("enabled")) is not bool:
+        raise SpecError("llm.enabled 必须是布尔值")
     llm["max_calls"] = _number(llm.get("max_calls", MAX_LLM_CALLS), "llm.max_calls", kind=int, minimum=0,
                                maximum=MAX_LLM_CALLS)
     llm["max_total_tokens"] = _number(llm.get("max_total_tokens"), "llm.max_total_tokens", kind=int, minimum=1,
                                       allow_none=True)
     rollback = spec["rollback"]
-    rollback["enabled"] = bool(rollback.get("enabled"))
+    if type(rollback.get("enabled")) is not bool or type(rollback.get("oom_half_batch")) is not bool:
+        raise SpecError("rollback.enabled 和 rollback.oom_half_batch 必须是布尔值")
     rollback["max_rollbacks"] = _number(rollback.get("max_rollbacks", 2), "rollback.max_rollbacks", kind=int,
                                         minimum=0, maximum=5)
     rollback["lr_factor"] = _number(rollback.get("lr_factor", 0.5), "rollback.lr_factor", minimum=0.01, maximum=0.99)
     rollback["state_every"] = _number(rollback.get("state_every", 100), "rollback.state_every", kind=int, minimum=1)
-    rollback["oom_half_batch"] = bool(rollback.get("oom_half_batch", True))
     if spec["created_by"] not in ("user", "llm"):
         raise SpecError("created_by 只能是 user 或 llm")
     if not isinstance(spec.get("title") or "", str):

@@ -30,6 +30,7 @@ from apps.train.common.validation import run_loss_validation
 from MyFlows.data.pipeline import MultiprocessDataLoader
 from MyFlows.train.regularization import RegularizationConfig, apply_regularization
 from tools.device_runtime import (
+    myflows_asnumpy,
     myflows_scalar_float,
     print_myflows_device,
     resolve_myflows_device,
@@ -262,7 +263,9 @@ def main() -> None:
         y_var.value = y_batch
         model.eval()
         graph.forward()
-        return myflows_scalar_float(loss_node.value), real_count
+        prediction = myflows_asnumpy(pred.value)[:real_count]
+        diff = prediction - y_batch[:real_count]
+        return float(np.mean(diff * diff, dtype=np.float64)), real_count
 
     for ep in range(start_epoch, start_epoch + args.epochs):
         total_loss = 0.0

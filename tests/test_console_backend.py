@@ -475,6 +475,72 @@ class ConsoleApiTest(unittest.TestCase):
         self.assertEqual(stopped["status"], "cancelled")
         self.assertEqual(self.client.post("/api/jobs/nope/stop").status_code, 404)
 
+    def test_requests_from_other_sites_and_rebound_hosts_are_refused(self):
+        # A page of another site (or a DNS name rebound to 127.0.0.1) must not reach the API that starts jobs.
+        get = self.client.get
+        self.assertEqual(get("/api/health").status_code, 200)
+        self.assertEqual(get("/api/health", headers={"host": "127.0.0.1:8790"}).status_code, 200)
+        self.assertEqual(get("/api/health", headers={"host": "localhost:8790"}).status_code, 200)
+        self.assertEqual(get("/api/health", headers={"host": "[::1]:8790"}).status_code, 200)
+        for host in ("evil.example", "evil.example:8790", "127.0.0.1.evil.example", "localhost@evil.example", ""):
+            response = get("/api/health", headers={"host": host})
+            self.assertEqual(response.status_code, 400, host)
+            self.assertEqual(get("/", headers={"host": host}).status_code, 400, host)
+        self.assertEqual(get("/api/health", headers={"origin": "http://testserver"}).status_code, 200)
+        for headers in ({"origin": "http://evil.example"}, {"origin": "null"}, {"sec-fetch-site": "cross-site"},
+                        {"origin": "https://testserver"}, {"origin": "http://testserver:81"}):
+            self.assertEqual(get("/api/health", headers=headers).status_code, 403, headers)
+            with mock.patch.object(self.app.state.jobs, "_launch") as launch:
+                posted = self.client.post("/api/jobs", headers=headers, json={"type": "single", "args": {"epochs": 1}})
+            self.assertEqual(posted.status_code, 403, headers)
+            launch.assert_not_called()
+        self.assertEqual(self.app.state.jobs.list(), [])
+        # Same-site requests of the page itself and non-browser clients (no Origin) pass.
+        self.assertEqual(get("/api/health", headers={"sec-fetch-site": "same-origin"}).status_code, 200)
+        self.assertEqual(get("/", headers={"sec-fetch-site": "cross-site"}).status_code, 200, "the page may be linked")
+
+        allowed = create_app(repo_root=self.root, console_root=self.root / "console-lan", registry=self.registry,
+                             sampler=_FakeSampler(), start_background=False, web_dist=self.root / "no-dist",
+                             allowed_hosts=("console.lan",), enable_dsh=False)
+        try:
+            with TestClient(allowed) as client:
+                self.assertEqual(client.get("/api/health", headers={"host": "console.lan:8790"}).status_code, 200)
+                self.assertEqual(client.get("/api/health", headers={"host": "other.lan:8790"}).status_code, 400)
+        finally:
+            allowed.state.jobs.shutdown()
+
+    def test_malformed_submissions_are_refused_before_anything_is_queued(self):
+        post = lambda body: self.client.post("/api/jobs", json=body)
+        smoke = next(p for p in self.client.get("/api/presets").json()["distributed"] if p["id"] == "synthetic-smoke")
+        cases = [
+            {"type": "single", "args": [1, 2]},
+            {"type": "single", "args": {"epochs": 1.5}},
+            {"type": "single", "args": {"epochs": True}},
+            {"type": "single", "args": {"augment": "yes"}},
+            {"type": "single", "args": {"lr": "nan"}},
+            {"type": "single", "args": {"lr": 1e400}},
+            {"type": "single", "args": {"epochs": 1}, "label": {"x": 1}},
+            {"type": "single", "args": {"epochs": 1}, "label": "x" * 201},
+            {"type": "distributed", "config": [smoke["config"]]},
+            {"type": "distributed", "config": dict(smoke["config"], task=["synthetic"])},
+            {"type": "distributed", "config": dict(smoke["config"], learning_rate="inf")},
+            {"type": "distributed", "config": dict(smoke["config"], learning_rate=None)},
+            {"type": "distributed", "config": dict(smoke["config"], train_workers=1e400)},
+            {"type": "distributed", "config": dict(smoke["config"], mode="ps", transport="grpc_proto", train_workers=2,
+                                                   shard_sizes=[16.0, 16.0])},
+        ]
+        with mock.patch.object(self.app.state.jobs, "_launch") as launch:
+            for body in cases:
+                # 1e400 is not JSON; send it the way a hand-written client could.
+                raw = json.dumps(body).replace("Infinity", "1e400")
+                response = self.client.post("/api/jobs", content=raw, headers={"content-type": "application/json"})
+                self.assertEqual(response.status_code, 422, (body, response.text))
+            launch.assert_not_called()
+            ok = post({"type": "single", "args": {"epochs": 2.0, "batch": 2, "augment": True}, "label": "整数值的浮点数"})
+            self.assertEqual(ok.status_code, 200, ok.text)
+            self.assertEqual(ok.json()["config"]["args"]["epochs"], 2)
+        self.assertEqual(len(self.app.state.jobs.list()), 1)
+
     def test_conv_backend_options_and_validation(self):
         presets = self.client.get("/api/presets").json()
         options = {o["value"]: o for o in presets["conv_backends"]}

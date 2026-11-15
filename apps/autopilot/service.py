@@ -31,7 +31,7 @@ from .data import ensure_split
 from .evidence import Evidence, summarize_attempt
 from .executor import Executor
 from .files import read_json, write_json
-from .memory import CampaignStore, KnowledgeBase
+from .memory import CampaignStore, KnowledgeBase, valid_campaign_id
 from .planner import Planner
 from .provenance import code_state, environment, fingerprint
 from .scheduler import Scheduler, budget_state
@@ -134,12 +134,17 @@ class AutoPilotService:
             thread.join(timeout=timeout)
 
     def campaign_ids(self) -> list[str]:
-        return sorted(p.parent.name for p in self.root.glob("*/campaign.json"))
+        """Campaign directories under the root. A directory whose name is not a campaign id (copied by hand,
+        renamed) is left out, so one stray folder cannot break the list or the start of the console."""
+        return sorted(p.parent.name for p in self.root.glob("*/campaign.json") if valid_campaign_id(p.parent.name))
 
     def store(self, cid: str) -> CampaignStore:
         with self._lock:
-            if cid not in self._stores:
-                self._stores[cid] = CampaignStore(self.root, cid)
+            try:
+                if cid not in self._stores:
+                    self._stores[cid] = CampaignStore(self.root, cid)
+            except (TypeError, ValueError) as exc:
+                raise CampaignError("campaign_id 无效", 404) from exc
             return self._stores[cid]
 
     def _existing(self, cid: str) -> CampaignStore:
@@ -147,6 +152,20 @@ class AutoPilotService:
         if not store.exists():
             raise CampaignError(f"campaign 不存在：{cid}", 404)
         return store
+
+    def _check_current_time_split(self, doc):
+        saved = doc["state"]["provenance"].get("split") or {}
+        if saved.get("kind") != "time_block":
+            return
+        from .data import describe_split
+
+        fixed = doc["spec"]["fixed"]
+        try:
+            current = describe_split(self.repo_root, fixed["split_file"], max_samples=fixed["max_samples"])
+        except (OSError, ValueError) as exc:
+            raise CampaignError(f"时间划分无效，不能继续 campaign：{exc}", 422) from exc
+        if current["split_hash"] != saved.get("split_hash"):
+            raise CampaignError("时间划分文件已变化，不能混用已有 trial 的结果；请新建 campaign", 422)
 
     # ---- queries ----------------------------------------------------------------------------
     def list_campaigns(self) -> list[dict]:
@@ -292,7 +311,12 @@ class AutoPilotService:
             return self.get_campaign(cid)
         if status not in ("draft", "paused") and status not in ACTIVE:
             raise CampaignError(f"campaign 已结束（{status}），不能再启动")
+        if status == "finishing":
+            self._spawn(cid)
+            return self.get_campaign(cid)
         _check_split(doc["spec"], doc["state"]["provenance"].get("split") or {})
+
+        self._check_current_time_split(doc)
 
         def mark(state):
             state.update(status="running", stop_requested=False, pause_requested=False)
@@ -580,6 +604,7 @@ class AutoPilotService:
         if doc["state"].get("status") == "finishing":  # interrupted while writing the report: only finish it
             self._finalize(store, doc["state"].get("finishing_as") or "stopped", doc["state"].get("stop_reason"))
             return
+        self._check_current_time_split(doc)
         provenance = {"code": code_state(self.repo_root)}
         if self.record_environment and not doc["state"]["provenance"].get("environment"):
             provenance["environment"] = environment()
@@ -939,7 +964,8 @@ class AutoPilotService:
 
         def mark(state):
             for f in (state.get("findings") or {}).values():
-                if f.get("agent") != "verifier" or f.get("kind") not in ONLINE_FINDING_KINDS                         or f.get("trial_id") not in reproduced:
+                if (f.get("agent") != "verifier" or f.get("kind") not in ONLINE_FINDING_KINDS
+                        or f.get("trial_id") not in reproduced):
                     continue
                 if f["kind"] in reproduced[f["trial_id"]]:
                     f.pop("retracted", None)

@@ -8,12 +8,14 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
+from apps.autopilot.data import describe_split, ensure_split, load_index
 from apps.autopilot.evidence import Evidence
 from apps.autopilot.service import CampaignError
 from apps.autopilot.spec import default_spec, in_space, validate_spec
 from apps.autopilot.strategies.tpe import TPEStrategy
-from apps.common.splits import build_time_block_split, frame_numbers, save_split
-from tests.system.harness import Harness
+from apps.common.splits import (TIME_BLOCK_LEGACY, TIME_BLOCK_SEPARATED, build_time_block_split, frame_numbers,
+                                load_split, save_split, validate_time_split_gap)
+from tests.system.harness import Harness, make_tub
 
 ROLLBACK = {"enabled": True, "state_every": 1, "max_rollbacks": 2, "lr_factor": 0.5}
 
@@ -239,6 +241,84 @@ class TimeBlockSplitTest(unittest.TestCase):
         held = set(split["val"]) | set(split["test"])
         self.assertGreaterEqual(min(abs(a - b) for a in split["train"] for b in held), 4)
         self.assertEqual(sorted(split["train"] + split["val"] + split["test"] + split["purged"]), list(range(2000)))
+        self.assertGreaterEqual(min(abs(a - b) for a in split["val"] for b in split["test"]), 4)
+
+    def test_held_out_sets_are_separated_and_the_legacy_assignment_is_reproducible(self):
+        frames = list(range(1000))
+        kwargs = {"val_size": 200, "test_size": 200, "block_size": 20, "gap": 4, "seed": 3}
+        separated = build_time_block_split(frames, **kwargs)
+        legacy = build_time_block_split(frames, **kwargs, separate_held_out=False)
+        distance = lambda split: min(abs(a - b) for a in split["val"] for b in split["test"])
+        self.assertGreater(distance(separated), 4)
+        self.assertEqual(distance(legacy), 1, "this seed puts a validation block next to a test block")
+        self.assertEqual(separated["test"], legacy["test"], "test blocks are the first blocks of the shuffle in both")
+        for split in (separated, legacy):
+            held = set(split["val"]) | set(split["test"])
+            self.assertGreater(min(abs(a - b) for a in split["train"] for b in held), 4)
+            self.assertEqual(sorted(sum((split[k] for k in ("train", "val", "test", "purged")), [])), frames)
+        validate_time_split_gap(frames, separated, 4)
+        validate_time_split_gap(frames, legacy, 4, separate_held_out=False)
+        with self.assertRaisesRegex(ValueError, "val and test|test and val"):
+            validate_time_split_gap(frames, legacy, 4)
+        leaking = {**legacy, "train": [*legacy["train"], legacy["purged"][0]]}
+        with self.assertRaisesRegex(ValueError, "train"):
+            validate_time_split_gap(frames, leaking, 4, separate_held_out=False)
+        # Blocks smaller than the gap: training rows two blocks away from a held-out block are purged too.
+        small = build_time_block_split(list(range(200)), val_size=20, test_size=20, block_size=2, gap=5, seed=0)
+        held = set(small["val"]) | set(small["test"])
+        self.assertGreater(min(abs(a - b) for a in small["train"] for b in held), 5)
+        with self.assertRaisesRegex(ValueError, "not enough separated blocks"):
+            build_time_block_split(list(range(40)), val_size=20, test_size=20, block_size=10, gap=3, seed=0)
+        for bad in ({"val_size": -1}, {"val_size": 1.5}, {"val_size": True}, {"block_size": 0}, {"gap": -1}):
+            with self.assertRaises(ValueError, msg=bad):
+                build_time_block_split(list(range(40)), **{"val_size": 4, **bad})
+
+    def test_split_files_record_their_contract_and_legacy_files_stay_usable(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp) / "repo"
+            make_tub(repo, 200)
+            splits = Path(tmp) / "splits"
+            made = ensure_split(repo, splits, max_samples=200, val_size=40, split_seed=3, kind="time_block",
+                                test_size=40, block_size=10, gap=2)
+            self.assertEqual(made["contract"], TIME_BLOCK_SEPARATED)
+            self.assertEqual(Path(made["split_file"]).name, "donkey-200-val40-test40-tb10g2c2-s3.json")
+            self.assertEqual(load_split(made["split_file"])["contract"], TIME_BLOCK_SEPARATED)
+            again = ensure_split(repo, splits, max_samples=200, val_size=40, split_seed=3, kind="time_block",
+                                 test_size=40, block_size=10, gap=2)
+            self.assertEqual(again["split_hash"], made["split_hash"], "an existing file is reused")
+
+            # A file written before the contract existed (no ``contract``, old name, old assignment).
+            index = load_index(repo, 200)
+            frames = frame_numbers([rel for rel, *_ in index])
+            old = build_time_block_split(frames, val_size=40, test_size=40, block_size=10, gap=2, seed=3,
+                                         separate_held_out=False)
+            purged = len(old.pop("purged"))
+            path = splits / "donkey-200-val40-test40-tb10g2-s3.json"
+            save_split(path, old, source_count=200, seed=3, kind="time_block",
+                       meta={"block_size": 10, "gap": 2, "purged": purged})
+            with self.assertRaises(ValueError):
+                validate_time_split_gap(frames, old, 2)  # this seed has touching validation and test blocks
+            described = describe_split(repo, str(path))
+            self.assertEqual((described["contract"], described["val_count"], described["test_count"]),
+                             (TIME_BLOCK_LEGACY, 40, 40))
+
+            # A hand-made file that claims the separated contract is held to it, and a training row next
+            # to a held-out row is refused under either contract.
+            save_split(path, old, source_count=200, seed=3, kind="time_block",
+                       meta={"block_size": 10, "gap": 2, "contract": TIME_BLOCK_SEPARATED})
+            with self.assertRaisesRegex(ValueError, "regenerate"):
+                describe_split(repo, str(path))
+            order = sorted(range(200), key=lambda i: (frames[i], i))
+            first_val = min(order.index(row) for row in old["val"])
+            neighbour = order[first_val - 1] if first_val else order[max(order.index(r) for r in old["val"]) + 1]
+            leaking = {**old, "train": sorted({*old["train"], neighbour} - set(old["val"]) - set(old["test"]))}
+            if neighbour not in old["val"] and neighbour not in old["test"]:
+                save_split(path, leaking, source_count=200, seed=3, kind="time_block", meta={"gap": 2})
+                with self.assertRaisesRegex(ValueError, "train"):
+                    describe_split(repo, str(path))
+            save_split(path, old, source_count=200, seed=3, kind="time_block", meta={"gap": 2, "contract": 7})
+            with self.assertRaisesRegex(ValueError, "contract"):
+                describe_split(repo, str(path))
 
     def test_campaign_with_time_block_split_evaluates_the_test_set(self):
         with tempfile.TemporaryDirectory() as tmp:

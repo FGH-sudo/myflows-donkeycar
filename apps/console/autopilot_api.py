@@ -143,7 +143,7 @@ def build_autopilot_router(service: AutoPilotService, *, dsh_host=None) -> APIRo
     def dsh_status(ensure_web: bool = False, campaign: str | None = None):
         if dsh_host is None:
             return {"available": False, "llm_ready": False, "reason": "控制台未启用 dsh 接入"}
-        if campaign and service.store(campaign).exists():
+        if campaign and _call(service.store, campaign).exists():
             dsh_host.context_campaign = campaign
         return dsh_host.status(ensure_web=ensure_web)
 
@@ -153,7 +153,7 @@ def build_autopilot_router(service: AutoPilotService, *, dsh_host=None) -> APIRo
         if dsh_host is None:
             raise HTTPException(409, "控制台未启用 dsh 接入")
         cid = body.get("campaign_id") or None
-        if cid and not service.store(cid).exists():
+        if cid and not _call(service.store, cid).exists():
             raise HTTPException(404, f"campaign 不存在：{cid}")
         dsh_host.context_campaign = cid
         return {"campaign_id": cid}

@@ -5,8 +5,9 @@ from __future__ import annotations
 from pathlib import Path
 
 from apps.common.donkey_data import load_donkey_index
-from apps.common.splits import (build_split, build_time_block_split, entries_hash, frame_numbers, load_split,
-                                save_split, select_split)
+from apps.common.splits import (TIME_BLOCK_SEPARATED, build_split, build_time_block_split, entries_hash,
+                                frame_numbers, load_split, save_split, select_split, time_block_contract,
+                                validate_time_split_gap)
 
 from .provenance import data_hash, file_hash
 
@@ -28,7 +29,10 @@ def ensure_split(repo_root: Path, splits_dir: Path, *, max_samples: int, val_siz
 
     ``random`` draws validation (and test) rows uniformly; ``time_block`` hands out contiguous blocks of
     frames and purges the frames next to a boundary (apps.common.splits.build_time_block_split), so the
-    held-out sets are not near-duplicates of training frames. The test set never takes part in selection.
+    held-out sets are not near-duplicates of training frames or of each other. The test set never takes part
+    in selection. Time-block files record their ``contract`` and carry it in the name (``c2``); files written
+    before validation and test blocks were kept apart keep their old names and stay usable through
+    ``fixed.split_file``.
     """
     repo_root = Path(repo_root)
     index = load_index(repo_root, max_samples)
@@ -36,14 +40,15 @@ def ensure_split(repo_root: Path, splits_dir: Path, *, max_samples: int, val_siz
         raise ValueError("mycar/data 中没有可用样本")
     if val_size + test_size >= len(index):
         raise ValueError(f"验证集 {val_size} 条加测试集 {test_size} 条不小于样本总数 {len(index)}")
-    tag = "" if kind == "random" else f"-tb{block_size}g{gap}"
+    tag = "" if kind == "random" else f"-tb{block_size}g{gap}c{TIME_BLOCK_SEPARATED}"
     name = f"donkey-{max_samples or 'all'}-val{val_size}" + (f"-test{test_size}" if test_size else "") + f"{tag}-s{split_seed}.json"
     path = Path(splits_dir) / name
     meta = {}
     if kind == "time_block":
         splits = build_time_block_split(frame_numbers([rel for rel, *_ in index]), val_size=val_size,
                                         test_size=test_size, block_size=block_size, gap=gap, seed=split_seed)
-        meta = {"block_size": block_size, "gap": gap, "purged": len(splits.pop("purged"))}
+        meta = {"block_size": block_size, "gap": gap, "purged": len(splits.pop("purged")),
+                "contract": TIME_BLOCK_SEPARATED}
     elif kind == "random":
         splits = build_split(index, val_size=val_size, test_size=test_size, seed=split_seed)
     else:
@@ -68,11 +73,16 @@ def describe_split(repo_root: Path, split_file: str, *, index: list | None = Non
     if index is None:
         index = load_index(repo_root, max_samples)
     payload = load_split(path, source_count=len(index))
+    contract = None
+    if payload.get("kind") == "time_block":
+        contract = time_block_contract(payload)
+        validate_time_split_gap(frame_numbers([rel for rel, *_ in index]), payload["splits"], payload.get("gap", 0),
+                                separate_held_out=contract >= TIME_BLOCK_SEPARATED)
     val = select_split(index, payload["splits"], "val")
     train = select_split(index, payload["splits"], "train")
     test = select_split(index, payload["splits"], "test")
     return {"split_file": split_file, "split_hash": file_hash(path), "val_hash": entries_hash(val) if val else None,
             "test_hash": entries_hash(test) if test else None, "train_count": len(train), "val_count": len(val),
             "test_count": len(test), "source_count": len(index), "kind": payload.get("kind", "random"),
-            "purged": payload.get("purged", 0), "block_size": payload.get("block_size"),
+            "purged": payload.get("purged", 0), "block_size": payload.get("block_size"), "contract": contract,
             "data_hash": data_hash(Path(repo_root) / "mycar" / "data", CATALOG)}

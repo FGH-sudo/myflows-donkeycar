@@ -1,6 +1,9 @@
 import base64
+import json
+import struct
 import tempfile
 import unittest
+import zlib
 from pathlib import Path
 from unittest.mock import patch
 
@@ -8,6 +11,7 @@ import cv2
 import numpy as np
 from fastapi.testclient import TestClient
 
+from apps.serve import config as serve_config
 from apps.serve import serve_fastapi
 
 
@@ -68,6 +72,122 @@ class FastApiPredictUploadTest(unittest.TestCase):
         self.assertEqual(payload["status"], "ok")
         self.assertEqual(payload["device"], "cuda")
         self.assertEqual(payload["outputs"], [0.1, 0.2])
+
+    def client(self, **kwargs):
+        with patch.object(serve_fastapi, "OnnxPredictor", _FakePredictor):
+            return TestClient(serve_fastapi.create_app(Path("fake.onnx"), log_file=None, **kwargs),
+                              raise_server_exceptions=False)
+
+    def test_request_bodies_are_bounded_before_they_are_parsed(self):
+        limit_mb = 0.25
+        client = self.client(max_upload_mb=limit_mb)
+        too_big = b"\xff" * int(1.5 * 1024 * 1024)
+        with patch.object(serve_fastapi.cv2, "imdecode") as decode:
+            upload = client.post("/predict", files={"file": ("big.jpg", too_big, "image/jpeg")})
+            self.assertEqual(upload.status_code, 413, upload.text)
+            as_json = client.post("/predict_json", json={"image_b64": base64.b64encode(too_big).decode()})
+            self.assertEqual(as_json.status_code, 413, as_json.text)
+
+            def chunks():  # no Content-Length: the limit has to hold while the body streams in
+                for _ in range(24):
+                    yield b"x" * 65536
+
+            streamed = client.post("/predict_json", content=chunks(), headers={"content-type": "application/json"})
+            self.assertEqual(streamed.status_code, 413, streamed.text)
+            self.assertNotIn("content-length", {k.lower() for k in streamed.request.headers})
+            for bad in ("-1", "abc"):
+                response = client.post("/predict_json", content=b"{}", headers={"content-length": bad})
+                self.assertEqual(response.status_code, 400, (bad, response.text))
+            decode.assert_not_called()
+        # Other routes are not limited, and a body inside the limit still works.
+        self.assertEqual(client.get("/healthz").json(), {"status": "ok"})
+        ok, encoded = cv2.imencode(".png", np.full((12, 16, 3), 127, dtype=np.uint8))
+        fine = client.post("/predict", files={"file": ("ok.png", encoded.tobytes(), "image/png")})
+        self.assertEqual(fine.status_code, 200, fine.text)
+        for value in (0, -1, float("nan"), float("inf"), 1e-9):
+            with self.assertRaises(ValueError, msg=value), patch.object(serve_fastapi, "OnnxPredictor", _FakePredictor):
+                serve_fastapi.create_app(Path("fake.onnx"), log_file=None, max_upload_mb=value)
+
+    def test_image_header_is_checked_before_the_bitmap_is_decoded(self):
+        def png_header_only(width, height):
+            def chunk(kind, data):
+                return (struct.pack(">I", len(data)) + kind + data
+                        + struct.pack(">I", zlib.crc32(kind + data) & 0xFFFFFFFF))
+
+            header = struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0)
+            return b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", header) + chunk(b"IDAT", zlib.compress(b"")) + chunk(b"IEND", b"")
+
+        client = self.client()
+        with patch.object(serve_fastapi.cv2, "imdecode") as decode:
+            # A few dozen bytes that claim 2.5e9 / 3.6e7 pixels: refused from the header alone.
+            for size in ((50000, 50000), (6000, 6000)):
+                bomb = png_header_only(*size)
+                self.assertLess(len(bomb), 200)
+                response = client.post("/predict", files={"file": ("bomb.png", bomb, "image/png")})
+                self.assertEqual(response.status_code, 413, (size, response.text))
+            for junk in (b"not an image", b"GIF89a" + b"\x00" * 32, b"\x89PNG\r\n\x1a\n" + b"\x00" * 16):
+                response = client.post("/predict", files={"file": ("junk.png", junk, "image/png")})
+                self.assertEqual(response.status_code, 400, (junk, response.text))
+            decode.assert_not_called()
+        empty = client.post("/predict", files={"file": ("empty.png", b"", "image/png")})
+        self.assertEqual(empty.status_code, 400, empty.text)
+        wrong_type = client.post("/predict", files={"file": ("a.txt", b"x", "text/plain")})
+        self.assertEqual(wrong_type.status_code, 400, wrong_type.text)
+
+
+class ServeBindingTest(unittest.TestCase):
+    def test_servers_listen_on_loopback_unless_told_otherwise(self):
+        self.assertEqual(serve_config.DEFAULT_BIND_HOST, "127.0.0.1")
+        self.assertEqual(serve_config.grpc_bind_address("127.0.0.1", 50051), "127.0.0.1:50051")
+        self.assertEqual(serve_config.grpc_bind_address("0.0.0.0", 50051), "[::]:50051")
+        self.assertEqual(serve_config.grpc_bind_address("::1", 50051), "[::1]:50051")
+        self.assertEqual(serve_config.grpc_bind_address("[::1]", "50051"), "[::1]:50051")
+        self.assertEqual(serve_config.grpc_bind_address("infer.local", 1), "infer.local:1")
+        for host in ("127.0.0.1", "localhost", "::1", "[::1]", "LOCALHOST"):
+            self.assertIsNone(serve_config.exposure_warning(host), host)
+        for host in ("0.0.0.0", "::", "192.168.1.20", "infer.local"):
+            self.assertIn(host, serve_config.exposure_warning(host))
+        entrypoint = (Path(serve_config.ROOT) / "deploy" / "docker" / "entrypoint.sh").read_text(encoding="utf-8")
+        launches = [line for line in entrypoint.splitlines() if "apps.serve.serve_" in line]
+        self.assertEqual(len(launches), 2)
+        self.assertTrue(all("--host 0.0.0.0" in line for line in launches), "the container publishes its port")
+
+    def test_grpc_failures_are_logged_as_errors(self):
+        from apps.serve import serve_grpc
+
+        class Context:
+            code = details = None
+
+            def set_code(self, code):
+                self.code = code
+
+            def set_details(self, details):
+                self.details = details
+
+        class Failing(_FakePredictor):
+            model_type = "regression"
+
+            def predict(self, rgb):
+                raise RuntimeError("provider lost")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            log = Path(tmp) / "grpc.jsonl"
+            servicer = serve_grpc.InferServicer(Failing(), log, max_pixels=64)
+            request = serve_grpc.infer_pb2.PredictRequest(image_rgb=bytes(4 * 4 * 3), width=4, height=4, channels=3)
+            with self.assertRaisesRegex(RuntimeError, "provider lost"):
+                servicer.Predict(request, Context())
+            context = Context()
+            servicer.Predict(serve_grpc.infer_pb2.PredictRequest(image_rgb=bytes(3), width=4, height=4, channels=3),
+                             context)
+            self.assertEqual(context.code, serve_grpc.grpc.StatusCode.INVALID_ARGUMENT)
+            context = Context()
+            servicer.Predict(serve_grpc.infer_pb2.PredictRequest(image_rgb=bytes(3), width=9, height=9, channels=3),
+                             context)
+            self.assertEqual(context.code, serve_grpc.grpc.StatusCode.RESOURCE_EXHAUSTED)
+            rows = [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()]
+            self.assertEqual([row["status"] for row in rows], ["error", "error", "error"])
+            self.assertIn("RuntimeError: provider lost", rows[0]["error"])
+            self.assertEqual(servicer.metrics.snapshot()["total_errors"], 3)
 
 
 if __name__ == "__main__":

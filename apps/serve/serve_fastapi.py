@@ -3,25 +3,30 @@
 """
 FastAPI HTTP 推理服务（PPT 要求的 flask/FastAPI 部署，与 gRPC 并存）。
 
-启动:
-  python -m apps.serve.serve_fastapi --host 0.0.0.0 --port 8000 \\
-      --model mycar/models/myflow_resnet18_best.onnx --device auto
+启动（默认只监听本机 127.0.0.1）:
+  python -m apps.serve.serve_fastapi --model mycar/models/myflow_resnet18_best.onnx --port 8000 --device auto
 
-或:
-  python -m apps.serve.serve_fastapi --model mycar/models/myflow_resnet18_best.onnx --port 8000
+服务没有鉴权；需要让其他机器访问时显式指定监听地址:
+  python -m apps.serve.serve_fastapi --host 0.0.0.0 --port 8000 \\
+      --model mycar/models/myflow_resnet18_best.onnx
 """
 from __future__ import annotations
 
 import argparse
 import base64
+import io
+import math
 import sys
 import time
 import uuid
+import warnings
 from pathlib import Path
 
 import cv2
 import numpy as np
 from fastapi import FastAPI, File, HTTPException, Request, UploadFile
+from fastapi.responses import JSONResponse
+from PIL import Image, UnidentifiedImageError
 from pydantic import BaseModel, Field
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -37,6 +42,7 @@ from apps.serve.config import (
     DEFAULT_MAX_UPLOAD_MB,
     DEFAULT_MAX_PIXELS,
     DEFAULT_MODEL_TYPE,
+    exposure_warning,
     resolve_repo_path,
 )
 from apps.serve.logger import JsonlLogger
@@ -49,6 +55,39 @@ class PredictJsonBody(BaseModel):
   height: int = 120
 
 
+class _RequestBodyLimit:
+  """Bound requests before JSON parsing or multipart spooling, including chunked bodies."""
+
+  def __init__(self, app, limits):
+    self.app, self.limits = app, limits
+
+  async def __call__(self, scope, receive, send):
+    limit = self.limits.get(scope.get("path")) if scope["type"] == "http" else None
+    if limit is None:
+      return await self.app(scope, receive, send)
+    headers = dict(scope.get("headers", ()))
+    try:
+      length = int(headers.get(b"content-length", b"0"))
+      if length < 0:
+        raise ValueError
+    except ValueError:
+      return await JSONResponse({"detail": "Content-Length 非法"}, status_code=400)(scope, receive, send)
+    if length > limit:
+      return await JSONResponse({"detail": "请求体超过大小限制"}, status_code=413)(scope, receive, send)
+    received = 0
+
+    async def limited_receive():
+      nonlocal received
+      message = await receive()
+      if message["type"] == "http.request":
+        received += len(message.get("body", b""))
+        if received > limit:
+          raise HTTPException(413, "请求体超过大小限制")
+      return message
+
+    await self.app(scope, limited_receive, send)
+
+
 def create_app(
     model_path: Path,
     image_w: int = DEFAULT_IMAGE_W,
@@ -58,12 +97,20 @@ def create_app(
     log_file: Path | None = None,
     max_upload_mb: float = DEFAULT_MAX_UPLOAD_MB,
 ):
+  if not math.isfinite(max_upload_mb) or max_upload_mb <= 0:
+    raise ValueError("max_upload_mb must be finite and positive")
+  max_upload_bytes = int(max_upload_mb * 1024 * 1024)
+  if max_upload_bytes < 1:
+    raise ValueError("max_upload_mb must allow at least one byte")
   predictor = OnnxPredictor(model_path, image_w, image_h, device=device, model_type=model_type)
   metrics = ServeMetrics()
 
   app = FastAPI(title="MyFlows ONNX Inference", version="1.0")
+  app.add_middleware(_RequestBodyLimit, limits={
+      "/predict": max_upload_bytes + 64 * 1024,
+      "/predict_json": 4 * ((max_upload_bytes + 2) // 3) + 64 * 1024,
+  })
   logger = JsonlLogger(log_file or resolve_repo_path(DEFAULT_FASTAPI_LOG_FILE))
-  max_upload_bytes = int(float(max_upload_mb) * 1024 * 1024)
 
   @app.middleware("http")
   async def request_logger(request: Request, call_next):
@@ -110,6 +157,17 @@ def create_app(
       raise HTTPException(400, "空图像")
     if len(data) > max_upload_bytes:
       raise HTTPException(413, f"图像过大，限制 {max_upload_mb} MB")
+    # Read only the header before OpenCV can allocate the decoded bitmap.
+    try:
+      with warnings.catch_warnings():
+        warnings.simplefilter("error", Image.DecompressionBombWarning)
+        with Image.open(io.BytesIO(data), formats=("JPEG", "PNG")) as image:
+          if image.width * image.height > DEFAULT_MAX_PIXELS:
+            raise HTTPException(413, "图像像素数超过限制")
+    except (Image.DecompressionBombError, Image.DecompressionBombWarning) as exc:
+      raise HTTPException(413, "图像像素数超过限制") from exc
+    except (UnidentifiedImageError, OSError, ValueError) as exc:
+      raise HTTPException(400, "无法解码图像") from exc
     try:
       rgb = cv2.imdecode(np.frombuffer(data, dtype=np.uint8), cv2.IMREAD_COLOR)
     except cv2.error as exc:
@@ -135,10 +193,10 @@ def create_app(
     return result
 
   @app.post("/predict")
-  async def predict_file(request: Request, file: UploadFile = File(...)):
+  def predict_file(request: Request, file: UploadFile = File(...)):
     if file.content_type not in ("image/jpeg", "image/png", "application/octet-stream"):
       raise HTTPException(400, f"unsupported content_type: {file.content_type}")
-    rgb = _decode_image(await file.read(max_upload_bytes + 1))
+    rgb = _decode_image(file.file.read(max_upload_bytes + 1))
     return _predict_rgb(rgb, request.state.request_id)
 
   @app.post("/predict_json")
@@ -192,6 +250,9 @@ def main() -> None:
 
   import uvicorn
 
+  warning = exposure_warning(args.host)
+  if warning:
+    print(warning, file=sys.stderr)
   uvicorn.run(app, host=args.host, port=args.port)
 
 

@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+import math
 from pathlib import Path
 
 
@@ -19,11 +20,16 @@ def parse_angle_from_filename(name: str) -> float:
     angle_str = stem.split("_")[-1].strip()
     angle_str = angle_str.replace("−", "-").replace("–", "-").replace("—", "-")
     angle_str = angle_str.replace(",", ".")
-    return float(angle_str)
+    angle = float(angle_str)
+    if not math.isfinite(angle):
+        raise ValueError(f"angle must be finite: {name}")
+    return angle
 
 
 def image_rel_path(image_name: str) -> Path:
     rel = Path(str(image_name).replace("\\", "/"))
+    if rel.parts and rel.parts[0] == "images" and ".." in rel.parts:
+        raise ValueError("image path escapes the images directory")
     if not rel.parts or rel.parts[0] != "images":
         rel = Path("images") / rel.name
     return rel
@@ -48,6 +54,8 @@ def load_generated_road_images_index(
     for path in jpgs:
         try:
             angle = parse_angle_from_filename(path.name) * float(angle_scale)
+            if not math.isfinite(angle) or not math.isfinite(float(fixed_throttle)):
+                raise ValueError("labels must be finite")
             rows.append((Path("images") / path.name, float(angle), float(fixed_throttle)))
         except Exception:
             bad += 1
@@ -98,6 +106,9 @@ def load_donkey_index(
                         else:
                             throttle = float(fixed_throttle if throttle_value is None else throttle_value)
                     except Exception:
+                        bad += 1
+                        continue
+                    if not math.isfinite(angle) or not math.isfinite(throttle):
                         bad += 1
                         continue
                     rows.append((rel, angle, throttle))

@@ -293,6 +293,24 @@ class AgentApiTest(unittest.TestCase):
         self.assertEqual(self.client.post(url, json={}, headers={"Authorization": "Bearer nope"}).status_code, 401)
         self.assertEqual(self.client.get("/api/autopilot/agent/tools", headers=self.auth).status_code, 200)
 
+    def test_malformed_campaign_ids_are_plain_refusals(self):
+        # A model that writes a title, a path or another type where the id belongs gets a message it can act on,
+        # and the refused call is still recorded.
+        for bad in ("Agent Campaign", "../agent-campaign", "..", "agent-campaign/../x", "A" * 80, "ab", 7, ["x"]):
+            response = self.call("get_campaign", {"campaign_id": bad})
+            self.assertIn(response.status_code, (404, 422), (bad, response.text))
+            self.assertNotEqual(response.status_code, 500)
+        self.assertEqual(self.call("get_campaign", **{"X-AutoPilot-Campaign": "../outside"}).status_code, 404)
+        self.assertEqual(self.call("list_trials", {"campaign_id": "Agent Campaign"}).status_code, 404)
+        self.assertIn("小写字母", self.call("get_campaign", {"campaign_id": "Agent Campaign"}).json()["detail"])
+        log = (self.h.tmp / "autopilot" / "llm_actions.jsonl").read_text(encoding="utf-8").splitlines()
+        self.assertGreaterEqual(len(log), 9)
+        for route in ("/api/autopilot/dsh/status?campaign=..%2Fx", "/api/autopilot/campaigns/Not%20An%20Id",
+                      "/api/autopilot/campaigns/..%5C..%5Cconsole/trials"):
+            self.assertIn(self.client.get(route).status_code, (200, 404), route)
+        self.assertEqual(self.client.post("/api/autopilot/dsh/context", json={"campaign_id": "../x"}).status_code, 404)
+        self.assertEqual(self.client.post("/api/autopilot/campaigns/agent-campaign/trials/..%5Cx/stop").status_code, 404)
+
     def test_context_campaign_and_errors(self):
         self.assertEqual(self.call("get_campaign").status_code, 422)
         self.assertEqual(self.client.post("/api/autopilot/dsh/context", json={"campaign_id": "nope"}).status_code, 404)
