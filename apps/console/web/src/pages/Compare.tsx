@@ -7,6 +7,7 @@ import { Link, useSearchParams } from 'react-router-dom'
 import { api } from '../api'
 import type { RunDetail, RunSummary } from '../api'
 import ChartPanel from '../components/ChartPanel'
+import ClosedLoop from './ClosedLoop'
 import FrameworkComparison from './FrameworkComparison'
 import EmptyState from '../components/EmptyState'
 import { Panel, SectionHeader } from '../components/Panel'
@@ -41,7 +42,7 @@ function epochSeries(detail: RunDetail, metric: (typeof METRICS)[number]): [numb
 
 export default function Compare() {
   const [params, setParams] = useSearchParams()
-  const frameworks = params.get('view') === 'frameworks'
+  const view = params.get('view') === 'frameworks' ? 'frameworks' : params.get('view') === 'closed-loop' ? 'closed-loop' : 'runs'
   const ids = (params.get('ids') ?? '').split(',').filter(Boolean)
   const [metric, setMetric] = useState(METRICS[0].key)
   const all = useQuery({ queryKey: ['runs', 'all'], queryFn: () => api.runs() })
@@ -87,21 +88,22 @@ export default function Compare() {
       <div className="page-title">
         <div>
           <h2>运行对比</h2>
-          <div className="page-subtitle">收敛曲线、训练速度与相对单进程的加速比</div>
+          <div className="page-subtitle">收敛曲线、训练速度与加速比；跨框架实验；模拟器闭环评估</div>
         </div>
       </div>
 
       <div className="toolbar tab-toolbar">
-        <Segmented value={frameworks ? 'frameworks' : 'runs'} aria-label="对比类型"
-          options={[{ label: '训练运行', value: 'runs' }, { label: '跨框架实验', value: 'frameworks' }]}
+        <Segmented value={view} aria-label="对比类型"
+          options={[{ label: '训练运行', value: 'runs' }, { label: '跨框架实验', value: 'frameworks' },
+            { label: '闭环评估', value: 'closed-loop' }]}
           onChange={(v) => setParams((current) => {
             const next = new URLSearchParams(current)
-            if (v === 'frameworks') next.set('view', 'frameworks')
-            else next.delete('view')
+            if (v === 'runs') next.delete('view')
+            else next.set('view', String(v))
             return next
           })} />
       </div>
-      {frameworks ? <FrameworkComparison /> : <>
+      {view === 'frameworks' ? <FrameworkComparison /> : view === 'closed-loop' ? <ClosedLoop /> : <>
       <div className="compare-picker">
         <Select
           mode="multiple"

@@ -1508,3 +1508,23 @@ code {
 .compare-picker {
   margin-bottom: calc(28px * var(--s));
 }
+
+/* Closed-loop evaluation: the two time series sit side by side, the top view below them. */
+.closed-loop-charts {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: calc(12px * var(--s));
+  margin-bottom: calc(12px * var(--s));
+}
+
+@media (max-width: 1199.98px) {
+  .closed-loop-charts {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+/* The top view draws both axes at one scale; its plot width follows from the chart height. */
+.closed-loop-path .panel-body {
+  max-width: calc(640px * var(--s));
+  margin: 0 auto;
+}

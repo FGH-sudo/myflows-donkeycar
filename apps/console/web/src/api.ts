@@ -134,6 +134,81 @@ export interface FrameworkStudy {
   runs: FrameworkRun[]
 }
 
+export interface ClosedLoopStat {
+  mean: number | null
+  worst?: number | null
+  std?: number | null
+  n?: number | null
+}
+
+export interface ClosedLoopModel {
+  id: string
+  path: string | null
+  baseline: boolean
+  episodes: number | null
+  collisions: number | null
+  time_limits: number | null
+  offline_angle_mae: number | null
+  metrics: Record<string, ClosedLoopStat>
+  /** Mean ± std of the per-scenario differences from the baseline; null for the baseline itself. */
+  paired: Record<string, ClosedLoopStat> | null
+}
+
+export interface ClosedLoopSummary {
+  id: string
+  status: string | null
+  error?: string
+  baseline: string | null
+  environment: string | null
+  fixed_throttle: number | null
+  device: string | null
+  rules: { cte_threshold?: number; consecutive_frames?: number; collision?: string }
+  scenarios: number
+  scenario_ids: string[]
+  duration_s: number | null
+  start_control: string | null
+  models: ClosedLoopModel[]
+  finished_unix_s: number | null
+  has_frames: boolean
+}
+
+export interface ClosedLoopEpisode {
+  model: string
+  scenario: string
+  seed: number | null
+  frames: number | null
+  termination: string | null
+  difference: Record<string, number> | null
+  [metric: string]: number | string | null | Record<string, number>
+}
+
+export interface ClosedLoopDetail extends ClosedLoopSummary {
+  episodes: ClosedLoopEpisode[]
+  higher_is_better: string[]
+}
+
+export interface ClosedLoopTrace {
+  evaluation: string
+  model: string
+  scenario: string
+  frames: number
+  points: number
+  cte_threshold: number | null
+  outside_frames: number
+  collision_frames: number
+  series: {
+    elapsed_s: (number | null)[]
+    cte: (number | null)[]
+    steering: (number | null)[]
+    speed: (number | null)[]
+    inference_ms: (number | null)[]
+    x: (number | null)[]
+    z: (number | null)[]
+    outside: boolean[]
+    hit: boolean[]
+  }
+}
+
 export interface EpochRow {
   rank?: number
   epoch: number
@@ -289,6 +364,12 @@ function query(params: Record<string, string | number | undefined | null>): stri
 
 export const api = {
   frameworks: () => request<FrameworkStudy[]>('/api/framework-comparisons'),
+  closedLoops: () => request<ClosedLoopSummary[]>('/api/closed-loop'),
+  closedLoop: (id: string) => request<ClosedLoopDetail>(`/api/closed-loop/${encodeURIComponent(id)}`),
+  closedLoopTrace: (id: string, model: string, scenario: string, maxPoints = 1500) =>
+    request<ClosedLoopTrace>(
+      `/api/closed-loop/${encodeURIComponent(id)}/trace` + query({ model, scenario, max_points: maxPoints }),
+    ),
   gpu: () => request<GpuPayload>('/api/gpu'),
   sources: () => request<SourceInfo[]>('/api/sources'),
   runs: (params: { source?: string; kind?: string; task?: string; mode?: string; status?: string; q?: string } = {}) =>

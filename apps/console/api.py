@@ -13,6 +13,8 @@ import psutil
 from fastapi import APIRouter, Body, HTTPException, Query, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 
+from .closed_loop import ARCHIVE as CLOSED_LOOP_ARCHIVE
+from .closed_loop import ClosedLoopArchive, ClosedLoopError
 from .jobs import JobManager
 from .presets import (
     MAX_WORKERS,
@@ -82,6 +84,7 @@ def build_router(*, registry: RunRegistry, jobs: JobManager, live, sampler, repo
                  archive_root: Path | None, python: str | None = None) -> APIRouter:
     router = APIRouter(prefix="/api", default_response_class=SafeJSONResponse)
     python = python or sys.executable
+    closed_loop = ClosedLoopArchive(repo_root / CLOSED_LOOP_ARCHIVE)
 
     def ref_or_404(run_id: str) -> RunRef:
         ref = registry.resolve(run_id)
@@ -181,6 +184,26 @@ def build_router(*, registry: RunRegistry, jobs: JobManager, live, sampler, repo
                 studies.append({"id": path.parent.name, "runs": rows, "protocol":
                                 {k: protocol.get(k) for k in ("architecture", "train", "val", "batch", "epochs", "seeds")}})
         return studies
+
+    # ---- closed-loop evaluations (archived apps.eval.closed_loop outputs; read-only) -------------
+    def closed_loop_call(fn, *args, **kwargs):
+        try:
+            return fn(*args, **kwargs)
+        except ClosedLoopError as exc:
+            raise HTTPException(exc.status, str(exc)) from exc
+
+    @router.get("/closed-loop")
+    def closed_loop_evaluations():
+        return closed_loop.evaluations()
+
+    @router.get("/closed-loop/{evaluation_id}")
+    def closed_loop_detail(evaluation_id: str):
+        return closed_loop_call(closed_loop.detail, evaluation_id)
+
+    @router.get("/closed-loop/{evaluation_id}/trace")
+    def closed_loop_trace(evaluation_id: str, model: str, scenario: str,
+                          max_points: int = Query(1500, ge=2, le=5000)):
+        return closed_loop_call(closed_loop.trace, evaluation_id, model, scenario, max_points)
 
     @router.get("/runs")
     def runs(source: str | None = None, kind: str | None = None, task: str | None = None, mode: str | None = None,

@@ -475,6 +475,104 @@ class ConsoleApiTest(unittest.TestCase):
         self.assertEqual(stopped["status"], "cancelled")
         self.assertEqual(self.client.post("/api/jobs/nope/stop").status_code, 404)
 
+    def make_closed_loop(self, name="eval-001", *, frames=True):
+        directory = self.root / "docs" / "experiments" / "semester_2026_fall" / "closed_loop" / name
+        directory.mkdir(parents=True)
+        scenarios = [{"id": f"reset-{i:02d}", "seed": 100 + i, "duration_s": 30.0} for i in (1, 2)]
+        (directory / "manifest.json").write_text(json.dumps({
+            "protocol": {"environment": "donkey-test-v0", "fixed_throttle": 0.2, "scenarios": scenarios,
+                         "rules": {"cte_threshold": 2.0, "consecutive_frames": 3}},
+            "models": [{"id": "base", "path": "models/base", "offline_angle_mae": 0.02}, {"id": "cand", "path": "m/c"}],
+            "device": "cpu", "session": {"start_position_control": "simulator default reset"}}), encoding="utf-8")
+        (directory / "cand-offline.json").write_text(json.dumps({"results": [{"angle_mae": 0.03}]}), encoding="utf-8")
+        stat = lambda mean, worst: {"mean": mean, "worst": worst, "n": 2}
+        (directory / "result.json").write_text(json.dumps({
+            "status": "succeeded", "baseline": "base", "fixed_throttle": 0.2,
+            "models": {
+                "base": {"episodes": 2, "collisions": 0, "time_limits": 2,
+                         "metrics": {"mean_abs_cte": stat(0.5, 0.6), "survival_s": stat(30.0, 30.0)},
+                         "paired_difference_from_baseline": {"mean_abs_cte": {"mean": 0.0, "std": 0.0, "n": 2}}},
+                "cand": {"episodes": 2, "collisions": 1, "time_limits": 1,
+                         "metrics": {"mean_abs_cte": stat(1.5, float("nan")), "survival_s": stat(20.0, 10.0)},
+                         "paired_difference_from_baseline": {"mean_abs_cte": {"mean": 1.0, "std": 0.5, "n": 2}}}}},
+        ).replace("NaN", "null"), encoding="utf-8")
+        episodes = []
+        for model, cte, survival in (("base", 0.5, 30.0), ("cand", 1.5, 20.0)):
+            for scenario in scenarios:
+                episodes.append({"model": model, "scenario": scenario["id"], "seed": scenario["seed"], "frames": 6,
+                                 "mean_abs_cte": cte, "max_abs_cte": cte * 2, "excursions": int(cte > 1),
+                                 "survival_s": survival, "termination": "time_limit", "private_note": "not served"})
+        _write_jsonl(directory / "episodes.jsonl", episodes)
+        if frames:
+            rows = []
+            for model, scale in (("base", 0.5), ("cand", 1.0)):
+                for i in range(40):
+                    cte = scale * (3.0 if 20 <= i < 30 else 1.0)  # cand: frames 20..29 are beyond the threshold
+                    rows.append({"model": model, "scenario": "reset-01", "elapsed_s": i * 0.05, "cte": cte,
+                                 "steering": 0.1, "speed": 2.0, "inference_ms": 5.0, "pos": [float(i), 0.5, 2.0 * i],
+                                 "hit": "wall" if model == "cand" and i == 39 else "none"})
+            _write_jsonl(directory / "frames.jsonl", rows)
+            with (directory / "frames.jsonl").open("a", encoding="utf-8") as f:
+                f.write('not json\n{"model": "cand", "scenario": "reset-01", "elapsed_s": 9')  # damaged + unfinished
+        return directory
+
+    def test_closed_loop_evaluations_are_listed_compared_and_traced(self):
+        self.assertEqual(self.client.get("/api/closed-loop").json(), [])
+        self.make_closed_loop("eval-001")
+        self.make_closed_loop("eval-002", frames=False)
+        (self.root / "docs/experiments/semester_2026_fall/closed_loop/no-result").mkdir()
+        listed = self.client.get("/api/closed-loop").json()
+        self.assertEqual([e["id"] for e in listed], ["eval-002", "eval-001"])
+        first = listed[1]
+        self.assertEqual((first["baseline"], first["scenarios"], first["duration_s"], first["has_frames"]),
+                         ("base", 2, 30.0, True))
+        self.assertFalse(listed[0]["has_frames"])
+        models = {m["id"]: m for m in first["models"]}
+        self.assertEqual((models["base"]["baseline"], models["base"]["offline_angle_mae"], models["base"]["paired"]),
+                         (True, 0.02, None))
+        self.assertEqual(models["cand"]["offline_angle_mae"], 0.03, "read from cand-offline.json")
+        self.assertEqual(models["cand"]["metrics"]["mean_abs_cte"], {"mean": 1.5, "worst": None})
+        self.assertEqual(models["cand"]["paired"]["mean_abs_cte"], {"mean": 1.0, "std": 0.5, "n": 2})
+        self.assertIsNone(models["cand"]["metrics"]["excursions"]["mean"], "a metric the result lacks is empty")
+
+        detail = self.client.get("/api/closed-loop/eval-001").json()
+        self.assertEqual(len(detail["episodes"]), 4)
+        self.assertNotIn("private_note", detail["episodes"][0])
+        cand = next(e for e in detail["episodes"] if e["model"] == "cand" and e["scenario"] == "reset-02")
+        self.assertEqual(cand["difference"]["mean_abs_cte"], 1.0)
+        self.assertEqual(cand["difference"]["survival_s"], -10.0)
+        self.assertIsNone(next(e for e in detail["episodes"] if e["model"] == "base")["difference"])
+        self.assertIn("survival_s", detail["higher_is_better"])
+
+        trace = self.client.get("/api/closed-loop/eval-001/trace", params={"model": "cand", "scenario": "reset-01"}).json()
+        self.assertEqual((trace["frames"], trace["points"], trace["outside_frames"], trace["collision_frames"]),
+                         (40, 40, 10, 1), "the damaged and the unfinished line are not frames")
+        self.assertEqual(trace["series"]["x"][:2], [0.0, 1.0])
+        self.assertEqual(trace["series"]["z"][1], 2.0)
+        self.assertEqual(sum(trace["series"]["outside"]), 10)
+        thin = self.client.get("/api/closed-loop/eval-001/trace",
+                               params={"model": "cand", "scenario": "reset-01", "max_points": 4}).json()
+        self.assertLess(thin["points"], 12)
+        kept = thin["series"]["elapsed_s"]
+        for wanted in (20 * 0.05, 29 * 0.05, 39 * 0.05):  # both ends of the excursion and the collision frame
+            self.assertTrue(any(abs(t - wanted) < 1e-9 for t in kept), (wanted, kept))
+        base = self.client.get("/api/closed-loop/eval-001/trace", params={"model": "base", "scenario": "reset-01"}).json()
+        self.assertEqual((base["outside_frames"], base["collision_frames"]), (0, 0))
+
+        get = self.client.get
+        self.assertEqual(get("/api/closed-loop/eval-001/trace", params={"model": "cand", "scenario": "nope"}).status_code, 404)
+        self.assertEqual(get("/api/closed-loop/eval-002/trace", params={"model": "cand", "scenario": "reset-01"}).status_code, 404)
+        self.assertEqual(get("/api/closed-loop/eval-001/trace", params={"model": "cand"}).status_code, 422)
+        self.assertEqual(get("/api/closed-loop/eval-001/trace",
+                             params={"model": "cand", "scenario": "reset-01", "max_points": 999999}).status_code, 422)
+        (self.root / "docs" / "secret").mkdir()
+        (self.root / "docs" / "secret" / "result.json").write_text("{}", encoding="utf-8")
+        for bad in ("missing", "no-result", "%2E%2E", "..%2F..%2Fsecret", "..%5C..%5Csecret", ".hidden", "a%20b",
+                    "x" * 101):
+            self.assertEqual(get(f"/api/closed-loop/{bad}").status_code, 404, bad)
+            self.assertEqual(get(f"/api/closed-loop/{bad}/trace", params={"model": "cand", "scenario": "reset-01"})
+                             .status_code, 404, bad)
+
     def test_requests_from_other_sites_and_rebound_hosts_are_refused(self):
         # A page of another site (or a DNS name rebound to 127.0.0.1) must not reach the API that starts jobs.
         get = self.client.get
