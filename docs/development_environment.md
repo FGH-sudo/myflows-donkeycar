@@ -117,6 +117,14 @@ uv sync --locked --inexact
 - 控制台前端：`(cd apps/console/web && npm ci && npm run build)`。
 - PyTorch 在 Windows 上只用来给 ONNX Runtime 提供 cuDNN（`torch/lib`），原生库和 CuPy 都不需要它。ONNX Runtime 的 CUDA 推理在 Linux 上同样需要 cuDNN 9 等库，尚未配置。
 - Nsight：`benchmark/nsight.py` 按以下顺序查找 `nsys` 和 `ncu`：命令行参数（`--tool-path`、`--ncu-exe`）、环境变量 `MF_NSYS` / `MF_NCU`、PATH，最后取默认安装目录中版本号最大的一个。Windows 的默认目录是 `C:\Program Files\NVIDIA Corporation\Nsight Systems <版本>\target-windows-x64\nsys.exe` 和 `Nsight Compute <版本>\target\windows-desktop-win7-x64\ncu.exe`，PATH 上的 `ncu.bat` 会换成它启动的 `ncu.exe`，因为经 cmd.exe 运行时 kernel 正则会在 `|` 处被截断。Linux 的默认目录是 `/opt/nvidia/nsight-systems/<版本>/bin/nsys`、`/opt/nvidia/nsight-compute/<版本>/ncu` 和 `/usr/local/cuda/bin`。
-- 模拟器：`mycar/myconfig.py` 按 `sys.platform` 选择仓库根目录下的 `DonkeySimWin/donkey_sim.exe`、`DonkeySimLinux/donkey_sim.x86_64` 或 `DonkeySimMac/donkey_sim.app/Contents/MacOS/donkey_sim`，均从 gym-donkeycar 的发布页下载后解压，Linux 版需先 `chmod +x`。环境变量 `DONKEY_SIM_PATH` 可指定其他路径；设为 `remote` 时连接已经启动的模拟器。路径不存在时 gym-donkeycar 只提示手动启动模拟器。
+- 模拟器：`mycar/myconfig.py` 按 `sys.platform` 选择仓库根目录下的 `DonkeySimWin/donkey_sim.exe`、`DonkeySimLinux/donkey_sim.x86_64` 或 `DonkeySimMac/donkey_sim.app/Contents/MacOS/donkey_sim`，均从 gym-donkeycar 的发布页下载后解压，Linux 版需先 `chmod +x`。环境变量 `DONKEY_SIM_PATH` 可指定其他路径；设为 `remote` 时连接已经启动的模拟器。路径不存在时 gym-donkeycar 只提示手动启动模拟器。Udacity 模拟器见下一节。
+
+## Udacity 模拟器
+
+第二个模拟器是 Udacity self-driving-car-sim 的 term 1 版本（Version 1，2016-12-09），即 [car-behavioral-cloning-paddle](https://github.com/jm12138/car-behavioral-cloning-paddle) 所用的环境。Windows 版从 Udacity 的发布地址下载：`https://d17h27t6h515a5.cloudfront.net/topher/2016/November/5831f3a4_simulator-windows-64/simulator-windows-64.zip`（108,660,993 字节，SHA-256 `d69b3cbbaf8a8a3d91383c654d8ff06a0f5cbfdaf8c7fc5f2444212708e3b103`），解压到仓库根目录的 `UdacitySimWin/`（不纳入 Git），可执行文件是 `UdacitySimWin/Default Windows desktop 64-bit.exe`。环境变量 `UDACITY_SIM_PATH` 可指定其他位置。
+
+- 依赖：默认的 `simulators` 依赖组提供 `websockets`（模拟器是 Socket.IO 1.x 客户端，python-socketio 5 无法与它握手，`apps/sim/udacity.py` 直接实现了所需的 Engine.IO 3 帧格式）。
+- 自动启动只支持 Windows（`apps/sim/udacity_launcher.py`）：设置配置对话框（640×480、Fastest、窗口模式），点击菜单进入 Autonomous Mode，用 ESC 回菜单重启场景。菜单是 Unity UI，点击时会把鼠标光标移到按钮上约半秒再移回原处；窗口被最小化时先还原。采集、闭环评估和 `apps.sim.udacity_drive` 退出时结束自己启动的模拟器。
+- 其他系统可先手动启动模拟器、选择赛道和 Autonomous Mode，再给采集或单次驾驶命令加 `--sim remote`。Udacity 配对评估需要每次重启场景，不能使用 `--sim remote`。没有模拟器时给采集或单次驾驶命令加 `--sim fake`（`apps/sim/udacity_fake.py`，同一协议的替身），测试与 CI 用的就是它。
 
 macOS 没有 NVIDIA CUDA，只能运行 NumPy 的 CPU 路径；而且 cupy-cuda12x、nvidia-* 和 onnxruntime-gpu 没有 macOS wheel，`uv sync` 目前无法完成。

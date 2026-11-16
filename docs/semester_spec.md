@@ -1,10 +1,10 @@
 # 本学期开发 Spec
 
-- 状态：v0.8，第三阶段完成；2026-11-15 完成一轮加固并实现第 8 节的控制台闭环评估结果页（2.11 节；托管 CPU CI 尚未在这批改动上运行）。基础项 B1–B7 与拓展项 E1–E3 均已实现并有实验证据。第三阶段（S1–S11）于 2026-11-09 快进合入两个仓库的 main，GitHub 托管 CPU CI 通过。实验结果与限制见 [最终报告](final_report.md)，实施记录见 [第三阶段开发记录](stage3_progress.md)，后续开发选项见第 8 节
-- 日期：2026-11-15（v0.7：2026-11-09；v0.6：2026-11-04；v0.5：2026-09-23；v0.4：2026-09-05）
+- 状态：v0.9，第三阶段完成；2026-11-15 完成一轮加固并实现第 8 节的控制台闭环评估结果页（2.11 节，托管 CPU CI 已通过）；2026-11-16–17 接入第二个模拟器（Udacity term 1），为 DonkeySim 与 Udacity 各实现无人值守采集，并完成训练、短场景闭环、推理服务驾驶和真实 AutoPilot 联调；Udacity 的长片段驾驶仍会卡住，整圈能力未通过（2.12 节）。基础项 B1–B7 与拓展项 E1–E3 均已实现并有实验证据。第三阶段（S1–S11）于 2026-11-09 快进合入两个仓库的 main，GitHub 托管 CPU CI 通过。实验结果与限制见 [最终报告](final_report.md)，实施记录见 [第三阶段开发记录](stage3_progress.md)，后续开发选项见第 8 节
+- 日期：2026-11-17（v0.8：2026-11-15；v0.7：2026-11-09；v0.6：2026-11-04；v0.5：2026-09-23；v0.4：2026-09-05）
 - 依据：[深度学习框架-16 综合项目III.pdf](<深度学习框架-16 综合项目III.pdf>)；[深度学习框架-19 CUDA 编程（下）.pdf](<深度学习框架-19 CUDA 编程（下）.pdf>) 第 70–82 页“课程任务二：监控与瓶颈分析”；[深度学习框架-24迁移学习.pdf](<深度学习框架-24迁移学习.pdf>)
 - 代码基线：根仓库 c8071f7（第三阶段合入 main），MyFlows 724d0dd
-- 当前应用：DonkeyCar 自动驾驶
+- 当前应用：DonkeyCar 自动驾驶；第二个模拟环境为 Udacity self-driving-car-sim（term 1）
 - 当前主模型：ResNet18
 - 已交付阶段：[第一阶段 Spec：CUDA 算子、PS 模拟与 Nsight](stage1_cuda_ps_spec.md)、[分布式 GPU Spec：同步 PS、Ring AllReduce 与评测](stage1_distributed_gpu_spec.md)、[AutoPilot Agent Spec](autopilot_agent_spec.md)（M0–M6 已完成）、[第三阶段开发规划](stage3_plan.md)（S1–S11 已完成）
 - 阶段成果：[第一阶段实验报告](experiments/semester_2026_fall/stage1/README.md)、[PS / Ring 双任务实测报告](experiments/semester_2026_fall/distributed_gpu/20260919_optimized/README.md)、[CUDA 第 19 讲实验报告](experiments/semester_2026_fall/cuda_lecture19/README.md)、[最终报告](final_report.md)（第三阶段的全部测试与实验）；AutoPilot 正式 campaign 与 E2 迁移训练的结果已整理为 [formal-full-002](experiments/semester_2026_fall/autopilot/formal-full-002/report.md) 与 [historical-001](experiments/semester_2026_fall/e2_transfer/historical-001/report.md)
@@ -203,7 +203,21 @@ PDF 把任务分成基础部分和拓展优化。本草案按下面的顺序推�
   - LLM 工具收到格式不对的 campaign_id 时返回可读的拒绝信息，不再是服务器错误。
 - 训练：验证损失按每个 batch 的真实样本数加权；早停与最佳分数拒绝非有限值；数据索引拒绝非有限标签和越出 images 目录的路径。
 - 控制台闭环评估结果页（第 8 节的选项）：Compare 页新增“闭环评估”视图，读取归档的 `apps.eval.closed_loop` 输出，包括模型汇总表（与离线 MAE 并列）、相对基线的逐场景配对差、单次运行的 CTE 与转向曲线和按 |CTE| 着色的俯视轨迹，可在归档之间切换。只读已有结果，不启动模拟器。
-- 测试：新增的回归测试覆盖以上各项；统一回归 570 项通过（框架 330、应用 240，约 531 秒）。框架侧新增的 19 项在加固前的代码上有 16 项失败。WSL Ubuntu 22.04 的干净检出（根仓库 3b1af21、MyFlows 70113a0，依赖按 requirements-ci.txt 新装）收集 570 项，499 项通过、71 项带原因跳过，199 秒。全量训练、GPU 性能门槛没有重跑；托管 CI 在下次推送时运行。
+- 测试：新增的回归测试覆盖以上各项；统一回归 570 项通过（框架 330、应用 240，约 531 秒）。框架侧新增的 19 项在加固前的代码上有 16 项失败。WSL Ubuntu 22.04 的干净检出（根仓库 3b1af21、MyFlows 70113a0，依赖按 requirements-ci.txt 新装）收集 570 项，499 项通过、71 项带原因跳过，199 秒。全量训练、GPU 性能门槛没有重跑；2026-11-16 推送后（根仓库 210e572、MyFlows 70113a0）托管 CPU CI 通过。
+
+### 2.12 第二个模拟器与无人值守采集（2026-11-16）
+
+用户要求：让项目流程兼容 [car-behavioral-cloning-paddle](https://github.com/jm12138/car-behavioral-cloning-paddle) 的模拟环境（Udacity self-driving-car-sim，term 1），跑通训练与推理部署闭环以及 Agent 等功能，并为 DonkeyCar 与该环境各写一个无需人工参与的自动采集脚本。设计见 [system_design.md 第 11 节](system_design.md#11-第二个模拟器与无人值守采集2026-11-16)，实测见 [auto_collection 报告](experiments/semester_2026_fall/auto_collection/README.md)。
+
+- 数据集选择：训练、控制台、AutoPilot（`fixed.data`）与 LLM 工具（`list_datasets`）都可以选 `runs/datasets/<id>` 下采集的数据集，默认仍是 `mycar/data`；划分文件名与 `data_hash` 随数据集区分。
+- DonkeySim 采集（`python -m apps.collect.donkey_auto`）：CTE 的 PD 专家、每段换一条路、转向扰动。4,000 帧训练的 ResNet18 在 4 个默认 reset 场景上与现有驾驶模型持平（平均绝对 CTE 0.188 对 0.170，都没有出界或碰撞）。
+- Udacity 接入：websockets 实现的 Socket.IO/Engine.IO 服务端（20 Hz 节拍）、Windows 上自动完成配置对话框、菜单与场景重启的启动器、同协议的替身模拟器（测试与 CI 用）。
+- Udacity 采集（`python -m apps.collect.udacity_auto`）：模拟器不回传位置，专家用前视图像巡线（平地车道模型），每帧另存镜像样本；16,000 帧约 8 分钟，自检通过。在其上训练的 ResNet18（80×160）验证转向 MAE 0.0256、独立测试 0.0467，实际 ONNX 的独立测试复核同为 0.0467。本地 ONNX 与 FastAPI 各完成 4 个 60 秒场景；更长驾驶中 FastAPI（9 / 12 mph）与 gRPC（12 mph）均在约 436 米处卡住，整圈能力未通过。
+- 闭环与部署：`apps.eval.closed_loop` 按场景清单的 `environment` 选择模拟器，模型可以是 ONNX、checkpoint 或推理服务地址（FastAPI / gRPC）；`python -m apps.sim.udacity_drive` 用模型或服务驾驶。控制台闭环评估页能显示 Udacity 归档（目标车速、失败次数、图像估计的 CTE，无位置时不画轨迹）。
+- 稳健性：模拟器无法重启或不再响应时，采集提前结束但保留已存的帧；启动器会还原被最小化的窗口；读不出的画面保存在 `logs/unread` 供排查。
+- AutoPilot：在前 4,000 条 Udacity 样本上完成 5 个真实 GPU trial、确认与最终独立测试，campaign 为 completed / done；只有一个筛选和一个确认 seed，结论为候选未证实优于基线。LLM 未启用；测试覆盖了数据集工具与创建 campaign 的链路。
+- 审查修复：空数据集转为 AutoPilot 校验错误；采集总时限在段内与重置返回后检查、镜像样本不超过目标帧数；Udacity 配对评估拒绝无法重启场景的远程连接；起步标定帧排除出 CTE 指标，车速拒绝非有限值；控制台显示所选场景车速；离线 ONNX 评估跟随模型的输入尺寸与固定 batch。
+- 测试：新增 tests/test_collect.py、tests/test_udacity_sim.py，以及控制台、AutoPilot、缩小输入尺寸的 ONNX 评估用例；模拟器用例使用替身，不需要 Unity。Windows 最终统一回归 610 / 610，559 秒；WSL 源码导出收集 610 项，539 通过、71 按环境跳过，238 秒。前端构建与页面检查通过。细节见 [auto_collection 报告](experiments/semester_2026_fall/auto_collection/README.md)。
 
 ## 3. 本学期不做什么
 

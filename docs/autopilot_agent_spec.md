@@ -347,8 +347,8 @@ runs/autopilot/
 
 | 类别 | 工具 | 作用 |
 | --- | --- | --- |
-| 只读 | `list_campaigns`、`get_campaign`、`list_trials`、`get_trial_summary`、`get_findings`、`get_search_space`、`list_runs` | 读取目标、阶段、预算、排行榜、指标摘要、诊断、搜索空间和普通运行；只返回摘要，不返回原始 JSONL |
-| 配置 | `create_campaign`、`update_campaign`、`pause_campaign`、`stop_trial` | 写入 campaign 配置（任务、搜索空间、预算、seed）、暂停 campaign、停止运行中的 trial |
+| 只读 | `list_campaigns`、`get_campaign`、`list_trials`、`get_trial_summary`、`get_findings`、`get_search_space`、`list_runs`、`list_datasets` | 读取目标、阶段、预算、排行榜、指标摘要、诊断、搜索空间、普通运行，以及可选的数据集（默认的 `mycar/data` 与 `runs/datasets/<id>` 下自动采集的数据集：帧数、模拟器、图像与建议输入尺寸、采集自检）；只返回摘要，不返回原始 JSONL |
+| 配置 | `create_campaign`、`update_campaign`、`pause_campaign`、`stop_trial` | 写入 campaign 配置（任务、搜索空间、预算、seed，`fixed.data` 选择数据集、`fixed.image_size` 设定输入尺寸）、暂停 campaign、停止运行中的 trial |
 | 直接启动训练 | `start_campaign`、`submit_trials` | 启动或恢复 campaign、把候选配置放进队列 |
 | 请求启动训练 | `request_campaign_start`、`request_trials` | 在控制台生成待确认项，不直接启动训练 |
 | 说明 | `write_note` | 给报告补充文字说明，标注“LLM 生成” |

@@ -52,16 +52,21 @@
 | apps/train/__main__.py | `python -m apps.train` 的短入口，等价调用 train_myflows_donkey |
 | apps/common/environment.py | GPU/驱动、CUDA/NVRTC、依赖 metadata 和原生源码哈希；AutoPilot provenance 保留兼容导出 |
 | tools/check_run_format.py | 校验 config、metrics、resources、rank steps 和 result 的 v1 格式，并兼容旧运行；字段口径见 monitoring_format.md |
-| apps/eval/simulator.py、sim_probe.py、closed_loop.py | 管理本地 Unity 会话，核对实际发送的遥测字段，按锁定的阈值、去抖与场景清单配对评估 checkpoint 和 ONNX |
+| apps/eval/simulator.py、sim_probe.py、closed_loop.py | 管理本地 Unity 会话（`FrameStream.regenerate_road` 让 DonkeySim 按种子换一条路），核对实际发送的遥测字段，按锁定的阈值、去抖与场景清单配对评估 checkpoint、ONNX 与已部署的推理服务（模型清单里写 `endpoint`）；场景清单的 `environment` 决定用哪个模拟器 |
+| apps/eval/environments.py | 闭环评估的两个环境：DonkeySim（固定油门、遥测 CTE、3D 位置算距离）与 Udacity（速度控制器保持目标车速；CTE 是前视图像估计的横向位置，距离由速度积分，失败为卡住或连续丢路）。`apps/eval/scenarios/udacity_lake.json` 是 Udacity 湖区赛道的场景清单 |
+| apps/common/datasets.py | 数据集登记：默认的 `mycar/data` 与 `runs/datasets/<id>` 下采集的数据集；`normalize` 只接受这两类写法（拒绝绝对路径、`..` 和其他目录）；`list_datasets` / `describe` 汇总帧数、模拟器、图像尺寸、建议输入尺寸与采集自检；`TubWriter` 写出训练入口直接读取的 tub（images、逐行 JSON catalog 与 manifest、dataset.json）。控制台、AutoPilot（`fixed.data`）与 LLM 工具 `list_datasets` 都经过它 |
+| apps/collect/ | 无人值守采集。`policy.py`：CTE 的 PD 专家、速度保持、随机符号与长度的转向扰动脉冲；`recorder.py`：逐段循环（标签是专家在该帧的输出，执行的是加了扰动的转向，可存左右镜像样本）、自检与报告，模拟器无法重启或不再响应时提前结束并保留已存的帧；`donkey_auto.py`：DonkeySim，每段用 `regen_road` 换一条路；`vision.py`：Udacity 的前视图像专家（车前路面颜色找边缘点，平地车道模型拟合两侧边缘、航向与弯度，沿右边缘的平行线行驶，过桥时的边缘切换需两帧确认）；`udacity_auto.py`：Udacity 采集入口，同时写模拟器格式的 driving_log.csv |
+| apps/sim/ | Udacity 模拟器（term 1）。`udacity.py`：模拟器是 Socket.IO 1.x 客户端，这里是基于 websockets 的服务端，提供 reset / step / brake，按 20 Hz 节拍发送命令，`session` 负责启动并进入自动模式、重启场景；`udacity_launcher.py`：Windows 上用窗口消息完成配置对话框、菜单点击与 ESC 重启，窗口被最小化时先还原；`udacity_fake.py`：同一协议的替身（运动学小车与渲染的体育场赛道），供测试与 CI；`udacity_drive.py`：用 ONNX、checkpoint 或推理服务驾驶一段并输出摘要 |
+| apps/serve/remote.py | 推理服务的客户端预测函数（FastAPI 上传 PNG，或 gRPC），让闭环评估与驾驶把已部署的服务放进回路 |
 | apps/eval/eval_myflows_donkey.py | MyFlows checkpoint 评估 |
 | apps/eval/eval_myflows_donkey_onnx.py | ONNX 模型评估 |
 | apps/serve/ | ONNX predictor、gRPC、FastAPI 和客户端；服务默认监听 127.0.0.1（`--host` 可改），FastAPI 在解析前限制请求体并先核对图片文件头的像素数 |
 | apps/console/server.py | 训练控制台入口 `python -m apps.console.server`：组装任务管理、运行索引、实时 GPU 采样并托管前端；中间件校验 Host 头并拒绝跨站的 `/api` 请求 |
-| apps/console/api.py | REST 与 SSE 路由：GPU 实时流、运行列表/详情、step/epoch/资源增量序列、日志尾部、任务提交与停止、闭环评估归档的列表、详情与逐帧记录 |
+| apps/console/api.py | REST 与 SSE 路由：GPU 实时流、运行列表/详情、step/epoch/资源增量序列、日志尾部、任务提交与停止、闭环评估归档的列表、详情与逐帧记录、可选数据集（`/api/datasets`，也随预设返回） |
 | apps/console/closed_loop.py | 只读地读取归档的闭环评估（manifest、result、episodes、frames）：模型汇总与离线 MAE、逐场景相对基线的差值、按模型与场景降采样的逐帧记录（保留出界区间两端与碰撞帧）；逐帧文件解析一次后缓存 |
 | apps/console/registry.py、readers.py | 发现控制台任务、分布式归档（run_index.json）与 TensorBoard 单进程日志；按游标增量读取 JSONL，统一 perf_counter 时间轴 |
 | apps/console/jobs.py | 任务排队（默认串行）、子进程启动、停止（分布式实验发 CTRL_BREAK，正式训练写暂停文件、所有 Worker 在同一步保存断点，超时后结束进程树）与重启后重新接管 |
-| apps/console/presets.py | 任务预设与提交校验：只接受框架支持的模式/传输组合和白名单参数（正式训练含并行方式、Worker 数与通信方式）；卷积后端选项（原生寄存器分块 / 原生 cuBLAS / CuPy / NumPy）及其与设备、dtype 的匹配；原生库状态（缺失时由任务自动编译） |
+| apps/console/presets.py | 任务预设与提交校验：只接受框架支持的模式/传输组合和白名单参数（正式训练含并行方式、Worker 数与通信方式，以及经 `apps/common/datasets.py` 校验的数据集 `data`）；卷积后端选项（原生寄存器分块 / 原生 cuBLAS / CuPy / NumPy）及其与设备、dtype 的匹配；原生库状态（缺失时由任务自动编译） |
 | apps/console/web/ | React + Vite + Ant Design + ECharts 前端：总览、运行记录、运行详情（曲线/耗时/资源/拓扑/配置/日志）、新建训练、运行对比（训练运行、跨框架实验、闭环评估三个视图） |
 | mycar/myflows_pilot.py | DonkeyCar 驾驶控制器；不是训练调优 Agent |
 | tools/analyze_donkey_data.py | 数据数量和标签分布检查 |

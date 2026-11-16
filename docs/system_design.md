@@ -1,6 +1,6 @@
 # 当前系统设计
 
-更新时间为 2026-11-15。
+更新时间为 2026-11-16。
 
 本文只说明仓库当前已经存在的系统。第一阶段已实现 CUDA C/C++ Conv/Pool 与 Nsight 实验入口；分布式阶段已按 [stage1_distributed_gpu_spec.md](stage1_distributed_gpu_spec.md) 实现 GPU Worker 的同步 PS（Socket JSON / gRPC）与 Ring AllReduce。训练控制台（第 8 节）已把运行记录、实时曲线、GPU 占用和任务启停集中到一个 Web 界面。训练控制台也承担 AutoPilot 任务调度。训练入口支持 ImageNet 参数迁移、精确恢复、资源采样与 NVTX 诊断。
 
@@ -18,6 +18,8 @@
 ~~~mermaid
 flowchart LR
   data[DonkeyCar 图片和标签] --> common[数据读取与预处理]
+  sims[DonkeySim / Udacity 模拟器] -->|无人值守采集 apps/collect| collected[采集的数据集 runs/datasets]
+  collected --> common
   common --> train[ResNet18 训练]
   train --> checkpoint[JSON + NPZ checkpoint]
   train --> onnx[ONNX 模型]
@@ -25,6 +27,9 @@ flowchart LR
   onnx --> eval
   onnx --> pilot[DonkeyCar 驾驶]
   onnx --> serve[gRPC / FastAPI]
+  onnx --> loop[闭环评估 apps/eval]
+  serve --> loop
+  loop -->|驾驶命令| sims
   framework[MyFlows 计算图和算子] --> train
   framework --> eval
   native[原生 CUDA 库（Windows DLL / Linux .so）：寄存器分块 GEMM / cuBLAS] --> framework
@@ -198,3 +203,33 @@ ResNet18、MobileNetV2 与 AlexNet 可读取按 torchvision 名称保存的 NPZ 
 训练按 v1 写 config、metrics、rank steps 与 result；资源记录也带版本和缺测原因。旧字段继续保留，新字段明确区分整卡显存、CuPy 池和进程 RSS，并补充含数据读取的 step_total_ms 与同分母吞吐。result.environment 保存依赖、设备、驱动、CUDA/NVRTC 与原生源码哈希。格式和时钟定义见 [monitoring_format.md](monitoring_format.md)。
 
 TensorBoard 直接写事件 protobuf，训练进程不再为日志加载 torch；资源曲线增量读取 JSONL，不再次采硬件。当前小规模 CUDA 训练已验证事件回读；监控开销、时间线与优化闭环的阶段验收继续见 [stage3_progress.md](stage3_progress.md)。
+
+## 11. 第二个模拟器与无人值守采集（2026-11-16）
+
+### 11.1 数据集选择
+
+训练数据由 `data` 选择：默认的 `mycar/data`，或 `runs/datasets/<id>` 下由采集脚本写出的数据集（`apps/common/datasets.py`）。其他写法（绝对路径、`..`、别的目录）一律拒绝。训练入口用 `--data`；控制台“新建训练”与 AutoPilot“新建 campaign”提供数据集下拉框，选中采集的数据集时填入它建议的输入尺寸（Udacity 为 80×160）；AutoPilot 的 `fixed.data` 进入划分文件名与 `data_hash`，报告写明所用数据集；LLM 的只读工具 `list_datasets` 列出可选数据集与采集自检。采集的数据集就是 DonkeyCar tub（images、逐行 JSON catalog 与 manifest），另有 dataset.json（采集参数、标签分布、自检、代码版本）、frames.jsonl（逐帧的标签、实际执行的转向、扰动与偏差）、episodes.jsonl 与 collection_report.md。
+
+### 11.2 无人值守采集
+
+两个采集脚本共用 `apps/collect/recorder.py` 的逐段循环：专家给出该帧的转向作为标签；按随机间隔加入随机符号、长度和幅度的转向扰动，车实际执行的是加了扰动的转向，标签仍是专家输出，所以数据里有偏离后回到车道的样本。一段在时限、帧数目标或失败（碰撞、出界、卡住、丢路）时结束，场景自动重启，直到帧数、段数或总时长达到上限。模拟器无法重启或不再响应时提前结束，已保存的帧照样写成数据集，报告写明原因。
+
+总时限在每帧及重置返回后检查，最多还需等待当前模拟器调用结束及停车；镜像写入也受帧数目标约束，奇数目标不会多写一帧。AutoPilot 对空数据集返回校验错误。
+
+- DonkeySim（`apps/collect/donkey_auto.py`）：专家是遥测 CTE 的 PD 控制器，固定油门；每段先发 `regen_road` 按种子换一条路。
+- Udacity（`apps/collect/udacity_auto.py`）：自动模式下模拟器只回传中心相机图像和车速，没有位置和 CTE，所以专家看图驾驶（`apps/collect/vision.py`）。以车前路面的颜色为参考，在各扫描行找出两侧边缘点；按平地车道模型 `x(d) = c0 + c1·d + c2/d`（d 为距消失行的行数）用加权最小二乘拟合两侧边缘、航向和弯度；行驶线与右边缘平行，间距取车落稳后头 12 帧的中位数（模拟器把车放到路面上，起步半秒内相机偏高）。过桥时右边缘在车道线与桥墙之间跳变，需要连续两帧一致才换边缘。转向是行驶线在前方与近处偏移的加权和，速度由 PI 控制器保持。扰动只在连续 40 帧稳定读路后施加。左右镜像样本（转向取反）与原帧一起保存，平衡这条以左转为主的赛道。另写模拟器自己的 driving_log.csv 格式。
+
+### 11.3 Udacity 模拟器接口
+
+模拟器（term 1）是 Socket.IO 1.x 客户端，连接 127.0.0.1:4567。`apps/sim/udacity.py` 用 websockets 实现所需的 Engine.IO 3 服务端（握手、心跳、`telemetry` / `steer` / `manual` 事件），每收到一条控制命令回传一帧，命令按 20 Hz 节拍发送（不加节拍时本机每秒约 270 帧）。`apps/sim/udacity_launcher.py` 在 Windows 上启动可执行文件，用窗口消息设置配置对话框，把光标短暂移到菜单按钮上点击进入 Autonomous Mode，用 ESC 回到菜单重启场景，窗口被最小化时先还原；是否进入场景由新连接判断，点击落空会重试。启动器把进程记录在运行目录，工作进程异常退出时由守护进程结束模拟器。`apps/sim/udacity_fake.py` 是同一协议的替身（运动学小车与渲染的体育场赛道），测试与 CI 用它代替 Unity。
+
+### 11.4 两个模拟器上的闭环评估与部署
+
+`apps/eval/closed_loop.py` 按场景清单的 `environment` 选择环境（`apps/eval/environments.py`）。DonkeySim 沿用固定油门与遥测 CTE；Udacity 由速度控制器保持各场景的目标车速，CTE 是视觉专家从前视图像估计的横向位置（0 在起步时确定的行驶线上，+1 为右边缘），距离由速度积分（米），失败是车速持续为零（卡住）或连续 30 帧（1.5 秒）读不出路面（丢路）。模型清单中的条目可以是 ONNX、checkpoint，也可以是正在运行的推理服务（`endpoint`：`http://` 走 FastAPI 上传图片，`grpc://` 走 gRPC，`apps/serve/remote.py`），所以同一协议可以配对比较本地推理与部署后的服务。`python -m apps.sim.udacity_drive` 用模型或服务驾驶一段并输出摘要，相当于模拟器项目自带的 drive.py。控制台的闭环评估页对 Udacity 归档显示目标车速、失败次数和“图像估计”的 CTE，没有位置遥测时不画俯视轨迹。实测结果见 [无人值守采集与两个模拟器的闭环](experiments/semester_2026_fall/auto_collection/README.md)。
+
+### 11.5 限制
+
+- 自动启动 Udacity 模拟器只支持 Windows，点击菜单时会移动鼠标光标约半秒；其他系统手动进入 Autonomous Mode 后用 `--sim remote`。
+- 视觉专家只针对湖区赛道调过；丛林赛道（双车道、坡道）没有验证。它偶尔在桥口连续读不出路面，这一段以丢路结束，场景随后自动重启。
+- Udacity 的横向位置和距离都是估计值：CTE 来自图像，距离来自车速积分，模拟器没有提供真值。
+- 起步的横向位置标定帧不计入后续 CTE 指标，缺失或非有限车速会中止评估；控制台显示所选场景自身的目标车速。Udacity 配对评估要求自动重启场景，拒绝不能重置场景的 `--sim remote`。
