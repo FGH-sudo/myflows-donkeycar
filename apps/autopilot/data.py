@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from apps.common.datasets import CATALOG, dataset_dir, dataset_key, normalize
 from apps.common.donkey_data import load_donkey_index
 from apps.common.splits import (TIME_BLOCK_SEPARATED, build_split, build_time_block_split, entries_hash,
                                 frame_numbers, load_split, save_split, select_split, time_block_contract,
@@ -11,20 +12,22 @@ from apps.common.splits import (TIME_BLOCK_SEPARATED, build_split, build_time_bl
 
 from .provenance import data_hash, file_hash
 
-CATALOG = "catalog_generated.catalog"
 
-
-def load_index(repo_root: Path, max_samples: int) -> list:
+def load_index(repo_root: Path, max_samples: int, data: str | None = None) -> list:
     """The same sample list apps.train builds from its defaults (catalog first, sorted, first N)."""
-    data_dir = Path(repo_root) / "mycar" / "data"
-    index = load_donkey_index(data_dir, fixed_throttle=0.5, angle_scale=1.0, catalog_name=CATALOG)
+    try:
+        index = load_donkey_index(dataset_dir(repo_root, data), fixed_throttle=0.5, angle_scale=1.0,
+                                  catalog_name=CATALOG)
+    except SystemExit as exc:  # the CLI loader reports an absent/empty images directory by exiting
+        raise ValueError(str(exc)) from exc
     if max_samples and max_samples > 0:
         index = index[:min(int(max_samples), len(index))]
     return index
 
 
 def ensure_split(repo_root: Path, splits_dir: Path, *, max_samples: int, val_size: int, split_seed: int,
-                 kind: str = "random", test_size: int = 0, block_size: int = 50, gap: int = 5) -> dict:
+                 kind: str = "random", test_size: int = 0, block_size: int = 50, gap: int = 5,
+                 data: str | None = None) -> dict:
     """Create (or reuse) the split of the first ``max_samples`` samples and describe it.
 
     ``random`` draws validation (and test) rows uniformly; ``time_block`` hands out contiguous blocks of
@@ -32,16 +35,17 @@ def ensure_split(repo_root: Path, splits_dir: Path, *, max_samples: int, val_siz
     held-out sets are not near-duplicates of training frames or of each other. The test set never takes part
     in selection. Time-block files record their ``contract`` and carry it in the name (``c2``); files written
     before validation and test blocks were kept apart keep their old names and stay usable through
-    ``fixed.split_file``.
+    ``fixed.split_file``. The file name starts with the data set, ``donkey`` for the default one.
     """
     repo_root = Path(repo_root)
-    index = load_index(repo_root, max_samples)
+    index = load_index(repo_root, max_samples, data)
     if not index:
-        raise ValueError("mycar/data 中没有可用样本")
+        raise ValueError(f"{normalize(data)} 中没有可用样本")
     if val_size + test_size >= len(index):
         raise ValueError(f"验证集 {val_size} 条加测试集 {test_size} 条不小于样本总数 {len(index)}")
     tag = "" if kind == "random" else f"-tb{block_size}g{gap}c{TIME_BLOCK_SEPARATED}"
-    name = f"donkey-{max_samples or 'all'}-val{val_size}" + (f"-test{test_size}" if test_size else "") + f"{tag}-s{split_seed}.json"
+    name = (f"{dataset_key(data)}-{max_samples or 'all'}-val{val_size}" + (f"-test{test_size}" if test_size else "")
+            + f"{tag}-s{split_seed}.json")
     path = Path(splits_dir) / name
     meta = {}
     if kind == "time_block":
@@ -63,15 +67,15 @@ def ensure_split(repo_root: Path, splits_dir: Path, *, max_samples: int, val_siz
         rel = path.resolve().relative_to(repo_root.resolve()).as_posix()
     except ValueError:
         rel = str(path)
-    return describe_split(repo_root, rel, index=index)
+    return describe_split(repo_root, rel, index=index, data=data)
 
 
 def describe_split(repo_root: Path, split_file: str, *, index: list | None = None,
-                   max_samples: int = 0) -> dict:
+                   max_samples: int = 0, data: str | None = None) -> dict:
     path = Path(split_file)
     path = path if path.is_absolute() else Path(repo_root) / path
     if index is None:
-        index = load_index(repo_root, max_samples)
+        index = load_index(repo_root, max_samples, data)
     payload = load_split(path, source_count=len(index))
     contract = None
     if payload.get("kind") == "time_block":
@@ -85,4 +89,5 @@ def describe_split(repo_root: Path, split_file: str, *, index: list | None = Non
             "test_hash": entries_hash(test) if test else None, "train_count": len(train), "val_count": len(val),
             "test_count": len(test), "source_count": len(index), "kind": payload.get("kind", "random"),
             "purged": payload.get("purged", 0), "block_size": payload.get("block_size"), "contract": contract,
-            "data_hash": data_hash(Path(repo_root) / "mycar" / "data", CATALOG)}
+            "data": normalize(data),
+            "data_hash": data_hash(dataset_dir(repo_root, data, must_exist=False), CATALOG)}

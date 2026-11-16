@@ -23,10 +23,10 @@ FAKE_EVAL_MODULE = "tests.system.fixtures.fake_evaluate"
 FINISHED = ("completed", "stopped", "failed")
 
 
-def make_tub(repo: Path, count: int = 40) -> Path:
-    images = repo / "mycar" / "data" / "images"
+def make_tub(repo: Path, count: int = 40, *, data: str = "mycar/data", seed: int = 0) -> Path:
+    images = repo / data / "images"
     images.mkdir(parents=True, exist_ok=True)
-    rng = np.random.default_rng(0)
+    rng = np.random.default_rng(seed)
     for index in range(count):
         angle = float(rng.uniform(-1.0, 1.0))
         cv2.imwrite(str(images / f"{index}_{angle:.4f}.jpg"), np.full((8, 8, 3), 40 + index, np.uint8))

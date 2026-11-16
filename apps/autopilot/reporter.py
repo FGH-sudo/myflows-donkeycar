@@ -8,6 +8,7 @@ import statistics
 import time
 from pathlib import Path
 
+from apps.common.datasets import DEFAULT_DATA
 from apps.train.common.outcome import FAILURE_CATEGORIES, categorized_failure
 
 from .files import write_json
@@ -278,6 +279,7 @@ def write(ev, store, *, llm_events: list[dict] | None = None, specialists_status
               f"- 搜索空间：" + "；".join(f"{k} ∈ {v}" for k, v in spec["space"].items())
               + f"（策略 {spec['strategy']['name']}，最多 {spec['strategy']['max_candidates']} 个候选）",
               f"- 固定参数：" + "、".join(f"{k}={v}" for k, v in fixed.items() if k not in ("split_file",)),
+              f"- 数据集：`{split.get('data') or DEFAULT_DATA}`（参与划分 {split.get('source_count')} 条）",
               f"- 数据划分：`{split.get('split_file')}`（{split.get('kind', 'random')}；训练 {split.get('train_count')}"
               f" 条、验证 {split.get('val_count')} 条、测试 {split.get('test_count', 0)} 条；验证集指纹 "
               f"`{(split.get('val_hash') or '')[:12]}`）",

@@ -14,6 +14,7 @@ from fastapi.responses import FileResponse, StreamingResponse
 from apps.autopilot.agents import build_specialists
 from apps.autopilot.service import AutoPilotService, CampaignError
 from apps.autopilot.spec import MODES, SPECIALISTS, STRATEGIES, TASKS, default_spec
+from apps.common.datasets import list_datasets
 
 from .api import SafeJSONResponse, _sse
 
@@ -38,6 +39,7 @@ def build_autopilot_router(service: AutoPilotService, *, dsh_host=None) -> APIRo
         return {"spec": default_spec("dev"), "formal": default_spec("formal"),
                 "tasks": [{"task": k, "label": v["label"], "metrics": v["metrics"]} for k, v in TASKS.items()],
                 "modes": MODES, "strategies": list(STRATEGIES), "specialists": availability,
+                "datasets": list_datasets(service.repo_root),
                 "llm_available": bool(dsh_host is not None and dsh_host.status().get("llm_ready"))}
 
     @router.get("/campaigns")

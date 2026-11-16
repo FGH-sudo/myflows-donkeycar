@@ -17,7 +17,7 @@ from ..spec import (ACCURACY_KEYS, THROUGHPUT_KEYS, TPE_KEYS, TRANSFER_KEYS, bas
                     unavailable_keys)
 from . import tooldefs
 
-GLOBAL_TOOLS = ("list_campaigns", "list_runs", "create_campaign")
+GLOBAL_TOOLS = ("list_campaigns", "list_runs", "list_datasets", "create_campaign")
 WRITE_TOOLS = (*tooldefs.CATEGORIES["config"], *tooldefs.CATEGORIES["start"], *tooldefs.CATEGORIES["request"],
                *tooldefs.CATEGORIES["note"])
 
@@ -202,6 +202,22 @@ class AgentTools:
         keep = ("id", "source", "label", "kind", "task", "status", "device", "global_batch", "epochs",
                 "learning_rate", "elapsed_s", "final", "error")
         return {"runs": [{k: r.get(k) for k in keep} for r in runs[:limit]], "total": len(runs)}
+
+    def _list_datasets(self, _cid, _args, _source) -> dict:
+        from apps.common.datasets import list_datasets
+
+        keep = ("data", "id", "default", "frames", "ready", "environment", "simulator", "image", "image_size", "source")
+        rows = []
+        for item in list_datasets(self.service.repo_root):
+            row = {key: item.get(key) for key in keep}
+            summary = item.get("summary") or {}
+            if summary:
+                row["collection"] = {"accepted": summary.get("accepted"), "episodes": summary.get("episodes"),
+                                     "perturbed_share": _round(summary.get("perturbed_share")),
+                                     "failed_checks": [c.get("name") for c in summary.get("checks") or [] if not c.get("ok")]}
+            rows.append(row)
+        return {"datasets": rows,
+                "note": "fixed.data 省略时使用 default 为 true 的数据集；不同数据集的结果不能直接比较"}
 
     # ---- config ---------------------------------------------------------------------------------------
     def _create_campaign(self, _cid, args, source) -> dict:

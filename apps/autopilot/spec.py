@@ -8,6 +8,8 @@ import math
 import time
 from pathlib import Path
 
+from apps.common.datasets import DEFAULT_DATA, DatasetError
+from apps.common.datasets import normalize as normalize_dataset
 from apps.console.presets import MAX_FREEZE_STAGES, SINGLE_ARGS, ValidationError, pretrained_path, validate_single
 
 from .memory import valid_campaign_id
@@ -196,6 +198,14 @@ def validate_spec(raw: dict, repo_root: Path) -> dict:
             raise SpecError(f"fixed 中不支持的训练参数：{key}")
         if key in ACCURACY_KEYS or key == "seed" or key in base:
             raise SpecError(f"fixed 不能包含 {key}（由基线、搜索空间或 seed 决定）")
+    try:
+        data = normalize_dataset(fixed.get("data"))
+    except DatasetError as exc:
+        raise SpecError(f"fixed.data：{exc}") from exc
+    # The default set stays implicit: campaigns written before data sets could be chosen keep their meaning.
+    fixed.pop("data", None)
+    if data != DEFAULT_DATA:
+        fixed["data"] = data
     fixed["max_samples"] = _number(fixed.get("max_samples", 0), "fixed.max_samples", kind=int, minimum=0)
     fixed["epochs"] = _number(fixed.get("epochs", 1), "fixed.epochs", kind=int, minimum=1)
     fixed["val_size"] = _number(fixed.get("val_size", 0), "fixed.val_size", kind=int, minimum=1)

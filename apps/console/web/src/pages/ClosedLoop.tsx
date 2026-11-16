@@ -25,7 +25,11 @@ const METRICS: { key: string; label: string; unit?: string; digits: number }[] =
  * chart, less the grid margins. */
 const PATH_ASPECT = (640 - 24 - 56 - 88) / (420 - 24 - 44)
 
-const TERMINATION: Record<string, string> = { time_limit: '到时', collision: '碰撞', excursion: '出界', error: '出错' }
+const TERMINATION: Record<string, string> = {
+  time_limit: '到时', collision: '碰撞', excursion: '出界', error: '出错', stuck: '卡住', road_lost: '丢路',
+}
+/** Udacity archives estimate CTE from the camera and end episodes by their own failure rules, not collisions. */
+const cameraCte = (detail: { cte_source?: string | null }) => detail.cte_source === 'camera_estimate'
 const OUTSIDE = '#d64545'
 
 const num = (value: unknown): number | null => (typeof value === 'number' && Number.isFinite(value) ? value : null)
@@ -90,12 +94,13 @@ function ModelTable({ detail }: { detail: ClosedLoopDetail }) {
         stat('max_abs_cte', 3),
         stat('excursions', 1),
         stat('survival_s', 2),
-        stat('distance_units', 1),
+        { ...stat('distance_units', 1), title: detail.distance_unit === 'm' ? '行驶距离 (m)' : '行驶距离' },
         {
           title: '结束方式',
           render: (_, row) => (
             <span className="nowrap" style={{ color: 'var(--text-secondary)' }}>
-              到时 {row.time_limits ?? '—'} · 碰撞 {row.collisions ?? '—'} / {row.episodes ?? '—'}
+              到时 {row.time_limits ?? '—'} ·{' '}
+              {cameraCte(detail) ? `失败 ${row.failures ?? '—'}` : `碰撞 ${row.collisions ?? '—'}`} / {row.episodes ?? '—'}
             </span>
           ),
         },
@@ -333,6 +338,7 @@ function TraceSection({ detail }: { detail: ClosedLoopDetail }) {
     staleTime: Infinity,
   })
   const episode = detail.episodes.find((e) => e.model === activeModel && e.scenario === activeScenario)
+  const targetSpeed = num(episode?.target_speed_mph) ?? detail.target_speed_mph
   const options = useMemo(() => (trace.data ? traceOptions(trace.data) : null), [trace.data])
 
   return (
@@ -363,24 +369,39 @@ function TraceSection({ detail }: { detail: ClosedLoopDetail }) {
         <>
           <div className="closed-loop-charts">
             <ChartPanel
-              title="横向偏差 CTE"
+              title={cameraCte(detail) ? '横向位置（图像估计）' : '横向偏差 CTE'}
               subtitle={
                 trace.data.outside_frames
                   ? `${trace.data.frames} 帧中有 ${trace.data.outside_frames} 帧超过阈值`
-                  : `${trace.data.frames} 帧，均在阈值内`
+                  : `${trace.data.cte_frames ?? trace.data.frames} / ${trace.data.frames} 帧有 CTE 测量，均在阈值内`
               }
               option={options.cte}
               height={280}
             />
-            <ChartPanel title="转向与速度" subtitle="模型输出的转向（固定油门）" option={options.steering} height={280} />
+            <ChartPanel
+              title="转向与速度"
+              subtitle={
+                targetSpeed
+                  ? `模型输出的转向；油门由速度控制器给出（目标 ${targetSpeed} mph）`
+                  : '模型输出的转向（固定油门）'
+              }
+              option={options.steering}
+              height={280}
+            />
           </div>
-          <ChartPanel
-            title="俯视轨迹"
-            subtitle={`模拟器 x–z 平面，按 |CTE| 着色${trace.data.collision_frames ? `；${trace.data.collision_frames} 帧发生碰撞` : ''}`}
-            option={options.path}
-            height={420}
-            className="closed-loop-path"
-          />
+          {trace.data.has_positions === false ? (
+            <Panel>
+              <EmptyState compact title="没有俯视轨迹" description="这个模拟器不回传车辆位置；行驶距离由速度积分得到。" />
+            </Panel>
+          ) : (
+            <ChartPanel
+              title="俯视轨迹"
+              subtitle={`模拟器 x–z 平面，按 |CTE| 着色${trace.data.collision_frames ? `；${trace.data.collision_frames} 帧发生碰撞` : ''}`}
+              option={options.path}
+              height={420}
+              className="closed-loop-path"
+            />
+          )}
         </>
       ) : null}
     </section>
@@ -419,7 +440,11 @@ export default function ClosedLoop() {
           title="闭环评估"
           description={
             data
-              ? `${data.environment ?? '模拟器'} · ${data.scenarios} 个场景 × ${data.duration_s ?? '—'} s · 固定油门 ${data.fixed_throttle ?? '—'} · 出界阈值 |CTE| > ${rules.cte_threshold ?? '—'}（连续 ${rules.consecutive_frames ?? '—'} 帧）`
+              ? `${data.environment ?? '模拟器'} · ${data.scenarios} 个场景 × ${data.duration_s ?? '—'} s · ${
+                  data.target_speed_mph ? `默认目标车速 ${data.target_speed_mph} mph` : `固定油门 ${data.fixed_throttle ?? '—'}`
+                } · 出界阈值 |CTE| > ${rules.cte_threshold ?? '—'}（连续 ${rules.consecutive_frames ?? '—'} 帧）${
+                  cameraCte(data) ? ' · CTE 为前视图像估计的横向位置，不是模拟器真值' : ''
+                }`
               : '读取归档的模拟器闭环评估结果'
           }
           extra={

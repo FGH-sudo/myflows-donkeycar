@@ -358,6 +358,30 @@ class AgentApiTest(unittest.TestCase):
         writes = self.service.events("agent-campaign", kinds=("note",))
         self.assertEqual([e["replaced"] for e in writes], [False, False, True, False])
 
+    def test_the_model_can_list_data_sets_and_create_a_campaign_on_one(self):
+        from tests.system.harness import make_tub
+
+        collected = make_tub(self.h.repo, 50, data="runs/datasets/lake-set", seed=3)
+        (collected / "dataset.json").write_text(json.dumps({
+            "environment": "udacity-lake", "simulator": "udacity-term1", "image": {"width": 320, "height": 160},
+            "image_size": "80x160", "source": "自动采集", "created_unix_s": 5.,
+            "summary": {"accepted": False, "episodes": 3, "perturbed_share": .07123,
+                        "checks": [{"name": "frames", "ok": True}, {"name": "left_and_right", "ok": False}]}}),
+            encoding="utf-8")
+        listed = self.call("list_datasets").json()["datasets"]
+        self.assertEqual([row["data"] for row in listed], ["mycar/data", "runs/datasets/lake-set"])
+        self.assertEqual((listed[1]["frames"], listed[1]["image_size"], listed[1]["environment"]), (50, "80x160", "udacity-lake"))
+        self.assertEqual(listed[1]["collection"], {"accepted": False, "episodes": 3, "perturbed_share": .0712,
+                                                   "failed_checks": ["left_and_right"]})
+        self.assertNotIn("collection", listed[0])
+        self.assertEqual(self.call("list_datasets", source="llm:headless").status_code, 200)  # a read tool
+        spec = self.h.spec(campaign_id="llm-lake", fixed={"data": listed[1]["data"], "image_size": listed[1]["image_size"]})
+        created = self.call("create_campaign", {"spec": spec}).json()
+        self.assertEqual((created["status"], created["spec"]["fixed"]["data"]), ("draft", "runs/datasets/lake-set"))
+        refused = self.call("create_campaign", {"spec": self.h.spec(campaign_id="llm-bad", fixed={"data": "C:/secrets"})})
+        self.assertEqual(refused.status_code, 422)
+        self.assertIn("未知的数据集", refused.json()["detail"])
+
     def test_config_tools_and_global_log(self):
         created = self.call("create_campaign", {"spec": {**self.h.spec(campaign_id="llm-made"), "title": "LLM"}}).json()
         self.assertEqual(created["status"], "draft")

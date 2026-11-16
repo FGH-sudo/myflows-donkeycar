@@ -5,10 +5,11 @@ import { Alert, App, Button, Col, Form, Input, InputNumber, Row, Segmented, Sele
 import { useEffect, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { api } from '../api'
-import type { ConvBackendOption, ModeOption, NativeLibraryStatus, Preset } from '../api'
+import type { ConvBackendOption, DatasetInfo, ModeOption, NativeLibraryStatus, Preset } from '../api'
 import EChart from '../components/EChart'
 import EmptyState from '../components/EmptyState'
 import { Panel } from '../components/Panel'
+import { datasetLabel } from '../format'
 import { topologyOption } from './run/TopologyTab'
 
 const FORM_KEYS = [
@@ -481,12 +482,14 @@ const TRAIN_PARALLEL: TileOption[] = [
 
 function TrainingForm({
   presets,
+  datasets,
   convBackends,
   nativeLibrary,
   workerChoices,
   maxWorkers,
 }: {
   presets: Preset[]
+  datasets: DatasetInfo[]
   convBackends: ConvBackendOption[]
   nativeLibrary: NativeLibraryStatus
   workerChoices: number[]
@@ -501,6 +504,9 @@ function TrainingForm({
   const [label, setLabel] = useState('')
   const [submitting, setSubmitting] = useState(false)
   const [parallelKey, setParallelKey] = useState('none/none')
+  // A collected set may recommend an input size (the Udacity camera is 160x320; 80x160 keeps its aspect ratio).
+  const pickDataset = (data?: string) =>
+    form.setFieldValue('image_size', datasets.find((d) => d.data === data)?.image_size ?? undefined)
   const [workers, setWorkers] = useState(2)
   const [distributed, transport] = parallelKey.split('/')
   const parallel = distributed !== 'none'
@@ -602,6 +608,21 @@ function TrainingForm({
         <FormSection index={3} title="超参数与数据">
           <Form form={form} name="single" layout="vertical" requiredMark={false}>
             <Row gutter={16}>
+              <Col xs={24} md={16}>
+                <Form.Item name="data" label="数据集" tooltip="默认是手工记录的 DonkeyCar 数据，也可以选择已自动采集的数据集">
+                  <Select
+                    allowClear
+                    placeholder={datasetLabel(datasets.find((d) => d.default))}
+                    options={datasets.filter((d) => !d.default).map((d) => ({ value: d.data, label: datasetLabel(d), disabled: !d.ready }))}
+                    onChange={pickDataset}
+                  />
+                </Form.Item>
+              </Col>
+              <Col xs={24} md={8}>
+                <Form.Item name="image_size" label="输入尺寸 HxW" tooltip="留空则与首帧一致（DonkeyCar 为 120x160）">
+                  <Input placeholder="例如 80x160" allowClear />
+                </Form.Item>
+              </Col>
               <Col xs={24} sm={12} md={8}>
                 <Form.Item name="max_samples" label="样本数（0 = 全量）">
                   <InputNumber min={0} style={{ width: '100%' }} />
@@ -759,6 +780,7 @@ export default function NewJob() {
             children: (
               <TrainingForm
                 presets={p.single}
+                datasets={p.datasets}
                 convBackends={p.conv_backends}
                 nativeLibrary={p.native_library}
                 workerChoices={p.worker_choices}

@@ -16,6 +16,7 @@ optuna==5.0.0
 nvidia-ml-py==13.610.43
 opencv-python-headless==4.13.0.92
 onnxruntime==1.26.0
+websockets==17.4
 
 # Transitive CPU dependencies also present in uv.lock.
 absl-py==2.5.0

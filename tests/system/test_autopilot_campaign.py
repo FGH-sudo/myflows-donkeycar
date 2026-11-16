@@ -12,7 +12,7 @@ from unittest import mock
 import psutil
 
 from apps.common.gpu_lock import read_events
-from tests.system.harness import FAKE_MODULE, ROOT, Harness, wait_for
+from tests.system.harness import FAKE_MODULE, Harness, make_tub, wait_for
 
 
 def _trials(h, cid):
@@ -358,3 +358,54 @@ class GpuLockQueueTest(CampaignTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class CollectedDatasetTest(CampaignTestCase):
+    """A campaign on a set written by a collector: its own split, its own data hash, ``--data`` on every trial."""
+
+    scenario = {"objective": {"lr_opt": -3.5}}
+
+    def test_an_empty_collected_set_is_a_validation_error(self):
+        from apps.autopilot.service import CampaignError
+
+        directory = self.h.repo / "runs/datasets/empty-set"
+        directory.mkdir(parents=True)
+        for with_images in (False, True):
+            if with_images:
+                (directory / "images").mkdir()
+            with self.subTest(with_images=with_images):
+                with self.assertRaises(CampaignError) as refused:
+                    self.h.service.create_campaign(self.h.spec(campaign_id="empty-campaign", fixed={"data": "empty-set"}))
+                self.assertEqual(refused.exception.status, 422)
+        self.assertEqual(self.h.service.list_campaigns(), [])
+
+    def test_campaign_trains_and_validates_on_the_chosen_set(self):
+        from apps.autopilot.service import CampaignError
+
+        make_tub(self.h.repo, 60, data="runs/datasets/lake-set", seed=5)
+        default = self.h.service.create_campaign(self.h.spec(campaign_id="on-default"))
+        campaign = self.h.run(campaign_id="on-lake", fixed={"data": "lake-set", "image_size": "80x160"})
+        cid = campaign["campaign_id"]
+        self.assertEqual((campaign["status"], campaign["phase"]), ("completed", "done"))
+        fixed = campaign["spec"]["fixed"]
+        self.assertEqual((fixed["data"], fixed["image_size"]), ("runs/datasets/lake-set", "80x160"))
+        self.assertTrue(Path(fixed["split_file"]).name.startswith("lake-set-40-val10"))
+        split = campaign["state"]["provenance"]["split"]
+        self.assertEqual((split["data"], split["source_count"], split["val_count"]), ("runs/datasets/lake-set", 40, 10))
+        # The default campaign keeps the names and the hash it always had; the two never share a split.
+        self.assertNotIn("data", default["spec"]["fixed"])
+        self.assertTrue(Path(default["spec"]["fixed"]["split_file"]).name.startswith("donkey-40-val10"))
+        self.assertEqual(default["state"]["provenance"]["split"]["data"], "mycar/data")
+        self.assertNotEqual(default["state"]["provenance"]["split"]["data_hash"], split["data_hash"])
+        self.assertNotEqual(default["state"]["provenance"]["split"]["val_hash"], split["val_hash"])
+        trials = _trials(self.h, cid)
+        self.assertTrue(trials)
+        for trial in trials.values():
+            self.assertEqual(trial["verdict"]["status"], "valid", trial["verdict"])
+            self.assertEqual(trial["resolved_args"]["data"], "runs/datasets/lake-set")
+            config = json.loads((Path(trial["attempts"][0]["run_dir"]) / "config.json").read_text(encoding="utf-8"))
+            self.assertEqual((config["args"]["data"], config["args"]["image_size"]), ("runs/datasets/lake-set", "80x160"))
+        self.assertIn("runs/datasets/lake-set", self.h.service.report(cid)["markdown"])
+        for bad, message in (("../../etc", "未知的数据集"), ("never-collected", "不存在"), (5, "字符串")):
+            with self.assertRaisesRegex(CampaignError, message):
+                self.h.service.create_campaign(self.h.spec(campaign_id="bad-data", fixed={"data": bad}))

@@ -12,7 +12,7 @@ SERVER_NAME = "autopilot"
 
 CATEGORIES = {
     "read": ("list_campaigns", "get_campaign", "list_trials", "get_trial_summary", "get_findings",
-             "get_search_space", "list_runs"),
+             "get_search_space", "list_runs", "list_datasets"),
     "config": ("create_campaign", "update_campaign", "pause_campaign", "stop_trial"),
     "start": ("start_campaign", "submit_trials"),
     "request": ("request_campaign_start", "request_trials"),
@@ -74,10 +74,17 @@ TOOLS: dict[str, dict] = {
         "description": "控制台里的普通训练运行（非 AutoPilot）：状态、参数和最终指标摘要",
         "inputSchema": _schema({"limit": {"type": "integer", "minimum": 1, "maximum": 50}}),
     },
+    "list_datasets": {
+        "description": "可用于训练的数据集：默认的 DonkeyCar 数据和自动采集脚本写出的数据集，含帧数、模拟器环境、"
+                       "图像尺寸、建议的输入尺寸 image_size 和采集自检结果。新建 campaign 时把其中的 data 填进 fixed.data",
+        "inputSchema": _schema(),
+    },
     "create_campaign": {
         "description": "新建 campaign（草稿，不启动训练）。spec 字段同控制台新建页：campaign_id（可选，小写字母、数字、"
                        "- 和 _，3～64 个字符；省略时自动生成，创建后不能修改）、title、task、mode、objective、fixed、"
-                       "baseline、space（搜索空间）、strategy、budget、specialists、llm 等，省略的字段用默认值",
+                       "baseline、space（搜索空间）、strategy、budget、specialists、llm 等，省略的字段用默认值。"
+                       "fixed.data 选择数据集（list_datasets 给出的 data；省略时用默认的 DonkeyCar 数据），"
+                       "数据集给出 image_size 时把它填进 fixed.image_size",
         "inputSchema": _schema({"spec": {"type": "object", "additionalProperties": True}}, ("spec",)),
     },
     "update_campaign": {

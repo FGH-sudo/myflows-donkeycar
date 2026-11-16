@@ -13,6 +13,8 @@ import psutil
 from fastapi import APIRouter, Body, HTTPException, Query, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 
+from apps.common.datasets import list_datasets
+
 from .closed_loop import ARCHIVE as CLOSED_LOOP_ARCHIVE
 from .closed_loop import ClosedLoopArchive, ClosedLoopError
 from .jobs import JobManager
@@ -301,7 +303,13 @@ def build_router(*, registry: RunRegistry, jobs: JobManager, live, sampler, repo
             "max_workers": MAX_WORKERS, "worker_choices": [1, 2, 4], "conv_backends": conv_backends(),
             "native_library": native_library(),
             "distributed": distributed_presets(repo_root, archive_root), "single": single_presets(repo_root),
+            "datasets": list_datasets(repo_root),
         }
+
+    @router.get("/datasets")
+    def datasets():
+        """Data sets a training job or a campaign may name: the default one and every collected one."""
+        return list_datasets(repo_root)
 
     @router.get("/jobs")
     def list_jobs():

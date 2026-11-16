@@ -20,7 +20,7 @@ ARCHIVE = Path("docs") / "experiments" / "semester_2026_fall" / "closed_loop"
 EVALUATION_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,99}")
 METRICS = ("mean_abs_cte", "max_abs_cte", "excursions", "survival_s", "distance_units", "lap_count",
            "inference_p50_ms", "inference_p95_ms")
-EPISODE_FIELDS = ("model", "scenario", "seed", "frames", "cte_frames", "termination", *METRICS)
+EPISODE_FIELDS = ("model", "scenario", "seed", "frames", "cte_frames", "termination", "target_speed_mph", *METRICS)
 # Metrics where a larger value is the better one; every other metric is better when smaller.
 HIGHER_IS_BETTER = ("survival_s", "distance_units", "lap_count")
 TRACE_FIELDS = ("elapsed_s", "cte", "steering", "speed", "inference_ms")
@@ -136,6 +136,7 @@ class ClosedLoopArchive:
             models.append({
                 "id": name, "path": paths.get(name), "baseline": name == baseline,
                 "episodes": data.get("episodes"), "collisions": data.get("collisions"),
+                "failures": data.get("failures"),
                 "time_limits": data.get("time_limits"), "offline_angle_mae": offline.get(name),
                 "metrics": {k: {"mean": _number((metrics.get(k) or {}).get("mean")),
                                 "worst": _number((metrics.get(k) or {}).get("worst"))} for k in METRICS},
@@ -150,6 +151,10 @@ class ClosedLoopArchive:
             "id": directory.name, "status": result.get("status"), "baseline": baseline,
             "environment": protocol.get("environment") or session.get("environment"),
             "fixed_throttle": _number(result.get("fixed_throttle")), "device": manifest.get("device"),
+            # Udacity runs hold a target speed, estimate CTE from the camera and measure distance in metres.
+            "target_speed_mph": _number(result.get("target_speed_mph")),
+            "cte_source": result.get("cte_source") if isinstance(result.get("cte_source"), str) else None,
+            "distance_unit": result.get("distance_unit") if isinstance(result.get("distance_unit"), str) else None,
             "rules": protocol.get("rules") if isinstance(protocol.get("rules"), dict) else {},
             "scenarios": len(scenarios), "scenario_ids": [s.get("id") for s in scenarios if isinstance(s, dict)],
             "duration_s": next((_number(s.get("duration_s")) for s in scenarios if isinstance(s, dict)), None),
@@ -162,9 +167,17 @@ class ClosedLoopArchive:
         directory = self._dir(evaluation_id)
         summary = self._summary(directory)
         episodes = [{k: row.get(k) for k in EPISODE_FIELDS} for row in _rows(directory / "episodes.jsonl")]
+        manifest = read_json(directory / "manifest.json") or {}
+        protocol = manifest.get("protocol")
+        protocol = protocol if isinstance(protocol, dict) else {}
+        scenarios = protocol.get("scenarios")
+        speeds = {s.get("id"): _number(s.get("speed_mph"))
+                  for s in scenarios if isinstance(s, dict)} if isinstance(scenarios, list) else {}
         baseline = summary["baseline"]
         reference = {row["scenario"]: row for row in episodes if row["model"] == baseline}
         for row in episodes:
+            if summary["cte_source"] == "camera_estimate" and _number(row.get("target_speed_mph")) is None:
+                row["target_speed_mph"] = speeds.get(row["scenario"]) or summary["target_speed_mph"]
             base = reference.get(row["scenario"])
             row["difference"] = None
             if base is not None and row["model"] != baseline:
@@ -229,5 +242,7 @@ class ClosedLoopArchive:
                              and abs(columns["cte"][i]) > threshold for i in index]
         series["hit"] = [columns["hit"][i] for i in index]
         return {"evaluation": evaluation_id, "model": model, "scenario": scenario, "frames": total,
+                "cte_frames": sum(cte is not None for cte in columns["cte"]),
                 "points": len(index), "cte_threshold": threshold, "outside_frames": len(outside),
-                "collision_frames": len(hits), "series": series}
+                "collision_frames": len(hits), "has_positions": any(x is not None for x in columns["x"]),
+                "series": series}

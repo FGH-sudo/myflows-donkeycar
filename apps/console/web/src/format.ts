@@ -1,5 +1,5 @@
 import dayjs from 'dayjs'
-import type { RunStatus, RunSummary } from './api'
+import type { DatasetInfo, RunStatus, RunSummary } from './api'
 
 export const ACTIVE_STATUSES: RunStatus[] = ['pending', 'running', 'stopping']
 
@@ -131,3 +131,9 @@ export const shortGpuName = (name: string) => name.replace(/^NVIDIA\s+(GeForce\s
 export const rankColor = (rank: number | string) => RANK_COLORS[Number(rank) % RANK_COLORS.length]
 
 export const campaignPath = (cid: string) => `/autopilot/c/${encodeURIComponent(cid)}`
+
+/** One line for a data set in a selector: id, size, simulator and how it was recorded. */
+export const datasetLabel = (s?: DatasetInfo) =>
+  s
+    ? `${s.default ? '默认 · ' : ''}${s.id} · ${s.frames} 帧${s.environment ? ` · ${s.environment}` : ''}${s.source ? ` · ${s.source}` : ''}`
+    : '默认数据集'

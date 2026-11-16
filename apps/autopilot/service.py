@@ -162,7 +162,8 @@ class AutoPilotService:
 
         fixed = doc["spec"]["fixed"]
         try:
-            current = describe_split(self.repo_root, fixed["split_file"], max_samples=fixed["max_samples"])
+            current = describe_split(self.repo_root, fixed["split_file"], max_samples=fixed["max_samples"],
+                                     data=fixed.get("data"))
         except (OSError, ValueError) as exc:
             raise CampaignError(f"时间划分无效，不能继续 campaign：{exc}", 422) from exc
         if current["split_hash"] != saved.get("split_hash"):
@@ -252,12 +253,13 @@ class AutoPilotService:
             if fixed.get("split_file"):
                 from .data import describe_split
 
-                split = describe_split(self.repo_root, fixed["split_file"], max_samples=fixed["max_samples"])
+                split = describe_split(self.repo_root, fixed["split_file"], max_samples=fixed["max_samples"],
+                                       data=fixed.get("data"))
             else:
                 split = ensure_split(self.repo_root, self.root / "splits", max_samples=fixed["max_samples"],
                                      val_size=fixed["val_size"], split_seed=fixed["split_seed"],
                                      kind=fixed.get("split_kind", "random"), test_size=fixed.get("test_size", 0),
-                                     block_size=fixed.get("block_size", 50))
+                                     block_size=fixed.get("block_size", 50), data=fixed.get("data"))
                 fixed["split_file"] = split["split_file"]
         except (OSError, ValueError) as exc:
             raise CampaignError(f"无法准备数据划分：{exc}", 422) from exc

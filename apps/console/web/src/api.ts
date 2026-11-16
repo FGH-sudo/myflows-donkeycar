@@ -147,6 +147,8 @@ export interface ClosedLoopModel {
   baseline: boolean
   episodes: number | null
   collisions: number | null
+  /** Episodes ended by the environment's failure rules (Udacity: stuck or road lost); absent in older archives. */
+  failures?: number | null
   time_limits: number | null
   offline_angle_mae: number | null
   metrics: Record<string, ClosedLoopStat>
@@ -161,6 +163,11 @@ export interface ClosedLoopSummary {
   baseline: string | null
   environment: string | null
   fixed_throttle: number | null
+  /** Udacity: the speed controller's target; DonkeySim runs use a fixed throttle instead. */
+  target_speed_mph?: number | null
+  /** "camera_estimate" when CTE is measured from the picture rather than reported by the simulator. */
+  cte_source?: string | null
+  distance_unit?: string | null
   device: string | null
   rules: { cte_threshold?: number; consecutive_frames?: number; collision?: string }
   scenarios: number
@@ -192,10 +199,13 @@ export interface ClosedLoopTrace {
   model: string
   scenario: string
   frames: number
+  cte_frames?: number
   points: number
   cte_threshold: number | null
   outside_frames: number
   collision_frames: number
+  /** False when the simulator reports no position (Udacity): there is no top view to draw. */
+  has_positions?: boolean
   series: {
     elapsed_s: (number | null)[]
     cte: (number | null)[]
@@ -310,7 +320,24 @@ export interface NativeLibraryStatus {
   dependencies: boolean
 }
 
+/** A data set a job or a campaign may train on: the default DonkeyCar set or a collected one. */
+export interface DatasetInfo {
+  data: string
+  id: string
+  default: boolean
+  frames: number
+  ready: boolean
+  environment: string | null
+  simulator: string | null
+  image: { width: number; height: number } | null
+  /** Input size (HxW) the collector recommends when the camera frame is larger than needed. */
+  image_size: string | null
+  source: string | null
+  created_unix_s: number | null
+}
+
 export interface PresetsResponse {
+  datasets: DatasetInfo[]
   modes: ModeOption[]
   tasks: { task: string; label: string }[]
   max_workers: number
@@ -602,6 +629,7 @@ export interface AutoPilotDefaults {
   modes: Record<string, string>
   strategies: string[]
   specialists: Record<string, { label: string; available: boolean; reason: string | null }>
+  datasets: DatasetInfo[]
   llm_available: boolean
 }
 

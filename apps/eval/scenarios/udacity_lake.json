@@ -1,0 +1,47 @@
+{
+  "schema_version": 1,
+  "environment": "udacity-lake",
+  "target_speed_mph": 12.0,
+  "calibration": "横向位置由 apps/collect/vision.py 从前视图像估计：0 在起步时确定的行驶线上（与右边缘平行），+1 为右边缘，-1 为向左同样远。过桥时边缘切换要两帧确认，一次连续读不出路面约 0.4-0.65 秒，所以丢路判定取 30 帧（1.5 秒）",
+  "rules": {
+    "cte_threshold": 0.8,
+    "consecutive_frames": 3,
+    "rearm_threshold": 0.5,
+    "rearm_frames": 3,
+    "route_signal": null,
+    "collision": "terminate",
+    "cte_source": "camera_estimate",
+    "stuck_s": 4.0,
+    "lost_frames": 30
+  },
+  "scenarios": [
+    {
+      "id": "start-09mph",
+      "seed": 301,
+      "start": "simulator_default",
+      "duration_s": 60.0,
+      "speed_mph": 9.0
+    },
+    {
+      "id": "start-12mph-a",
+      "seed": 302,
+      "start": "simulator_default",
+      "duration_s": 60.0,
+      "speed_mph": 12.0
+    },
+    {
+      "id": "start-12mph-b",
+      "seed": 303,
+      "start": "simulator_default",
+      "duration_s": 60.0,
+      "speed_mph": 12.0
+    },
+    {
+      "id": "start-15mph",
+      "seed": 304,
+      "start": "simulator_default",
+      "duration_s": 60.0,
+      "speed_mph": 15.0
+    }
+  ]
+}

@@ -573,6 +573,31 @@ class ConsoleApiTest(unittest.TestCase):
             self.assertEqual(get(f"/api/closed-loop/{bad}/trace", params={"model": "cand", "scenario": "reset-01"})
                              .status_code, 404, bad)
 
+    def test_a_udacity_evaluation_shows_target_speed_failures_and_no_top_view(self):
+        directory = self.make_closed_loop("udacity-001", frames=False)
+        manifest = json.loads((directory / "manifest.json").read_text(encoding="utf-8"))
+        manifest["protocol"]["scenarios"][0]["speed_mph"] = 9.
+        (directory / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+        result = json.loads((directory / "result.json").read_text(encoding="utf-8"))
+        result.update(fixed_throttle=None, target_speed_mph=12.0, cte_source="camera_estimate", distance_unit="m")
+        result["models"]["cand"]["failures"] = 1
+        (directory / "result.json").write_text(json.dumps(result), encoding="utf-8")
+        rows = [{"model": "cand", "scenario": "reset-01", "elapsed_s": i * 0.05, "cte": 0.1, "steering": 0.0,
+                 "speed": 12.0, "inference_ms": 4.0, "odometer": i * 0.27} for i in range(10)]
+        _write_jsonl(directory / "frames.jsonl", rows)  # the link carries no position
+        detail = self.client.get("/api/closed-loop/udacity-001").json()
+        self.assertEqual((detail["fixed_throttle"], detail["target_speed_mph"], detail["cte_source"], detail["distance_unit"]),
+                         (None, 12.0, "camera_estimate", "m"))
+        self.assertEqual({m["id"]: m["failures"] for m in detail["models"]}, {"base": None, "cand": 1})
+        self.assertEqual([row["target_speed_mph"] for row in detail["episodes"]], [9., 12., 9., 12.])
+        trace = self.client.get("/api/closed-loop/udacity-001/trace", params={"model": "cand", "scenario": "reset-01"}).json()
+        self.assertFalse(trace["has_positions"])
+        self.assertEqual(set(trace["series"]["x"]), {None})
+        donkey = self.make_closed_loop("eval-001")
+        self.assertTrue(donkey.is_dir())
+        self.assertTrue(self.client.get("/api/closed-loop/eval-001/trace",
+                                        params={"model": "cand", "scenario": "reset-01"}).json()["has_positions"])
+
     def test_requests_from_other_sites_and_rebound_hosts_are_refused(self):
         # A page of another site (or a DNS name rebound to 127.0.0.1) must not reach the API that starts jobs.
         get = self.client.get
@@ -706,3 +731,59 @@ class ConsoleApiTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class DatasetChoiceTest(unittest.TestCase):
+    """A job may name the default DonkeyCar set or a collected one, and nothing else."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+        (self.root / "mycar" / "data").mkdir(parents=True)
+        collected = self.root / "runs" / "datasets" / "udacity-lake-001"
+        (collected / "images").mkdir(parents=True)
+        import cv2
+        import numpy as np
+
+        for index in range(3):
+            cv2.imwrite(str(collected / "images" / f"{index}_0.1000.jpg"), np.full((8, 16, 3), 90, np.uint8))
+        (collected / "dataset.json").write_text(json.dumps({
+            "id": "udacity-lake-001", "environment": "udacity-lake", "simulator": "udacity-term1", "frames": 3,
+            "image": {"width": 320, "height": 160}, "image_size": "80x160", "created_unix_s": 10.,
+            "source": "自动采集：前视图像巡线控制器", "summary": {"accepted": True}}), encoding="utf-8")
+        self.app = create_app(repo_root=self.root, console_root=self.root / "console", registry=make_registry(self.root),
+                              sampler=_FakeSampler(), start_background=False, web_dist=self.root / "no-dist")
+        self.client = TestClient(self.app)
+
+    def tearDown(self):
+        self.client.close()
+        self.app.state.jobs.shutdown()
+        self._tmp.cleanup()
+
+    def test_validation_keeps_the_default_implicit_and_refuses_unknown_places(self):
+        from apps.console.presets import ValidationError, single_cli_args, single_label, validate_single
+
+        self.assertNotIn("data", validate_single({"epochs": 1}, self.root))
+        self.assertNotIn("data", validate_single({"epochs": 1, "data": "mycar/data"}, self.root))
+        for spelling in ("udacity-lake-001", "runs/datasets/udacity-lake-001", "runs\\datasets\\udacity-lake-001\\"):
+            args = validate_single({"epochs": 1, "data": spelling, "image_size": "80x160"}, self.root)
+            self.assertEqual(args["data"], "runs/datasets/udacity-lake-001")
+        self.assertIn("udacity-lake-001", single_label(args))
+        cli = single_cli_args(args)
+        self.assertEqual(cli[cli.index("--data") + 1], "runs/datasets/udacity-lake-001")
+        for bad in ("../outside", "C:/Windows", "/etc/passwd", "runs/datasets/../../mycar", "docs", 7):
+            with self.assertRaises(ValidationError, msg=bad):
+                validate_single({"data": bad}, self.root)
+        with self.assertRaisesRegex(ValidationError, "不存在"):
+            validate_single({"data": "never-collected"}, self.root)
+
+    def test_the_api_lists_the_sets_and_a_job_on_a_collected_set_passes_it_on(self):
+        listed = self.client.get("/api/datasets").json()
+        self.assertEqual([row["data"] for row in listed], ["mycar/data", "runs/datasets/udacity-lake-001"])
+        self.assertEqual((listed[0]["default"], listed[0]["ready"]), (True, False))  # the default folder holds no frames here
+        self.assertEqual((listed[1]["frames"], listed[1]["image_size"], listed[1]["environment"], listed[1]["ready"]),
+                         (3, "80x160", "udacity-lake", True))
+        self.assertEqual(self.client.get("/api/presets").json()["datasets"], listed)
+        refused = self.client.post("/api/jobs", json={"type": "single", "args": {"data": "../../etc"}})
+        self.assertEqual(refused.status_code, 422)
+        self.assertEqual(self.client.get("/api/jobs").json(), [])

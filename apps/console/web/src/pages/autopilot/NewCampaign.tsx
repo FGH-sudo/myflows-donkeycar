@@ -8,7 +8,7 @@ import { autopilot } from '../../api'
 import type { CampaignSpec } from '../../api'
 import EmptyState from '../../components/EmptyState'
 import { Panel } from '../../components/Panel'
-import { campaignPath } from '../../format'
+import { campaignPath, datasetLabel } from '../../format'
 
 const CONV_BACKENDS = [
   { value: 'cuda_native_register', label: '原生 · 寄存器分块（默认）' },
@@ -169,6 +169,12 @@ export default function NewCampaign() {
     }
   }
 
+  // A collected set may recommend an input size (the Udacity camera is 160x320; 80x160 keeps its aspect ratio).
+  const pickDataset = (data?: string) => {
+    const chosen = d.datasets.find((s) => s.data === data)
+    form.setFieldValue(['fixed', 'image_size'], chosen?.image_size ?? undefined)
+  }
+
   const switchMode = (value: string) => {
     const spec = value === 'formal' ? d.formal : d.spec
     // Data, split, test set and rollback follow the mode (formal = full data; starting it still asks first).
@@ -232,6 +238,20 @@ export default function NewCampaign() {
               description="所有 trial 用同一个固定划分的验证集；样本数 0 表示全量；测试集只在 campaign 结束时评估一次"
             >
               <Row gutter={16}>
+                <Col xs={24}>
+                  <Form.Item
+                    name={['fixed', 'data']}
+                    label="数据集"
+                    tooltip="默认是手工记录的 DonkeyCar 数据，也可以选择已自动采集的数据集"
+                  >
+                    <Select
+                      allowClear
+                      placeholder={datasetLabel(d.datasets.find((s) => s.default))}
+                      options={d.datasets.filter((s) => !s.default).map((s) => ({ value: s.data, label: datasetLabel(s), disabled: !s.ready }))}
+                      onChange={pickDataset}
+                    />
+                  </Form.Item>
+                </Col>
                 <Col xs={12} md={6}>
                   <Form.Item name={['fixed', 'max_samples']} label="样本数">
                     <InputNumber min={0} style={{ width: '100%' }} />

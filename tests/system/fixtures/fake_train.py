@@ -43,7 +43,8 @@ def _parser() -> argparse.ArgumentParser:
                                 ("best_out", str, None), ("dtype", str, "float32"), ("distributed", str, "none"),
                                 ("workers", int, 1), ("transport", str, "none"),
                                 ("state_every", int, 0), ("keep_states", int, 3), ("resume_state", str, None),
-                                ("arch", str, "resnet18"), ("pretrained", str, None), ("freeze_stages", int, 0)):
+                                ("arch", str, "resnet18"), ("pretrained", str, None), ("freeze_stages", int, 0),
+                                ("data", str, None), ("image_size", str, None)):
         ap.add_argument("--" + name.replace("_", "-"), type=kind, default=default)
     return ap
 
@@ -118,7 +119,8 @@ def main() -> None:
         (run_dir / "child.pid").write_text(str(child.pid), encoding="utf-8")
     from apps.autopilot.data import describe_split
 
-    split = describe_split(Path.cwd(), args.split_file, max_samples=args.max_samples) if args.split_file else {}
+    split = (describe_split(Path.cwd(), args.split_file, max_samples=args.max_samples, data=args.data)
+             if args.split_file else {})
     train = int(split.get("train_count") or 20)
     steps_per_epoch = math.ceil(train / args.batch)
     (run_dir / "config.json").write_text(json.dumps({"kind": "single", "task": "donkey_resnet18_single",

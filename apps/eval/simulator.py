@@ -118,6 +118,12 @@ class FrameStream:
         # SDK reset clears cached fields. Use a new, complete frame after reset returns.
         return self._next(self.seq)
 
+    def regenerate_road(self, seed, *, settle_s=2.):
+        """Ask the generated-road scene for another road. The car is left where it was: reset afterwards."""
+        self.viewer.handler.queue_message({"msg_type": "regen_road", "road_style": "0", "rand_seed": str(int(seed)),
+                                           "turn_increment": "0.0", "wayPoints": ""})
+        time.sleep(settle_s)
+
     def step(self, action):
         with self.condition:
             previous = self.seq

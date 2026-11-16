@@ -1,4 +1,9 @@
-"""Evaluate paired fixed-throttle scenarios using the driving stack's checkpoint/ONNX predictors."""
+"""Evaluate paired scenarios in a simulator using the driving stack's checkpoint/ONNX predictors.
+
+The protocol file names the environment (``apps.eval.environments``): DonkeySim at a fixed throttle with the
+simulator's own cross-track error, or the Udacity simulator at a target speed with picture-based estimates. A
+model is a checkpoint, an ONNX file or, with ``"endpoint"``, a running inference service.
+"""
 
 from __future__ import annotations
 
@@ -13,7 +18,8 @@ import time
 
 import numpy as np
 
-from .simulator import FIXED_THROTTLE, ROOT, guarded_worker, session, write_json
+from . import environments
+from .simulator import FIXED_THROTTLE, ROOT, guarded_worker, write_json
 
 
 def finite(value):
@@ -38,6 +44,7 @@ class EpisodeMetrics:
         self.distance = 0.
         self.position_intervals = 0
         self.previous_position = None
+        self.odometer = None  # distance integrated from the speed, for simulators that report no position
         self.laps = 0
 
     def position(self, coordinates):
@@ -54,6 +61,9 @@ class EpisodeMetrics:
     def add(self, row):
         self.frames += 1
         self.position(row.get("pos"))
+        odometer = finite(row.get("odometer"))
+        if odometer is not None:
+            self.odometer = odometer
         latency = finite(row.get("inference_ms"))
         if latency is not None:
             self.latencies.append(latency)
@@ -76,39 +86,54 @@ class EpisodeMetrics:
         return {"frames": self.frames, "cte_frames": len(self.ctes),
                 "mean_abs_cte": statistics.fmean(self.ctes) if self.ctes else None,
                 "max_abs_cte": max(self.ctes, default=None), "excursions": self.events if self.ctes else None,
-                "survival_s": elapsed, "distance_units": self.distance if self.position_intervals else None,
+                "survival_s": elapsed,
+                "distance_units": self.distance if self.position_intervals else self.odometer,
                 "position_intervals": self.position_intervals, "lap_count": self.laps, "termination": reason,
                 "inference_p50_ms": float(np.percentile(self.latencies, 50)) if self.latencies else None,
                 "inference_p95_ms": float(np.percentile(self.latencies, 95)) if self.latencies else None}
 
 
-def episode(stream, predict, scenario, rules, log, *, model_id, clock=time.perf_counter):
+def episode(stream, predict, scenario, rules, log, *, model_id, clock=time.perf_counter, monitor=None):
+    """One model in one scenario. ``monitor`` (``apps.eval.environments``) chooses the throttle and adds what the
+    simulator does not report; without it the throttle is fixed and the telemetry is taken as it comes."""
     if scenario.get("start") != "simulator_default":
         raise ValueError("this simulator interface supports its default reset position only")
     metrics = EpisodeMetrics(rules)
     observation, initial = stream.reset(seed=int(scenario["seed"]))
     metrics.position(initial.get("pos"))
     start = clock()
+    if monitor is not None:
+        monitor.reset(scenario, start)
+    info = initial
     reason = "time_limit"
     try:
         while clock() - start < scenario["duration_s"]:
-            begin = clock()
+            begin = time.perf_counter()
             steering = finite(predict(observation))
-            latency_ms = (clock() - begin) * 1000
+            latency_ms = (time.perf_counter() - begin) * 1000
             if steering is None:
                 raise ValueError("model returned nonfinite steering")
             steering = float(np.clip(steering, -1., 1.))
-            observation, frame = stream.step((steering, FIXED_THROTTLE))
+            throttle = FIXED_THROTTLE if monitor is None else float(monitor.throttle(info, clock()))
+            observation, frame = stream.step((steering, throttle))
+            if monitor is not None:
+                frame = {**frame, **monitor.inspect(observation, frame, clock())}
+            info = frame
             row = {key: frame.get(key) for key in ("unix_s", "monotonic_s", "frame_id", "pos", "cte", "speed",
                                                     "hit", "lap_count", "last_lap_time", "line_events", "active_node",
                                                     "total_nodes", "simulation_time", "observed_steering", "observed_throttle")}
             row.update(schema_version=1, model=model_id, scenario=scenario["id"], seed=scenario["seed"],
-                       elapsed_s=clock() - start, steering=steering, throttle=FIXED_THROTTLE, inference_ms=latency_ms)
+                       elapsed_s=clock() - start, steering=steering, throttle=throttle, inference_ms=latency_ms)
+            if monitor is not None:
+                row["odometer"] = frame.get("odometer")
             row["missing"] = {key: "telemetry field absent" for key in ("pos", "cte", "speed", "hit") if row[key] is None}
             log.write(json.dumps(row, ensure_ascii=False, allow_nan=False) + "\n")
             metrics.add(row)
             if row["hit"] is not None and str(row["hit"]).strip().lower() not in ("", "none"):
                 reason = "collision"
+                break
+            if frame.get("stop"):
+                reason = str(frame["stop"])
                 break
             if rules.get("route_signal") == "lap" and metrics.laps > int(initial.get("lap_count") or 0):
                 reason = "lap_completed"
@@ -117,10 +142,15 @@ def episode(stream, predict, scenario, rules, log, *, model_id, clock=time.perf_
     finally:
         stream.brake()
     return {"schema_version": 1, "model": model_id, "scenario": scenario["id"], "seed": scenario["seed"],
+            **({"target_speed_mph": monitor.hold.target} if monitor is not None else {}),
             "start": initial.get("pos"), **metrics.summary(elapsed, reason)}
 
 
 def model_predictor(item, device):
+    if item.get("endpoint"):
+        from apps.serve.remote import remote_predictor
+
+        return remote_predictor(item["endpoint"])
     path = (ROOT / item["path"]).resolve()
     config = item.get("config")
     config = json.loads((ROOT / config).read_text(encoding="utf-8")) if config else None
@@ -164,12 +194,15 @@ def aggregate(episodes, baseline):
             pairs[key] = {"mean": statistics.fmean(deltas) if deltas else None,
                           "std": statistics.stdev(deltas) if len(deltas) > 1 else None, "n": len(deltas)}
         out[model] = {"episodes": len(group), "collisions": sum(r["termination"] == "collision" for r in group.values()),
+                      "failures": sum(r["termination"] in environments.FAILURES for r in group.values()),
                       "time_limits": sum(r["termination"] == "time_limit" for r in group.values()),
                       "metrics": metrics, "paired_difference_from_baseline": pairs}
     return out
 
 
 def _fingerprints(item):
+    if not item.get("path"):
+        return {}  # a remote service: the weights are behind the endpoint
     path = ROOT / item["path"]
     files = [path] if path.suffix.lower() == ".onnx" else [path.with_suffix(".json"), path.with_suffix(".npz")]
     if item.get("config"):
@@ -184,6 +217,8 @@ def _fingerprints(item):
 def model_manifest(item):
     files = _fingerprints(item)
     row = {**item, "sha256": files}
+    if not item.get("path"):
+        return row
     path = Path(item["path"])
     weights = path.name if path.suffix.lower() == ".onnx" else path.with_suffix(".npz").name
     if item.get("offline_weights_sha256") and files[weights] != item["offline_weights_sha256"]:
@@ -206,10 +241,9 @@ def frame_statistics(path):
             for name, (ctes, delays) in groups.items()}
 
 
-def _report(out, models, result):
-    lines = ["# DonkeyCar 配对闭环评估", "", "每个场景使用相同的默认 reset、客户端种子、终止规则、时限和 0.2 油门。"
-             "模型顺序按场景轮换。位置距离使用连续有效 3D 遥测点之间的欧氏距离。", "",
-             "| 模型 | 次数 | 碰撞次数 | 平均 / 最差存活秒 | 平均 / 最差距离 | 平均 / 最差绝对 CTE | "
+def _report(out, models, result, environment):
+    lines = [f"# {environment.title}", "", environment.intro(), "",
+             f"| 模型 | 次数 | {environment.failure_label} | 平均 / 最差存活秒 | 平均 / 最差距离 | 平均 / 最差绝对 CTE | "
              "平均 / 最差最大绝对 CTE | 平均 / 最差出界数 | 全部帧 P50 / P95 推理 ms |",
              "| --- | --- | --- | --- | --- | --- | --- | --- | --- |"]
     def display(value, digits=3):
@@ -220,7 +254,7 @@ def _report(out, models, result):
         m = row["metrics"]
         cells = [f"{display(m[k]['mean'])} / {display(m[k]['worst'])}" for k in
                  ("survival_s", "distance_units", "mean_abs_cte", "max_abs_cte", "excursions")]
-        lines.append(f"| {name} | {row['episodes']} | {row['collisions']} | " + " | ".join(cells)
+        lines.append(f"| {name} | {row['episodes']} | {row['failures']} | " + " | ".join(cells)
                      + f" | {display(row['frame_statistics']['inference_p50_ms'])} / {display(row['frame_statistics']['inference_p95_ms'])} |")
     lines += ["", f"配对差值采用模型值减去 {result['baseline']} 在同一场景的值。", "",
               "| 模型 | 离线角度 MAE | 平均差 Δ存活秒 | Δ距离 | Δ平均绝对 CTE | Δ出界数 |",
@@ -231,7 +265,7 @@ def _report(out, models, result):
         lines.append(f"| {name} | {display(model.get('offline_angle_mae'), 5)} | " +
                      " | ".join(display(pairs[k]["mean"]) for k in ("survival_s", "distance_units", "mean_abs_cte", "excursions")) + " |")
     lines += ["", "manifest.json 记录规则、场景、模型来源和 SHA-256。frames.jsonl 保存逐帧遥测，episodes.jsonl 保存各次 reset 起点与结局，"
-              "result.json 保存平均、最差和配对差异。Unity 场景随机种子和任意起点坐标无法通过当前接口指定。"]
+              "result.json 保存平均、最差和配对差异。" + environment.footnote()]
     (out / "report.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
@@ -250,6 +284,10 @@ def main(argv=None):
     models = json.loads((ROOT / args.models).read_text(encoding="utf-8"))
     protocol = json.loads((ROOT / args.scenarios).read_text(encoding="utf-8"))
     scenarios, rules = protocol["scenarios"], protocol["rules"]
+    try:
+        environment = environments.for_protocol(protocol)
+    except ValueError as exc:
+        parser.error(str(exc))
     names = [m["id"] for m in models]
     if not names or len(set(names)) != len(names) or not scenarios or len({s["id"] for s in scenarios}) != len(scenarios):
         parser.error("models and scenarios must have unique, nonempty IDs")
@@ -258,11 +296,14 @@ def main(argv=None):
         parser.error("--baseline must name a model in the manifest")
     if any(not 0 < s["duration_s"] <= 600 for s in scenarios):
         parser.error("scenario duration must be in (0, 600] seconds")
+    if isinstance(environment, environments.UdacityEnvironment) and args.sim == "remote":
+        parser.error("Udacity paired evaluation requires scene restarts; omit --sim remote, "
+                     "or use apps.sim.udacity_drive for a single drive")
     EpisodeMetrics(rules)
     out = (ROOT / args.out).resolve()
     if not args.worker:
         out.mkdir(parents=True, exist_ok=False)
-        timeout = 150 + len(models) * sum(15 + s["duration_s"] for s in scenarios)
+        timeout = 150 + len(models) * sum(environment.episode_overhead_s + s["duration_s"] for s in scenarios)
         guarded_worker("apps.eval.closed_loop", argv, timeout, out)
         return
     from apps.common.gpu_lock import GpuLock
@@ -273,7 +314,8 @@ def main(argv=None):
                 "device": args.device, "code": code_state(ROOT)}
     write_json(out / "manifest.json", manifest)
     rows = []
-    with GpuLock(label="closed-loop evaluation", run_dir=out), session(out, executable=args.sim, port=args.port) as (stream, metadata):
+    with GpuLock(label="closed-loop evaluation", run_dir=out), \
+            environment.session(out, executable=args.sim, port=args.port) as (stream, metadata):
         manifest["session"] = metadata
         write_json(out / "manifest.json", manifest)
         predictors = [model_predictor(m, args.device) for m in models]
@@ -282,16 +324,17 @@ def main(argv=None):
                 for offset in range(len(models)):
                     model_index = (index + offset) % len(models)
                     name = names[model_index]
-                    row = episode(stream, predictors[model_index], scenario, rules, frames, model_id=name)
+                    row = episode(stream, predictors[model_index], scenario, rules, frames, model_id=name,
+                                  clock=environment.clock, monitor=environment.monitor())
                     log.write(json.dumps(row, ensure_ascii=False, allow_nan=False) + "\n")
                     rows.append(row)
                     print(f"{name} {scenario['id']} {row['termination']} {row['survival_s']:.2f}s", flush=True)
     result = {"schema_version": 1, "status": "succeeded", "baseline": baseline, "models": aggregate(rows, baseline),
-              "route_signal": rules.get("route_signal"), "fixed_throttle": FIXED_THROTTLE}
+              "route_signal": rules.get("route_signal"), "environment": environment.name, **environment.describe()}
     for name, frame_summary in frame_statistics(out / "frames.jsonl").items():
         result["models"][name]["frame_statistics"] = frame_summary
     write_json(out / "result.json", result)
-    _report(out, models, result)
+    _report(out, models, result, environment)
 
 
 if __name__ == "__main__":

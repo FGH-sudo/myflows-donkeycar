@@ -13,7 +13,7 @@ export const PREFIX = 'mcp__autopilot__'
 
 export const CATEGORIES = {
   read: ['list_campaigns', 'get_campaign', 'list_trials', 'get_trial_summary', 'get_findings', 'get_search_space',
-    'list_runs'],
+    'list_runs', 'list_datasets'],
   config: ['create_campaign', 'update_campaign', 'pause_campaign', 'stop_trial'],
   start: ['start_campaign', 'submit_trials'],
   request: ['request_campaign_start', 'request_trials'],

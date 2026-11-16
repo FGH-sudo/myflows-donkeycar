@@ -72,6 +72,8 @@ def main() -> None:
         help="可选 INT8 ONNX；与 FP32 对比 MSE 与推理耗时",
     )
     args = ap.parse_args()
+    if args.batch < 1:
+        ap.error("--batch must be positive")
 
     data_dir = (ROOT / args.data).resolve()
     checkpoint_path = (ROOT / args.checkpoint).resolve()
@@ -115,10 +117,17 @@ def main() -> None:
         dtype = np.float32 if "float" in input_type and "double" not in input_type else np.float64
 
         B = int(args.batch)
-        if isinstance(input_shape, (list, tuple)) and len(input_shape) >= 1:
+        image_w, image_h = w, h
+        if isinstance(input_shape, (list, tuple)) and len(input_shape) == 4:
             b0 = input_shape[0]
-            if isinstance(b0, int) and b0 == 1:
-                B = 1
+            if isinstance(b0, int) and b0 > 0:
+                B = b0
+            # Collected cameras may be larger than the input used for training (Udacity: 160x320 -> 80x160).
+            # Each model, including an INT8 comparison, declares its own fixed dimensions.
+            if isinstance(input_shape[2], int) and input_shape[2] > 0:
+                image_h = input_shape[2]
+            if isinstance(input_shape[3], int) and input_shape[3] > 0:
+                image_w = input_shape[3]
         n = len(index)
         steps = (n + B - 1) // B
 
@@ -142,12 +151,12 @@ def main() -> None:
             if len(bi) < B:
                 bi = bi + [bi[-1]] * (B - len(bi))
 
-            x_batch = np.zeros((B, 3, h, w), dtype=dtype)
+            x_batch = np.zeros((B, 3, image_h, image_w), dtype=dtype)
             y = np.zeros((B, 2), dtype=np.float64)
 
             for r, (rel, a_true, t_true) in enumerate(bi):
                 p = data_dir / rel
-                x_batch[r] = imread_nchw(p, (w, h), dtype=dtype)[0]
+                x_batch[r] = imread_nchw(p, (image_w, image_h), dtype=dtype)[0]
                 y[r, 0] = a_true
                 y[r, 1] = t_true
 
@@ -193,6 +202,8 @@ def main() -> None:
             "runtime_s": runtime,
             "samples": n,
             "batch": B,
+            "input_w": image_w,
+            "input_h": image_h,
         }
 
     results = [_run_eval(checkpoint_path, "FP32")]
@@ -214,9 +225,9 @@ def main() -> None:
                                            "split_sha256": digest(ROOT/args.split_file) if args.split_file else None},
                                           ensure_ascii=False, indent=2, allow_nan=False), encoding="utf-8")
     print("\n=== ONNX Eval Summary ===")
-    print(f"input={w}x{h}")
     for r in results:
         print(f"\n--- {r['label']} ({r['path']}) ---")
+        print(f"input={r['input_w']}x{r['input_h']}")
         print(f"angle_mae={r['angle_mae']:.6f} angle_mse={r['angle_mse']:.6f} throttle_mse={r['throttle_mse']:.6f}")
         print(
             f"angle_sign_accuracy={r['angle_sign_accuracy']:.4f} "

@@ -8,6 +8,9 @@ from pathlib import Path
 
 from MyFlows.distributed.constants import KNOWN_TASKS, LEGAL_MODES
 
+from apps.common.datasets import DEFAULT_DATA, DatasetError, dataset_dir, dataset_key
+from apps.common.datasets import normalize as normalize_dataset
+
 MODE_LABELS = {
     ("single", "none"): "单进程基线",
     ("ps", "socket_json"): "PS · Socket JSON",
@@ -41,6 +44,8 @@ SINGLE_ARGS = {
     "backbone_lr_mult": float, "stage_lr_mults": str, "compat": str,
     "unfreeze_schedule": str, "freeze_mode": str, "bn_unfreeze": str,
     "feature_cache": bool, "transfer_probe": bool, "lora_rank": int, "lora_alpha": float,
+    # A known data set (apps.common.datasets): the default DonkeyCar set when absent.
+    "data": str,
 }
 TRANSFER_ARCHS = ("resnet18", "mobilenet_v2", "alexnet")
 MAX_FREEZE_STAGES = 5
@@ -314,8 +319,15 @@ def validate_single(args: dict, repo_root: Path) -> dict:
         split = split if split.is_absolute() else Path(repo_root) / split
         if not split.is_file():
             raise ValidationError(f"划分文件不存在：{out['split_file']}")
-    if not (Path(repo_root) / "mycar" / "data").is_dir():
-        raise ValidationError("数据目录 mycar/data 不存在")
+    try:
+        data = normalize_dataset(out.get("data"))
+        dataset_dir(repo_root, data)
+    except DatasetError as exc:
+        raise ValidationError(str(exc)) from exc
+    # The default set stays implicit, so earlier configurations keep their fingerprints.
+    out.pop("data", None)
+    if data != DEFAULT_DATA:
+        out["data"] = data
     return out
 
 
@@ -379,7 +391,8 @@ def single_label(args: dict) -> str:
     parallel = ("单进程" if args.get("distributed", "none") == "none" else
                 f"{MODE_LABELS.get((args['distributed'], args['transport']), args['distributed'])}"
                 f" · {args['workers']}w")
-    return f"ResNet18 · {parallel} · {args.get('max_samples') or '全部'} 样本"
+    data = f" · {dataset_key(args['data'])}" if args.get("data") else ""
+    return f"ResNet18 · {parallel} · {args.get('max_samples') or '全部'} 样本{data}"
 
 
 TRAIN_MODULE = "apps.train.train_myflows_donkey"
