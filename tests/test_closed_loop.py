@@ -66,6 +66,18 @@ class ClosedLoopTest(unittest.TestCase):
         self.assertIsNone(empty["mean_abs_cte"])
         self.assertIsNone(empty["distance_units"])
 
+    def test_coverage_excludes_calibration_and_missing_laps_stay_unknown(self):
+        metrics = EpisodeMetrics(RULES)
+        metrics.add({"cte": None, "cte_eligible": False})
+        metrics.add({"cte": None, "cte_eligible": False})
+        metrics.add({"cte": .1, "cte_eligible": True})
+        metrics.add({"cte": None, "cte_eligible": True})
+        result = metrics.summary(1., "time_limit")
+        self.assertEqual((result["cte_eligible_frames"], result["cte_coverage"]), (2, .5))
+        self.assertIsNone(result["lap_count"])
+        metrics.add({"cte": 0., "lap_count": 0})
+        self.assertEqual(metrics.summary(2., "time_limit")["lap_count"], 0)
+
     def test_paired_deltas_use_the_scenario_id_and_worst_direction(self):
         def row(model, scenario, cte, survival):
             metrics = EpisodeMetrics(RULES)

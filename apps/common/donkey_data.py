@@ -75,6 +75,10 @@ def load_donkey_index(
 ) -> list[tuple[Path, float, float]]:
     """返回 (图片相对 data_dir 的路径, angle, throttle)，优先读 catalog，失败则解析文件名。"""
     data_dir = Path(data_dir)
+    from .datasets import read_meta
+
+    if read_meta(data_dir).get("status") == "collecting":
+        raise ValueError("数据集正在采集，请等待完成或先用 --resume 恢复采集")
     if catalog_name:
         catalog_path = data_dir / catalog_name
         if catalog_path.is_file():

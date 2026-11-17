@@ -26,12 +26,12 @@ def write_json(path, value):
     tmp.replace(path)
 
 
-def guarded_worker(module, argv, timeout_s, directory):
+def guarded_worker(module, argv, timeout_s, directory, *, accepted_codes=(0,), append_log=False):
     """Also bound SDK startup/reset calls that may wait indefinitely for a Unity frame."""
     from apps.console.jobs import kill_tree
 
     command = [sys.executable, "-X", "utf8", "-m", module, *argv, "--worker"]
-    with (Path(directory) / "session.log").open("w", encoding="utf-8") as log:
+    with (Path(directory) / "session.log").open("a" if append_log else "w", encoding="utf-8") as log:
         proc = subprocess.Popen(command, cwd=ROOT, stdout=log, stderr=subprocess.STDOUT)
         try:
             code = proc.wait(timeout=timeout_s)
@@ -42,19 +42,22 @@ def guarded_worker(module, argv, timeout_s, directory):
         finally:
             # A hard crash of the worker can re-parent Unity before the supervisor sees it.
             owner = Path(directory) / ".owned-simulator.json"
-            if owner.is_file():
-                import psutil
+            import psutil
 
-                recorded = json.loads(owner.read_text(encoding="utf-8"))
+            for record_path in (owner, owner.with_suffix(".tmp")):
+                if not record_path.is_file():
+                    continue
                 try:
+                    recorded = json.loads(record_path.read_text(encoding="utf-8"))
                     unity = psutil.Process(recorded["pid"])
                     if abs(unity.create_time() - recorded["create_time"]) < .001:
                         kill_tree(unity.pid)
-                except psutil.NoSuchProcess:
+                except (OSError, ValueError, KeyError, TypeError, psutil.Error):
                     pass
-                owner.unlink(missing_ok=True)
-    if code:
+                record_path.unlink(missing_ok=True)
+    if code not in accepted_codes:
         raise RuntimeError(f"simulator worker exited {code}, see {directory}/session.log")
+    return code
 
 
 def _free_port():

@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import base64
 from contextlib import contextmanager
+import io
 import json
 import math
 import secrets
@@ -33,6 +34,7 @@ MAX_STEER_DEG = 25.  # the simulator's steering lock; telemetry reports degrees,
 RATE_HZ = 20.  # commands per second with the real simulator; DonkeySim's telemetry runs at the same rate
 PING_INTERVAL_MS, PING_TIMEOUT_MS = 25000, 60000
 MAX_MESSAGE_BYTES = 8 * 1024 * 1024
+MAX_IMAGE_PIXELS = 1024 * 1024
 # Engine.IO packet types and the Socket.IO types inside an Engine.IO message.
 EIO_OPEN, EIO_CLOSE, EIO_PING, EIO_PONG, EIO_MESSAGE = "0", "1", "2", "3", "4"
 SIO_CONNECT, SIO_DISCONNECT, SIO_EVENT = "0", "1", "2"
@@ -76,11 +78,20 @@ def number(text, default=None):
 
 def decode_image(text: str) -> np.ndarray:
     import cv2
+    from PIL import Image
 
     try:
-        raw = np.frombuffer(base64.b64decode(text, validate=False), dtype=np.uint8)
+        payload = base64.b64decode(text, validate=True)
     except (ValueError, TypeError) as exc:
         raise ValueError("camera image is not base64") from exc
+    try:
+        with Image.open(io.BytesIO(payload)) as header:
+            width, height = header.size
+            if header.format not in ("JPEG", "PNG") or width * height > MAX_IMAGE_PIXELS:
+                raise ValueError("camera image exceeds the pixel limit or has an unsupported format")
+    except (OSError, Image.DecompressionBombError) as exc:
+        raise ValueError("camera image has an invalid header") from exc
+    raw = np.frombuffer(payload, dtype=np.uint8)
     bgr = cv2.imdecode(raw, cv2.IMREAD_COLOR) if raw.size else None
     if bgr is None:
         raise ValueError("camera image is not a decodable picture")
@@ -108,7 +119,7 @@ class UdacityServer:
         # No per-message compression and no WebSocket pings: the simulator's client library negotiates neither,
         # and Engine.IO has its own heartbeat (the client pings, the server answers).
         self._server = serve(self._serve, self.host, self.port, compression=None, ping_interval=None,
-                             max_size=MAX_MESSAGE_BYTES, server_header=None)
+                             max_size=MAX_MESSAGE_BYTES, server_header=None, origins=[None])
         self.port = self._server.socket.getsockname()[1]
         self._thread = threading.Thread(target=self._server.serve_forever, name="udacity-socketio", daemon=True)
         self._thread.start()
@@ -133,11 +144,19 @@ class UdacityServer:
         from websockets.exceptions import ConnectionClosed
 
         try:
+            with self._condition:
+                if self._connection is not None:
+                    busy = True
+                else:
+                    self._connection = connection
+                    busy = False
+            if busy:
+                connection.close(1008, "a simulator is already connected")
+                return
             connection.send(EIO_OPEN + json.dumps({"sid": secrets.token_hex(10), "upgrades": [],
                                                    "pingInterval": PING_INTERVAL_MS, "pingTimeout": PING_TIMEOUT_MS}))
             connection.send(EIO_MESSAGE + SIO_CONNECT)
             with self._condition:
-                self._connection = connection
                 self.connects += 1
                 self._condition.notify_all()
             for packet in connection:
@@ -168,6 +187,8 @@ class UdacityServer:
             connection.send(event_packet("manual", {}))
             return
         with self._condition:
+            if self._connection is not connection:
+                return
             self.seq += 1
             self._latest = (self.seq, data, time.perf_counter(), time.time())
             self._condition.notify_all()
@@ -192,6 +213,9 @@ class UdacityServer:
             return self._latest
 
     def send_control(self, steering: float, throttle: float) -> None:
+        steering, throttle = float(steering), float(throttle)
+        if not all(math.isfinite(v) and -1 <= v <= 1 for v in (steering, throttle)):
+            raise ValueError("steering and throttle must be finite values in [-1, 1]")
         connection = self._connection
         if connection is None:
             raise SimulatorGone("the simulator is not connected")
@@ -298,7 +322,18 @@ def session(directory=None, *, executable=None, port: int = PORT, frame_timeout_
 
             def restart() -> None:
                 before = server.connects
-                launcher.restart()
+                from .udacity_launcher import LauncherError
+
+                try:
+                    if launcher.process is None or launcher.process.poll() is not None:
+                        raise LauncherError("the owned simulator exited")
+                    launcher.restart()
+                    entered(before)
+                    return
+                except (LauncherError, SimulatorGone):
+                    # A dead process or an unresponsive menu is recoverable because this session owns it.
+                    launcher.stop()
+                    launcher.start()
                 entered(before)
 
             launcher.start()

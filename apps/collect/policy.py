@@ -21,7 +21,16 @@ def finite(value):
 
 
 def clip(value: float, low: float = -1., high: float = 1.) -> float:
+    if not all(math.isfinite(float(v)) for v in (value, low, high)) or low > high:
+        raise ValueError("control values and bounds must be finite and ordered")
     return max(low, min(high, float(value)))
+
+
+def finite_float(value) -> float:
+    result = finite(value)
+    if result is None:
+        raise ValueError("value must be finite")
+    return result
 
 
 class CteExpert:
@@ -32,7 +41,8 @@ class CteExpert:
     """
 
     def __init__(self, kp: float = .3, kd: float = .25, *, sign: float = -1., rate_smoothing: float = .5):
-        if kp <= 0 or kd < 0 or not 0 < rate_smoothing <= 1:
+        if not all(math.isfinite(float(v)) for v in (kp, kd, sign, rate_smoothing)) \
+                or kp <= 0 or kd < 0 or sign == 0 or not 0 < rate_smoothing <= 1:
             raise ValueError("kp must be positive, kd non-negative and rate_smoothing in (0, 1]")
         self.kp, self.kd, self.sign, self.alpha = float(kp), float(kd), float(sign), float(rate_smoothing)
         self.reset()
@@ -42,6 +52,8 @@ class CteExpert:
         self.rate = 0.
 
     def __call__(self, error: float, now: float) -> float:
+        if not math.isfinite(error) or not math.isfinite(now):
+            raise ValueError("error and clock must be finite")
         if self.previous is not None:
             last, at = self.previous
             dt = now - at
@@ -55,8 +67,9 @@ class SpeedHold:
     """Throttle that holds a target speed (PI); for simulators that take a throttle but report a speed."""
 
     def __init__(self, target: float, *, kp: float = .15, ki: float = .05, limit: float = 1.):
-        if target <= 0:
-            raise ValueError("target speed must be positive")
+        if not all(math.isfinite(float(v)) for v in (target, kp, ki, limit)) \
+                or target <= 0 or kp < 0 or ki < 0 or not 0 < limit <= 1:
+            raise ValueError("target speed and limits must be finite and positive, gains non-negative")
         self.target, self.kp, self.ki, self.limit = float(target), float(kp), float(ki), float(limit)
         self.reset()
 
@@ -65,6 +78,8 @@ class SpeedHold:
         self.at = None
 
     def __call__(self, speed: float, now: float) -> float:
+        if not math.isfinite(speed) or not math.isfinite(now):
+            raise ValueError("speed and clock must be finite")
         error = self.target - float(speed)
         if self.at is not None:
             # Bounded integral: a long standstill must not wind up into a launch.
@@ -79,7 +94,10 @@ class Perturbation:
     def __init__(self, rng, *, interval_s=(2., 5.), frames=(3, 8), magnitude=(.3, .8), enabled: bool = True):
         self.rng = rng
         self.interval_s, self.frames, self.magnitude = tuple(interval_s), tuple(frames), tuple(magnitude)
-        if not (0 < self.interval_s[0] <= self.interval_s[1] and 1 <= self.frames[0] <= self.frames[1]
+        if any(len(values) != 2 or not all(math.isfinite(float(v)) for v in values)
+               for values in (self.interval_s, self.frames, self.magnitude)) \
+                or not all(isinstance(v, int) and not isinstance(v, bool) for v in self.frames) \
+                or not (0 < self.interval_s[0] <= self.interval_s[1] and 1 <= self.frames[0] <= self.frames[1]
                 and 0 <= self.magnitude[0] <= self.magnitude[1]):
             raise ValueError("perturbation ranges must be ordered and positive")
         self.enabled = bool(enabled)

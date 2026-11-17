@@ -15,6 +15,7 @@ and hang clocks at the ``acquired`` event, so time spent queueing is never count
 from __future__ import annotations
 
 import json
+import math
 import os
 import sys
 import tempfile
@@ -54,10 +55,16 @@ def read_holder(path: Path | None = None) -> dict | None:
         return None
     try:
         holder = json.loads(_holder_path(path).read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return None
-    created = _process_created(int(holder.get("pid") or 0))
-    if created is None or abs(created - float(holder.get("pid_create_time") or 0.0)) > 1.0:
+        if not isinstance(holder, dict):
+            return None
+        pid = holder.get("pid")
+        if not isinstance(pid, int) or isinstance(pid, bool) or pid <= 0:
+            return None
+        created = _process_created(pid)
+        recorded_created = float(holder.get("pid_create_time") or 0.)
+        if created is None or not math.isfinite(recorded_created) or abs(created - recorded_created) > 1.0:
+            return None
+    except (OSError, ValueError, TypeError, OverflowError):
         return None
     return holder
 
@@ -146,7 +153,7 @@ class GpuLock:
         try:
             holder = _holder_path(self.path)
             current = json.loads(holder.read_text(encoding="utf-8"))
-            if current.get("pid") == os.getpid():
+            if isinstance(current, dict) and current.get("pid") == os.getpid():
                 holder.unlink(missing_ok=True)
         except (OSError, ValueError):
             pass

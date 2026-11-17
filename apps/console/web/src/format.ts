@@ -135,5 +135,5 @@ export const campaignPath = (cid: string) => `/autopilot/c/${encodeURIComponent(
 /** One line for a data set in a selector: id, size, simulator and how it was recorded. */
 export const datasetLabel = (s?: DatasetInfo) =>
   s
-    ? `${s.default ? '默认 · ' : ''}${s.id} · ${s.frames} 帧${s.environment ? ` · ${s.environment}` : ''}${s.source ? ` · ${s.source}` : ''}`
+    ? `${s.default ? '默认 · ' : ''}${s.id} · ${s.frames} 帧${s.status === 'collecting' ? ' · 采集中（或待恢复）' : s.status === 'interrupted' ? ' · 已中断' : s.accepted === false ? ' · 自检未通过' : ''}${s.environment ? ` · ${s.environment}` : ''}${s.source ? ` · ${s.source}` : ''}`
     : '默认数据集'

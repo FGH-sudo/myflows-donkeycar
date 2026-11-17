@@ -38,14 +38,14 @@ class EpisodeMetrics:
         self.rearm_frames = int(rules["rearm_frames"])
         if not (0 <= self.rearm < self.threshold and min(self.required, self.rearm_frames) >= 1):
             raise ValueError("invalid excursion thresholds or debounce frame counts")
-        self.above = self.inside = self.events = self.frames = 0
+        self.above = self.inside = self.events = self.frames = self.cte_eligible_frames = 0
         self.latched = False
         self.ctes, self.latencies = [], []
         self.distance = 0.
         self.position_intervals = 0
         self.previous_position = None
         self.odometer = None  # distance integrated from the speed, for simulators that report no position
-        self.laps = 0
+        self.laps = None
 
     def position(self, coordinates):
         point = None
@@ -60,6 +60,7 @@ class EpisodeMetrics:
 
     def add(self, row):
         self.frames += 1
+        self.cte_eligible_frames += row.get("cte_eligible", True) is not False
         self.position(row.get("pos"))
         odometer = finite(row.get("odometer"))
         if odometer is not None:
@@ -67,7 +68,9 @@ class EpisodeMetrics:
         latency = finite(row.get("inference_ms"))
         if latency is not None:
             self.latencies.append(latency)
-        self.laps = max(self.laps, int(row.get("lap_count") or 0))
+        lap = finite(row.get("lap_count"))
+        if lap is not None:
+            self.laps = max(self.laps or 0, int(lap))
         cte = finite(row.get("cte"))
         if cte is None:
             self.above = self.inside = 0
@@ -84,6 +87,8 @@ class EpisodeMetrics:
 
     def summary(self, elapsed, reason):
         return {"frames": self.frames, "cte_frames": len(self.ctes),
+                "cte_eligible_frames": self.cte_eligible_frames,
+                "cte_coverage": len(self.ctes) / self.cte_eligible_frames if self.cte_eligible_frames else None,
                 "mean_abs_cte": statistics.fmean(self.ctes) if self.ctes else None,
                 "max_abs_cte": max(self.ctes, default=None), "excursions": self.events if self.ctes else None,
                 "survival_s": elapsed,
@@ -93,7 +98,7 @@ class EpisodeMetrics:
                 "inference_p95_ms": float(np.percentile(self.latencies, 95)) if self.latencies else None}
 
 
-def episode(stream, predict, scenario, rules, log, *, model_id, clock=time.perf_counter, monitor=None):
+def episode(stream, predict, scenario, rules, log, *, model_id, clock=time.perf_counter, monitor=None, on_frame=None):
     """One model in one scenario. ``monitor`` (``apps.eval.environments``) chooses the throttle and adds what the
     simulator does not report; without it the throttle is fixed and the telemetry is taken as it comes."""
     if scenario.get("start") != "simulator_default":
@@ -126,7 +131,10 @@ def episode(stream, predict, scenario, rules, log, *, model_id, clock=time.perf_
                        elapsed_s=clock() - start, steering=steering, throttle=throttle, inference_ms=latency_ms)
             if monitor is not None:
                 row["odometer"] = frame.get("odometer")
+                row["cte_eligible"] = frame.get("cte_eligible", True)
             row["missing"] = {key: "telemetry field absent" for key in ("pos", "cte", "speed", "hit") if row[key] is None}
+            if on_frame is not None:
+                on_frame(observation, row)
             log.write(json.dumps(row, ensure_ascii=False, allow_nan=False) + "\n")
             metrics.add(row)
             if row["hit"] is not None and str(row["hit"]).strip().lower() not in ("", "none"):
@@ -135,7 +143,7 @@ def episode(stream, predict, scenario, rules, log, *, model_id, clock=time.perf_
             if frame.get("stop"):
                 reason = str(frame["stop"])
                 break
-            if rules.get("route_signal") == "lap" and metrics.laps > int(initial.get("lap_count") or 0):
+            if rules.get("route_signal") == "lap" and metrics.laps is not None and metrics.laps > int(initial.get("lap_count") or 0):
                 reason = "lap_completed"
                 break
         elapsed = clock() - start

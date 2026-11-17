@@ -31,6 +31,7 @@ position is a picture measurement, not a ground truth: evaluation reports it as 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import math
 
 import numpy as np
 
@@ -377,7 +378,8 @@ class VisionExpert:
     """Steer towards the line ahead, with a share for the offset right in front of the car."""
 
     def __init__(self, far_gain: float = .8, near_gain: float = .3):
-        if far_gain < 0 or near_gain < 0 or far_gain + near_gain <= 0:
+        if not all(math.isfinite(float(v)) for v in (far_gain, near_gain)) \
+                or far_gain < 0 or near_gain < 0 or far_gain + near_gain <= 0:
             raise ValueError("gains must be non-negative and not both zero")
         self.far_gain, self.near_gain = float(far_gain), float(near_gain)
 

@@ -81,5 +81,38 @@ class OnnxEvaluateDonkeyTest(unittest.TestCase):
                 self.assertAlmostEqual(score["angle_mae"], .2)
 
 
+class CheckpointInitializationTest(unittest.TestCase):
+    def test_new_data_finetuning_uses_weights_with_a_fresh_optimizer_and_keeps_resume_provenance(self):
+        import hashlib
+
+        with tempfile.TemporaryDirectory() as tmp:
+            work = Path(tmp)
+            _tub(work)
+            trained, original = _train(work, "original", "--epochs", "1", "--seed", "2")
+            self.assertEqual(trained.returncode, 0, trained.stderr[-2000:])
+            baseline = json.loads((original / "run/result.json").read_text(encoding="utf-8"))
+            before = {suffix: hashlib.sha256((original / f"best.{suffix}").read_bytes()).hexdigest()
+                      for suffix in ("json", "npz")}
+            trained, adapted = _train(work, "adapted", "--epochs", "1", "--seed", "2", "--lr", "0.0001",
+                                      "--init-checkpoint", str(original / "best"), "--initial-validation")
+            self.assertEqual(trained.returncode, 0, trained.stdout[-2000:] + trained.stderr[-2000:])
+            result = json.loads((adapted / "run/result.json").read_text(encoding="utf-8"))
+            self.assertAlmostEqual(result["initial_validation"]["val_angle_mae"], baseline["metrics"]["val_angle_mae"])
+            checkpoint = json.loads((adapted / "ckpt.json").read_text(encoding="utf-8"))
+            self.assertEqual(checkpoint["epoch"], 0)
+            self.assertEqual(checkpoint["training"]["global_step"], 3)
+            self.assertEqual(set(checkpoint["optimizer"]["parameter_steps"].values()), {3})
+            provenance = checkpoint["training"]["initialization"]
+            self.assertEqual(provenance["sha256"], before)
+            self.assertEqual(provenance["optimizer"], "fresh")
+            for suffix in before:
+                self.assertEqual(hashlib.sha256((original / f"best.{suffix}").read_bytes()).hexdigest(), before[suffix])
+            resumed, _ = _train(work, "adapted", "--epochs", "1", "--seed", "2", "--lr", "0.0001", "--resume")
+            self.assertEqual(resumed.returncode, 0, resumed.stderr[-2000:])
+            checkpoint = json.loads((adapted / "ckpt.json").read_text(encoding="utf-8"))
+            self.assertEqual(checkpoint["training"]["initialization"], provenance)
+            self.assertEqual(set(checkpoint["optimizer"]["parameter_steps"].values()), {6})
+
+
 if __name__ == "__main__":
     unittest.main()

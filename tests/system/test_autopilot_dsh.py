@@ -376,6 +376,15 @@ class AgentApiTest(unittest.TestCase):
         self.assertNotIn("collection", listed[0])
         self.assertEqual(self.call("list_datasets", source="llm:headless").status_code, 200)  # a read tool
         spec = self.h.spec(campaign_id="llm-lake", fixed={"data": listed[1]["data"], "image_size": listed[1]["image_size"]})
+        self.assertFalse(listed[1]["ready"])
+        rejected = self.call("create_campaign", {"spec": spec})
+        self.assertEqual(rejected.status_code, 422)
+        self.assertIn("自检", rejected.json()["detail"])
+        meta_file = collected / "dataset.json"
+        meta = json.loads(meta_file.read_text(encoding="utf-8"))
+        meta["summary"]["accepted"] = True
+        meta["summary"]["checks"][1]["ok"] = True
+        meta_file.write_text(json.dumps(meta), encoding="utf-8")
         created = self.call("create_campaign", {"spec": spec}).json()
         self.assertEqual((created["status"], created["spec"]["fixed"]["data"]), ("draft", "runs/datasets/lake-set"))
         refused = self.call("create_campaign", {"spec": self.h.spec(campaign_id="llm-bad", fixed={"data": "C:/secrets"})})

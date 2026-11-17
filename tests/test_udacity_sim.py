@@ -44,8 +44,61 @@ class WireFormatTest(unittest.TestCase):
             with self.assertRaises(ValueError):
                 decode_image(bad)
 
+    def test_camera_pixel_limit_is_checked_before_decoding(self):
+        import base64
+        import io
+        from PIL import Image
+
+        encoded = io.BytesIO()
+        Image.new("RGB", (1025, 1025)).save(encoded, format="PNG")
+        with mock.patch("cv2.imdecode") as decoder, self.assertRaisesRegex(ValueError, "pixel limit"):
+            decode_image(base64.b64encode(encoded.getvalue()).decode("ascii"))
+        decoder.assert_not_called()
+
 
 class ServerProtocolTest(unittest.TestCase):
+    def test_a_dead_or_unresponsive_owned_simulator_is_relaunched(self):
+        from apps.sim import udacity
+        from apps.sim.udacity_launcher import LauncherError
+
+        for dead in (True, False):
+            with self.subTest(dead=dead), mock.patch.object(udacity, "UdacityServer") as server_type, \
+                    mock.patch("apps.sim.udacity_launcher.UdacityLauncher") as launcher_type:
+                server = server_type.return_value.start.return_value
+                server.connects, server.port, server.connected = 0, 4567, False
+                server.wait_connected.return_value = True
+                launcher = launcher_type.return_value
+                launcher.describe.return_value = {}
+                launcher.process.poll.return_value = 1 if dead else None
+                if not dead:
+                    launcher.restart.side_effect = LauncherError("menu did not respond")
+                with udacity.session() as (stream, _metadata):
+                    stream.restart()
+                self.assertEqual(launcher.start.call_count, 2)
+                self.assertEqual(launcher.stop.call_count, 2)  # replacement, then final cleanup
+                server.close.assert_called_once()
+
+    def test_a_browser_origin_and_a_second_simulator_cannot_replace_the_driver(self):
+        from websockets.sync.client import connect
+        from websockets.exceptions import ConnectionClosed, InvalidStatus
+
+        with UdacityServer(port=0) as server:
+            url = f"ws://127.0.0.1:{server.port}/socket.io/?EIO=4&transport=websocket"
+            with self.assertRaises(InvalidStatus):
+                connect(url, origin="https://example.invalid")
+            with connect(url, compression=None) as first:
+                first.recv(timeout=5)
+                first.recv(timeout=5)
+                self.assertTrue(server.wait_connected(5))
+                with connect(url, compression=None) as second, self.assertRaises(ConnectionClosed):
+                    second.recv(timeout=5)
+                self.assertEqual(server.connects, 1)
+                server.send_control(.25, .2)
+                self.assertEqual(parse_event(first.recv(timeout=5))[0], "steer")
+                for bad in (float("nan"), float("inf"), 1.1):
+                    with self.assertRaises(ValueError):
+                        server.send_control(bad, .2)
+
     def test_handshake_heartbeat_manual_mode_and_string_valued_commands(self):
         from websockets.sync.client import connect
 
@@ -106,6 +159,37 @@ class ServerProtocolTest(unittest.TestCase):
                 self.assertEqual((info["speed"], sim.history[-1]["offset"], sim.history[-1]["x"]), (0., 0., 5.))
                 self.assertIsNone(sim.error)
             UdacityStream(server, timeout_s=.2).brake(limit_s=.2)  # a vanished simulator must not raise here
+
+
+class LearnerCollectionTest(unittest.TestCase):
+    def test_the_expert_keeps_labelling_when_a_learner_drives_or_needs_intervention(self):
+        from apps.collect.vision import RoadView
+
+        class Finder:
+            ready = steady = True
+            lateral = 0.
+
+            def reset(self):
+                pass
+
+            def __call__(self, _picture):
+                return RoadView(found=True, near=0., far=0., lateral=self.lateral)
+
+        finder = Finder()
+        learner = mock.Mock(return_value=.28)
+        pilot = VisionPilot(finder, lambda view: .25, SpeedHold(12.),
+                            Perturbation(random.Random(1), enabled=False), learner=learner, warmup_frames=0)
+        decision = pilot.step(np.zeros((12, 16, 3), np.uint8), {"speed": 12.}, 0.)
+        self.assertEqual((decision.label, decision.steering, decision.learner, decision.intervened), (.25, .28, .28, False))
+        learner.return_value = .8
+        decision = pilot.step(None, {"speed": 12.}, .05)
+        self.assertEqual((decision.label, decision.steering, decision.intervened), (.25, .25, True))
+        learner.return_value = .28
+        finder.lateral = .4
+        self.assertTrue(pilot.step(None, {"speed": 12.}, .1).intervened)
+        learner.return_value = float("nan")
+        with self.assertRaisesRegex(ValueError, "nonfinite"):
+            pilot.step(None, {"speed": 12.}, .15)
 
 
 class CameraExpertTest(unittest.TestCase):
@@ -268,6 +352,88 @@ class CameraExpertTest(unittest.TestCase):
 
 
 class UdacityCollectorTest(unittest.TestCase):
+    def test_learner_fingerprint_is_taken_after_waiting_for_the_gpu(self):
+        import contextlib
+        import hashlib
+        from apps.common.gpu_lock import GpuLock as DatasetLock
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            model = root / "learner.onnx"
+            model.write_bytes(b"before training finishes")
+            dataset = root / COLLECTED_ROOT / "learner-wait"
+            (dataset / "logs").mkdir(parents=True)
+
+            @contextlib.contextmanager
+            def queued():
+                model.write_bytes(b"updated while collection was queued")
+                yield
+
+            def queued_lock(*args, **kwargs):
+                return DatasetLock(*args, **kwargs) if args else queued()
+
+            with mock.patch("apps.common.gpu_lock.GpuLock", queued_lock), \
+                    mock.patch("apps.eval.closed_loop.model_predictor", return_value=lambda _rgb: 0.):
+                code = collect_main(["--name", "learner-wait", "--learner", str(model), "--frames", "40",
+                                     "--episode-s", "3", "--max-episodes", "1", "--no-perturb", "--sim", "fake",
+                                     "--worker"], root=root)
+            self.assertEqual(code, 2)
+            meta = json.loads((dataset / "dataset.json").read_text(encoding="utf-8"))
+            self.assertEqual(meta["learner"]["sha256"][model.name], hashlib.sha256(model.read_bytes()).hexdigest())
+
+    def test_bad_settings_fail_before_creating_a_dataset_or_starting_unity(self):
+        import contextlib
+        import io
+
+        from apps.collect.donkey_auto import main as donkey_main
+        from apps.sim.udacity_drive import main as drive_main
+
+        with tempfile.TemporaryDirectory() as tmp:
+            for main, argv in (
+                (collect_main, ["--name", "invalid-set", "--speed", "nan"]),
+                (collect_main, ["--name", "invalid-set", "--wall-s", "inf"]),
+                (collect_main, ["--name", "invalid-set", "--horizon", "159"]),
+                (donkey_main, ["--name", "invalid-set", "--kp", "inf"]),
+            ):
+                with self.subTest(argv=argv), contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as failed:
+                    main(argv, root=Path(tmp))
+                self.assertEqual(failed.exception.code, 2)
+            self.assertFalse((Path(tmp) / COLLECTED_ROOT).exists())
+            with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as failed:
+                drive_main(["--model", "unused.onnx", "--seconds", "inf"])
+            self.assertEqual(failed.exception.code, 2)
+
+    def test_rejected_collection_returns_nonzero_and_can_resume_without_losing_frames(self):
+        import hashlib
+
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.dict(os.environ, {"MYFLOWS_GPU_LOCK": "off"}):
+            root = Path(tmp)
+            out = root / COLLECTED_ROOT / "resume-lake"
+            (out / "logs").mkdir(parents=True)
+            argv = ["--name", "resume-lake", "--frames", "200", "--episode-s", "4", "--max-episodes", "1",
+                    "--sim", "fake", "--no-perturb", "--worker"]
+            self.assertEqual(collect_main(argv, root=root), 2)
+            original = {p.name: hashlib.sha256(p.read_bytes()).hexdigest() for p in (out / "images").glob("*.jpg")}
+            self.assertTrue(original)
+            result = json.loads((out / "logs/result.json").read_text(encoding="utf-8"))
+            self.assertEqual((result["status"], result["exit_code"]), ("rejected", 2))
+            argv = ["--name", "resume-lake", "--frames", "1200", "--episode-s", "60", "--max-episodes", "5",
+                    "--sim", "fake", "--no-perturb", "--worker", "--resume"]
+            self.assertEqual(collect_main(argv, root=root), 0)
+            for name, digest in original.items():
+                self.assertEqual(hashlib.sha256((out / "images" / name).read_bytes()).hexdigest(), digest)
+            meta = json.loads((out / "dataset.json").read_text(encoding="utf-8"))
+            catalog = [json.loads(line) for line in (out / "catalog_generated.catalog").read_text(encoding="utf-8").splitlines()]
+            frames = [json.loads(line) for line in (out / "frames.jsonl").read_text(encoding="utf-8").splitlines()]
+            episodes = [json.loads(line) for line in (out / "episodes.jsonl").read_text(encoding="utf-8").splitlines()]
+            self.assertEqual((meta["frames"], len(catalog), len(frames)), (1200, 1200, 1200))
+            self.assertEqual(sum(r["frames_stored"] for r in episodes), 1200)
+            self.assertEqual([r["episode"] for r in episodes], [0, 1])
+            self.assertEqual([r["cam/image_array"] for r in catalog], [r["image"] for r in frames])
+            with mock.patch("apps.collect.udacity_auto.open_simulator") as unexpected:
+                self.assertEqual(collect_main(argv, root=root), 0)
+            unexpected.assert_not_called()
+
     def test_a_dry_run_against_the_stand_in_leaves_a_trainable_set(self):
         with tempfile.TemporaryDirectory() as tmp, mock.patch.dict(os.environ, {"MYFLOWS_GPU_LOCK": "off"}):
             root = Path(tmp)
@@ -275,7 +441,7 @@ class UdacityCollectorTest(unittest.TestCase):
             (out / "logs").mkdir(parents=True)
             code = collect_main(["--name", "fake-lake", "--frames", "400", "--episode-s", "8", "--sim", "fake",
                                  "--worker"], root=root)
-            self.assertEqual(code, 0)
+            self.assertEqual(code, 2)  # this short, mostly straight set does not pass directional coverage checks
             meta = json.loads((out / "dataset.json").read_text(encoding="utf-8"))
             self.assertEqual((meta["frames"], meta["image"], meta["image_size"]), (400, {"width": WIDTH, "height": HEIGHT}, IMAGE_SIZE))
             self.assertEqual((meta["environment"], meta["simulator"]), ("udacity-fake-stadium", "udacity-fake"))
@@ -314,6 +480,27 @@ def camera_expert():
 
 class UdacityClosedLoopTest(unittest.TestCase):
     PROTOCOL = Path(__file__).resolve().parents[1] / "apps" / "eval" / "scenarios" / "udacity_lake.json"
+
+    def test_drive_failures_write_a_result_and_camera_frames_match_the_logged_rows(self):
+        from apps.sim import udacity_drive
+
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp) / "failure"
+            with mock.patch.object(udacity_drive, "model_predictor", side_effect=ValueError("broken model")):
+                code = udacity_drive.main(["--model", "missing.onnx", "--sim", "fake", "--out", str(out)])
+            self.assertEqual(code, 1)
+            result = json.loads((out / "summary.json").read_text(encoding="utf-8"))
+            self.assertEqual((result["status"], result["passed"], result["error"]), ("failed", False, "ValueError: broken model"))
+            out = Path(tmp) / "camera"
+            with mock.patch.object(udacity_drive, "model_predictor", return_value=camera_expert()):
+                code = udacity_drive.main(["--model", "expert.onnx", "--sim", "fake", "--out", str(out),
+                                           "--seconds", "3", "--camera-every", "10"])
+            self.assertEqual(code, 0)
+            result = json.loads((out / "summary.json").read_text(encoding="utf-8"))
+            rows = [json.loads(line) for line in (out / "frames.jsonl").read_text(encoding="utf-8").splitlines()]
+            photos = [r["camera"] for r in rows if r.get("camera")]
+            self.assertEqual(len(photos), result["camera_frames"])
+            self.assertTrue(all((out / name).is_file() for name in photos))
 
     def test_a_paired_run_requires_a_simulator_that_can_restart_the_scene(self):
         from apps.eval import closed_loop

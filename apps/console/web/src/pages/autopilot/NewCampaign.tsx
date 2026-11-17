@@ -347,6 +347,14 @@ export default function NewCampaign() {
                     <Input placeholder="例如 224x224" allowClear />
                   </Form.Item>
                 </Col>
+                <Col xs={12} md={6}>
+                  <Form.Item name={['fixed', 'regression_head']} label="转向回归头" initialValue="global">
+                    <Select options={[
+                      { value: 'global', label: '全局平均' },
+                      { value: 'spatial', label: '空间特征' },
+                    ]} />
+                  </Form.Item>
+                </Col>
               </Row>
               {!maxSamples || Number(maxSamples) > 5000 ? (
                 <Alert type="warning" showIcon message="全量或大规模数据：开发与验证请用小规模数据，跑全量之前先确认机器已空出。" />

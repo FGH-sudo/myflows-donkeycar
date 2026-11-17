@@ -19,8 +19,8 @@ import sys
 from apps.common.datasets import COLLECTED_ROOT, DATASET_ID, TubWriter
 from apps.eval.simulator import FIXED_THROTTLE, ROOT, guarded_worker, session, write_json
 
-from .policy import CteExpert, Perturbation, clip, finite
-from .recorder import EXTRA_FIELDS, Limits, Step, collect, summarize, write_report
+from .policy import CteExpert, Perturbation, clip, finite, finite_float
+from .recorder import EXTRA_FIELDS, Limits, Step, collect, recover_logs, summarize, write_report
 
 ENVIRONMENT = "donkey-generated-roads-v0"
 
@@ -80,20 +80,22 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--name", required=True, help=f"data set id; the set is written to {COLLECTED_ROOT}/<name>")
     parser.add_argument("--frames", type=int, default=3000, help="frames to store")
-    parser.add_argument("--episode-s", type=float, default=60., help="longest episode before the car is reset")
+    parser.add_argument("--episode-s", type=finite_float, default=60., help="longest episode before the car is reset")
     parser.add_argument("--same-road", action="store_true", help="keep the first road instead of a new one per episode")
     parser.add_argument("--max-episodes", type=int, default=400)
-    parser.add_argument("--wall-s", type=float, default=3600., help="stop collecting after this many seconds")
+    parser.add_argument("--max-restarts", type=int, default=2, help="simulator error retries before ending collection")
+    parser.add_argument("--resume", action="store_true", help="recover and append to this existing data set")
+    parser.add_argument("--wall-s", type=finite_float, default=3600., help="stop collecting after this many seconds")
     parser.add_argument("--seed", type=int, default=1)
-    parser.add_argument("--throttle", type=float, default=FIXED_THROTTLE)
-    parser.add_argument("--kp", type=float, default=.5, help="steering per unit of cross-track error")
-    parser.add_argument("--kd", type=float, default=.35, help="steering per unit of cross-track error rate")
+    parser.add_argument("--throttle", type=finite_float, default=FIXED_THROTTLE)
+    parser.add_argument("--kp", type=finite_float, default=.5, help="steering per unit of cross-track error")
+    parser.add_argument("--kd", type=finite_float, default=.35, help="steering per unit of cross-track error rate")
     parser.add_argument("--no-perturb", action="store_true", help="record the undisturbed expert only")
-    parser.add_argument("--perturb-interval-s", type=float, nargs=2, default=(2., 5.), metavar=("MIN", "MAX"))
+    parser.add_argument("--perturb-interval-s", type=finite_float, nargs=2, default=(2., 5.), metavar=("MIN", "MAX"))
     parser.add_argument("--perturb-frames", type=int, nargs=2, default=(3, 8), metavar=("MIN", "MAX"))
-    parser.add_argument("--perturb-magnitude", type=float, nargs=2, default=(.3, .8), metavar=("MIN", "MAX"))
-    parser.add_argument("--fail-cte", type=float, default=4., help="|CTE| that ends an episode as off the track")
-    parser.add_argument("--label-cte", type=float, default=3., help="frames beyond this |CTE| are not stored")
+    parser.add_argument("--perturb-magnitude", type=finite_float, nargs=2, default=(.3, .8), metavar=("MIN", "MAX"))
+    parser.add_argument("--fail-cte", type=finite_float, default=4., help="|CTE| that ends an episode as off the track")
+    parser.add_argument("--label-cte", type=finite_float, default=3., help="frames beyond this |CTE| are not stored")
     parser.add_argument("--warmup-frames", type=int, default=10, help="frames after a reset that are not stored")
     parser.add_argument("--sim", help="simulator executable or remote")
     parser.add_argument("--port", type=int)
@@ -111,15 +113,28 @@ def main(argv=None, *, root=ROOT):
         parser.error("--frames, --episode-s, --max-episodes and --wall-s must be positive")
     if not 0 < args.throttle <= 1:
         parser.error("--throttle must be in (0, 1]")
+    if args.max_restarts < 0:
+        parser.error("--max-restarts must be non-negative")
+    try:
+        CteExpert(args.kp, args.kd)
+        Perturbation(random.Random(0), interval_s=args.perturb_interval_s, frames=args.perturb_frames,
+                     magnitude=args.perturb_magnitude)
+        if not 0 < args.label_cte <= args.fail_cte or args.warmup_frames < 0:
+            raise ValueError("--label-cte must be in (0, fail-cte], --warmup-frames non-negative")
+    except ValueError as exc:
+        parser.error(str(exc))
     out = Path(root) / COLLECTED_ROOT / args.name
     logs = out / "logs"
     if not args.worker:
-        out.mkdir(parents=True, exist_ok=False)
-        logs.mkdir()
-        guarded_worker("apps.collect.donkey_auto", argv, 180 + args.wall_s + 20 * args.max_episodes, logs)
+        if args.resume and not out.is_dir():
+            parser.error("--resume requires an existing data set")
+        out.mkdir(parents=True, exist_ok=args.resume)
+        logs.mkdir(exist_ok=args.resume)
+        guarded_worker("apps.collect.donkey_auto", argv, 180 + args.wall_s + 20 * args.max_episodes, logs,
+                       accepted_codes=(0, 2), append_log=args.resume)
         meta = json.loads((out / "dataset.json").read_text(encoding="utf-8"))
         print(f"{meta['frames']} frames in {COLLECTED_ROOT}/{args.name}; accepted={meta['summary']['accepted']}")
-        return 0 if meta["frames"] else 1
+        return 0 if meta["summary"]["accepted"] else 2
 
     from apps.autopilot.provenance import code_state
     from apps.common.gpu_lock import GpuLock
@@ -130,24 +145,30 @@ def main(argv=None, *, root=ROOT):
                                      magnitude=args.perturb_magnitude, enabled=not args.no_perturb),
                         throttle=args.throttle, fail_cte=args.fail_cte, fail_frames=3, label_cte=args.label_cte,
                         warmup_frames=args.warmup_frames)
-    settings = {key: value for key, value in vars(args).items() if key not in ("worker", "sim", "port", "name")}
+    settings = {key: value for key, value in vars(args).items() if key not in ("worker", "sim", "port", "name", "resume")}
     meta = {"id": args.name, "environment": ENVIRONMENT, "simulator": "donkey",
             "source": "自动采集：CTE 的 PD 控制器", "expert": {"kind": "cte_pd", "kp": args.kp, "kd": args.kd},
             "collection": settings, "code": code_state(ROOT)}
     limits = Limits(frames=args.frames, episode_s=args.episode_s, max_episodes=args.max_episodes, wall_s=args.wall_s)
-    with GpuLock(label="data collection", run_dir=logs), session(logs, executable=args.sim, port=args.port) as (stream, described), \
-            TubWriter(out, meta=meta, extra_fields=EXTRA_FIELDS) as writer, \
-            (out / "frames.jsonl").open("w", encoding="utf-8", buffering=1) as frames, \
-            (out / "episodes.jsonl").open("w", encoding="utf-8", buffering=1) as log:
-        writer.meta["session"] = described
+    with GpuLock(label="data collection", run_dir=logs), \
+            TubWriter(out, meta=meta, extra_fields=EXTRA_FIELDS, resume=args.resume) as writer:
+        episodes = recover_logs(out, writer) if args.resume else []
+        mode = "a" if args.resume else "w"
+        with (out / "frames.jsonl").open(mode, encoding="utf-8", buffering=1) as frames, \
+                (out / "episodes.jsonl").open(mode, encoding="utf-8", buffering=1) as log:
 
-        def report(row):
-            log.write(json.dumps(row, allow_nan=False) + "\n")
-            print(f"episode {row['episode']} {row['termination']} {row['seconds']:.1f}s stored={row['frames_stored']} "
-                  f"total={writer.count}", flush=True)
+            def report(row):
+                log.write(json.dumps(row, allow_nan=False) + "\n")
+                print(f"episode {row['episode']} {row['termination']} {row['seconds']:.1f}s stored={row['frames_stored']} "
+                      f"total={writer.count}", flush=True)
 
-        episodes, ended_early = collect(stream if args.same_road else RoadPerEpisode(stream), writer, pilot,
-                                        limits=limits, seed=args.seed, log=frames, on_episode=report)
+            ended_early = None
+            if writer.count < limits.frames:
+                with session(logs, executable=args.sim, port=args.port) as (stream, described):
+                    writer.meta["session"] = described
+                    episodes, ended_early = collect(stream if args.same_road else RoadPerEpisode(stream), writer, pilot,
+                                                    limits=limits, seed=args.seed, log=frames, on_episode=report,
+                                                    max_restarts=args.max_restarts, initial_episodes=episodes)
         if ended_early:
             print(f"collection ended early: {ended_early}", flush=True)
         from apps.common.datasets import label_summary
@@ -159,8 +180,10 @@ def main(argv=None, *, root=ROOT):
                  intro=f"环境 {ENVIRONMENT}，固定油门 {args.throttle}，"
                        f"{'各段使用同一条道路' if args.same_road else '每段重新生成一条道路'}。专家是横向偏差 CTE 的 PD 控制器"
                        f"（kp={args.kp}，kd={args.kd}），标签是它在该帧的转向输出。")
-    write_json(logs / "result.json", {"status": "succeeded", "frames": meta["frames"], "accepted": summary["accepted"]})
-    return 0
+    code = 0 if summary["accepted"] else 2
+    write_json(logs / "result.json", {"status": "succeeded" if not code else "rejected", "frames": meta["frames"],
+                                     "accepted": summary["accepted"], "exit_code": code})
+    return code
 
 
 if __name__ == "__main__":

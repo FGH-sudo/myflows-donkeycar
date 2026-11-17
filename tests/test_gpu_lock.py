@@ -112,6 +112,17 @@ class GpuLockTest(unittest.TestCase):
             lock.release()
         self.assertIsNotNone(acquired_unix_s(self.root / "run"))
 
+    def test_malformed_owner_records_do_not_break_lock_waiting(self):
+        proc = self.holder()
+        owner = self.root / "gpu.lock.holder.json"
+        for value in ([], {"pid": []}, {"pid": "bad"}, {"pid": proc.pid, "pid_create_time": "nan"},
+                      {"pid": proc.pid, "pid_create_time": {}}, {"pid": 10**1000}):
+            with self.subTest(value=value):
+                owner.write_text(json.dumps(value), encoding="utf-8")
+                self.assertIsNone(read_holder(self.path))
+                with self.assertRaises(TimeoutError):
+                    GpuLock(self.path, poll_s=.01, say=lambda _: None).acquire(timeout_s=.02)
+
     def test_cpu_start_is_recorded_without_taking_the_gpu_lock(self):
         with GpuLock(self.path, label="GPU holder"), \
                 GpuLock(self.path, enabled=False, run_dir=self.root / "cpu") as lock:

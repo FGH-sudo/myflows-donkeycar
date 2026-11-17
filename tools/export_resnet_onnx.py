@@ -43,6 +43,7 @@ def export_resnet18_onnx(
     device: str = "auto",
     graph_opt: bool = True,
     base_width: int = 64,
+    regression_head: str = "global",
 ) -> Path:
     """Load a ResNet-18 checkpoint and export an ONNX graph for deployment."""
     checkpoint_path = _checkpoint_stem(_resolve_repo_path(checkpoint).resolve())
@@ -67,12 +68,22 @@ def export_resnet18_onnx(
         np.zeros((batch_size, 3, image_h, image_w), dtype=np.float32),
         name="X",
     )
-    model = ms.ResNet18(
+    model_type = ms.ResNet18
+    head_kwargs = {}
+    if regression_head == "spatial":
+        from apps.train.common.regression_model import SpatialResNet18
+
+        model_type = SpatialResNet18
+        head_kwargs = {"image_h": image_h, "image_w": image_w}
+    elif regression_head != "global":
+        raise ValueError("regression_head must be global or spatial")
+    model = model_type(
         in_channels=3,
         output_dim=2,
         stem=stem,
         base_width=int(base_width),
         name="resnet18_donkey",
+        **head_kwargs,
     )
     logits = model(x_var)
     model.eval()
@@ -166,6 +177,7 @@ def main() -> None:
     parser.add_argument("--image-h", type=int, default=120, help="Input image height.")
     parser.add_argument("--stem", choices=("cifar", "imagenet"), default="cifar")
     parser.add_argument("--base-width", type=int, default=64, help="ResNet-18 first-stage width used in training.")
+    parser.add_argument("--regression-head", choices=("global", "spatial"), default="global")
     parser.add_argument("--device", choices=("auto", "cpu", "cuda"), default="auto")
     parser.add_argument("--no-graph-opt", action="store_true", help="Disable graph optimization during export.")
     args = parser.parse_args()
@@ -192,6 +204,7 @@ def main() -> None:
                 device=args.device,
                 graph_opt=not args.no_graph_opt,
                 base_width=args.base_width,
+                regression_head=args.regression_head,
             )
     except (FileNotFoundError, ValueError) as exc:
         raise SystemExit(str(exc)) from exc

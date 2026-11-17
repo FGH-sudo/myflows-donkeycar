@@ -2,7 +2,7 @@
 
 本报告记录两件事：为 DonkeySim 和 Udacity 模拟器（term 1，即 [car-behavioral-cloning-paddle](https://github.com/jm12138/car-behavioral-cloning-paddle) 使用的环境）各写一个不需要人操作的数据采集脚本；在采集到的数据上跑通训练、导出、闭环评估、经推理服务驾驶和 AutoPilot campaign。设计说明见 [system_design.md 第 11 节](../../../system_design.md#11-第二个模拟器与无人值守采集2026-11-16)。
 
-- 代码：根仓库 210e572 之后的工作树（随本报告提交），MyFlows 70113a0。
+- 首轮代码：根仓库 1efd9ab（含 936df08 的实现），MyFlows 70113a0；后续修复与新实验见第 8 节。
 - 机器：Windows 11、RTX 4060 Laptop GPU（8 GB），用户的桌面程序同时占用约 30%–40% 的 GPU。
 - 原始数据在本机：`runs/datasets/<id>`（采集）、`runs/pipelines/<id>`（划分、训练、驾驶），闭环评估归档在 `docs/experiments/semester_2026_fall/closed_loop/<id>`（控制台“运行对比 → 闭环评估”可查看）。仓库只提交各处的 report.md 与本文件。
 
@@ -11,6 +11,8 @@
 两个模拟器的采集、数据集选择、训练、导出和闭环评估已接通。DonkeySim 自动采集的 4,000 帧能训练出在默认短场景中接近现有驾驶模型的模型；Udacity 的 16,000 帧训练出 ResNet18，验证转向 MAE 0.02560、独立测试 0.04671，实际导出的 ONNX 在同一测试集上复核为 0.04671。Udacity 本地 ONNX 与 FastAPI 各完成 4 个 60 秒场景，均未触发失败或出界规则。
 
 较长的驾驶暴露了短场景没有覆盖的问题：12 mph 的 FastAPI 驾驶在 86.2 秒、约 436 米处卡住。因此这些短场景只证明该范围内的驾驶与部署链路可用，不能据此声称整圈稳定。长时间驾驶结果见第 3.6 节。新数据集上的真实 GPU AutoPilot 联调也已结束（5 个有效 trial，含确认与独立测试）；LLM 未启用，结果不支持候选配置优于基线的结论。
+
+2026-11-17 继续审查后，采集增加了异常重启、显式续采、独占写入、质量拒绝和模型驾驶时的专家接管；真实强制终止与续采验证通过。新增 20,000 帧恢复数据并完成两次训练，但长时间纯模型驾驶仍未通过。LLM 已另行完成真实只读工具调用。后续结果见第 8 节；第 2–7 节保留首轮实验的配置和指标。
 
 ## 2. DonkeySim
 
@@ -203,4 +205,80 @@ AutoPilot campaign 在控制台“AutoPilot → 新建”中选数据集 `udacit
 - WSL Ubuntu 22.04：610 项收集，539 通过、71 因缺少 CUDA、torch 等可选环境跳过，237.7 秒。使用包含来源清单的源码导出，复用已有 CPU 测试环境并补装锁定版本的 websockets；依赖检查通过。
 - 前端类型检查与生产构建通过；lint 无错误，保留 8 条已有警告。新增与修改行的 Python F/E9 检查没有新问题，存量文件仍有 4 处既有诊断。
 - Playwright 检查了新建训练、新建 campaign 的数据集选择和 80×160 自动填入；闭环页的模型表、配对差、逐场景车速、Udacity 缺少轨迹的说明，以及 DonkeySim 的俯视轨迹均有截图。390 px 视口的新建页无横向溢出，浏览器控制台无错误。截图与验证日志在 `runs/review-20261117/`。
+
+## 8. 持续驾驶与采集恢复审查（2026-11-17）
+
+### 8.1 当前验收结论
+
+采集、数据选择、训练、导出、HTTP / gRPC 推理及 AutoPilot 的软件流程可运行；湖区整圈自主驾驶没有通过。新采集器能够恢复进程中断、重启失联的自有模拟器并拒绝不合格数据，但视觉专家和横向位置估计在桥出口仍有盲区，丛林赛道也未验证。因此“自动执行采集”已经实现，不能把“采集自检通过”解释为标注无误或训练后能够跑完整圈。
+
+### 8.2 已修复的采集与接口问题
+
+- `TubWriter` 对数据集持有独占文件锁，图片先写临时文件再替换；每 100 帧原子更新 manifest 与元数据，区分 collecting、complete、interrupted。修正 tub 的 start_index 与逐行字节长度。进程硬退出后，`--resume` 从 catalog 恢复已落盘但尚未记入快照的帧，隔离不完整尾行及孤儿图片；完整的损坏记录会拒绝恢复，不覆盖已有图像。
+- 续采校验数据集身份、模拟器、图像尺寸、专家、学习模型的哈希及相机标定参数；预算变化记录到 collection_runs。模型哈希在获得 GPU 锁后计算，避免排队期间训练更新模型使来源记录失真；权重初始化也在获得锁后复核文件哈希。两种采集 CLI 均支持 `--resume`、`--max-restarts`，默认最多重试两次，仍受总时限和 episode 数限制。守护进程按 PID 与创建时间清理自有 Unity 进程。
+- 采集自检不通过时返回 2，记录 rejected；控制台、AutoPilot 与数据合并拒绝采集中、已中断或明确未通过自检的数据。底层图片索引仍可用于检查这些保留的数据。
+- Udacity WebSocket 拒绝网页 Origin 和第二个接管连接；解码前限制图片像素；控制量、车速和采集参数拒绝非有限值。GPU 锁忽略损坏、非有限时间及无效 PID 的持有者记录，损坏记录也不妨碍释放操作系统锁。
+
+真实故障测试在保存至少 100 帧后强制结束本次启动的 Unity，采集器自动重新启动模拟器并保存到 800 帧。随后以相同专家配置执行 `--resume`，目标提高到 2,400 帧：原 800 张 JPEG 的 SHA-256 全部一致，catalog、独立图片和 episode 帧数均为 2,400，结束后没有遗留的所有者记录。该短数据集左右转向样本各仅约 1%，所以两次运行均正确返回 2；没有将恢复成功误记为数据质量合格。另有真实子进程 `os._exit` 测试验证未快照帧恢复与文件锁释放。已验证的是进程中断恢复，未做断电持久化测试。
+
+证据：`runs/review-20261117b/fault-collection-result.json`、`real-resume-result.json`、`runs/datasets/udacity-relaunch-smoke-001/`。
+
+### 8.3 补采、合并与训练
+
+可选 `--learner` 用当前模型驾驶，视觉专家始终提供标签；当预测与专家分歧过大、横向位置不合适或尚未标定时接管。记录 learner、intervened，镜像时对预测和其他有符号字段取反。该模式用于收集模型实际经历的画面；纯模型评估不启用专家接管。
+
+| 数据集 | 镜像计数后的帧数 | 行驶时间 | 学习模型预测 / 专家接管 | 采集结局 |
+| --- | ---: | ---: | ---: | --- |
+| udacity-lake-recovery-001 | 8,000 | 208.8 s | 4,021 / 447（11.1%） | 一段达到目标，自检通过 |
+| udacity-lake-recovery-002 | 12,000 | 315.1 s | 6,042 / 704（11.7%） | 一段丢路、下一段达到目标，自检通过 |
+
+`python -m apps.collect.merge` 将原 16,000 帧与两轮恢复数据合并为 `udacity-lake-aggregate-001`，共 36,000 帧。合并保留 JPEG 原始字节、来源 catalog 哈希和逐帧来源，重编号 episode；拒绝源数据正在写入、质量拒绝、无效图像、重复来源及完全重复的内容副本。仅 catalog 相同而图片不同的数据仍可合并。
+
+训练增加 `--init-checkpoint`：只取模型权重，重新开始 optimizer 与 epoch，记录 JSON / NPZ 哈希；等待 GPU 后再次核对来源没有变化。普通断点续训和 TrainingState 续训仍保留初始化来源。新增可选 `--regression-head spatial`，对 ResNet 特征做 2×2 最大池化后保留网格位置，替代默认全局平均；默认模型与旧配置指纹兼容。训练、checkpoint 重建、独立评估、导出及控制台选项使用相同结构。该选项只支持 MyFlows 结构的 ResNet18。
+
+| 运行 | 数据与初始化 | 验证结果 |
+| --- | --- | --- |
+| udacity-recovery-001/train | recovery-001；原模型初始化；4 epoch，batch 8 | 同一恢复验证集 MAE 从 0.03904 到 0.01668 |
+| udacity-spatial-002/train | 36,000 帧；w16、spatial；6 epoch，batch 16 | 聚合验证集 MAE 0.03322，ONNX 导出成功 |
+
+两行使用不同验证集，不直接比较分数。聚合划分保留三组来源的原验证/测试归属，在来源边界增加间隔：训练 27,483、验证 3,600、测试 3,595、剔除 1,322，间隔校验通过。独立测试未用于选择这些模型；它们尚未通过闭环，因此没有继续用测试集挑选版本。训练中通过暂停文件保存到未完成 epoch，再用四个预取进程续训完成。数据与原模型均保留。
+
+同时修复 MyFlows 的 AdaptiveAvgPool2d ONNX 导出缺失：按自适应矩形窗口导出平均矩阵乘法，包含不能整除和输出大于输入的情况；与独立窗口均值及实际 ONNX Runtime 结果比较通过。空间回归头自身使用受支持的 MaxPool，不依赖该修复。
+
+### 8.4 长时间驾驶的失败证据
+
+| 模型 / 协议 | 终止时间 | 速度积分距离 | 结局 |
+| --- | ---: | ---: | --- |
+| 恢复训练模型；标准 30 帧丢路规则，目标 360 s | 89.05 s | 475.8 m | road_lost，验收失败 |
+| 空间回归模型；标准规则，目标 360 s | 100.39 s | 535.9 m | road_lost，验收失败 |
+| 空间回归模型；诊断用 240 帧丢路规则，目标 360 s | 210.58 s | 926.3 m | 后续驶出路面，3 次估计越界；诊断，不作为验收 |
+
+标准空间模型运行的桥出口截图仍在路面上，证明视觉估计存在误判；允许继续观察后，逐帧画面又证实模型确实会在后段驶入草地。不能通过放宽丢路阈值宣称成功。诊断过程没有专家接管，单独保存了修改后的完整协议。
+
+驾驶摘要新增 checks：到达时限、零越界、标定后有效 CTE 覆盖率至少 90% 才返回成功；尚无圈数遥测时 lap_count 为 null。可用 `--camera-every N --out ...` 保存无损 PNG，与每帧 JSONL 对应；summary 保存实际规则、场景和来源。单次失败返回 2，推理或连接异常返回 1，中断返回 130。
+
+原始证据在 `runs/pipelines/udacity-recovery-001/drive-onnx-12mph/`、`runs/pipelines/udacity-spatial-002/drive-onnx-12mph/` 和 `drive-probe-12mph/`。下一步仍需改进专家的桥出口感知及恢复覆盖，并以标准长片段和独立新会话验收；当前候选不替换原驾驶模型。
+
+### 8.5 LLM 与回归验证
+
+使用已有账户完成真实 LLM 验证：本地 DshHost 就绪，模型通过工具 API 调用 `list_datasets` 与 `get_campaign`，两次调用均 completed，约 4,053 token、10 秒。未启动新的 campaign 或训练。证据 `runs/review-20261117b/llm-verification.json`；这补充第 4 节关闭 LLM 的真实 AutoPilot 实验。
+
+新空间模型在实际 HTTP 与 gRPC 服务上各处理 22 张本次模拟器画面，转向输出与本地 ONNX 的最大绝对差均为 0（CPU；非性能基准），服务随后关闭。该检查验证部署传输和预处理一致，不证明持续驾驶通过。证据 `service-roundtrip.json` 与两份请求日志。
+
+- Windows 全量回归 631 / 631 通过，0 跳过，648.3 秒。最后调整模型哈希读取时序后，采集与闭环三个模块另跑 54 / 54（含新增时序用例），63.5 秒。
+- WSL Ubuntu 22.04 全量收集 631 项，560 通过、71 因缺少 CUDA、PyTorch 等可选环境跳过，无失败，236.4 秒。完整源码导出含来源清单与逐文件哈希；最后的采集改动另在 Linux 对当前工作树复核 54 / 54，188.9 秒。该补充测试从 Windows 挂载目录读取代码，不用它与缓存目录的全量运行比较速度。
+- 前端类型检查和生产构建通过；lint 无错误，保留 8 条既有警告。新增与修改的运行代码 F/E9 检查及两个仓库 diff 检查通过。
+- Playwright 复核两种新建表单的回归头选择、36,000 帧数据选择后自动填入 80×160、不合格数据禁用；390 px campaign 页面无横向溢出，浏览器控制台 0 错误、0 警告。截图在 `runs/review-20261117b/playwright-images/`，所有测试日志与真实故障证据也保留在该轮目录。此次启动的浏览器、服务与 Unity 均已关闭。
+
+### 8.6 新增命令
+
+在第 6 节环境下执行，使用新的数据集名称；重复续采时保持相同专家、学习模型与标定配置，只提高目标和预算：
+
+```text
+python -m apps.collect.udacity_auto --name udacity-recovery-next --learner runs/pipelines/udacity-lake-001/train/checkpoints/best.onnx --learner-limit 0.08 --learner-lateral 0.2 --frames 8000 --episode-s 300 --wall-s 600 --speed 12 --seed 17 --no-perturb
+python -m apps.collect.udacity_auto --name udacity-recovery-next --learner runs/pipelines/udacity-lake-001/train/checkpoints/best.onnx --learner-limit 0.08 --learner-lateral 0.2 --frames 12000 --episode-s 300 --wall-s 900 --speed 12 --seed 17 --no-perturb --resume
+python -m apps.collect.merge --name udacity-aggregate-next --sources udacity-lake-001 udacity-recovery-next
+```
+
+新数据上的同结构权重初始化使用训练入口的 `--init-checkpoint <源 best>`，并为 `--out`、`--best-out` 和 `--run-dir` 指定新路径；它不能与 resume、预训练迁移或分布式训练合用。新头使用 `--regression-head spatial`（本轮空间模型为随机初始化）；旧模型保持 global。合并后如果继续已有实验，必须保留各来源原有验证 / 测试样本的归属，不能把此前测试帧重新随机放进训练集；本轮使用已存档的 composite split。
 - 临时控制台、推理服务与模拟器已退出，采集数据和所有实验产物保留。本轮改动尚未推送，托管 CI 未运行；GPU 算子的性能门槛未重跑。

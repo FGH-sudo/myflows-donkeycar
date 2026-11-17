@@ -214,10 +214,11 @@ PDF 把任务分成基础部分和拓展优化。本草案按下面的顺序推�
 - Udacity 接入：websockets 实现的 Socket.IO/Engine.IO 服务端（20 Hz 节拍）、Windows 上自动完成配置对话框、菜单与场景重启的启动器、同协议的替身模拟器（测试与 CI 用）。
 - Udacity 采集（`python -m apps.collect.udacity_auto`）：模拟器不回传位置，专家用前视图像巡线（平地车道模型），每帧另存镜像样本；16,000 帧约 8 分钟，自检通过。在其上训练的 ResNet18（80×160）验证转向 MAE 0.0256、独立测试 0.0467，实际 ONNX 的独立测试复核同为 0.0467。本地 ONNX 与 FastAPI 各完成 4 个 60 秒场景；更长驾驶中 FastAPI（9 / 12 mph）与 gRPC（12 mph）均在约 436 米处卡住，整圈能力未通过。
 - 闭环与部署：`apps.eval.closed_loop` 按场景清单的 `environment` 选择模拟器，模型可以是 ONNX、checkpoint 或推理服务地址（FastAPI / gRPC）；`python -m apps.sim.udacity_drive` 用模型或服务驾驶。控制台闭环评估页能显示 Udacity 归档（目标车速、失败次数、图像估计的 CTE，无位置时不画轨迹）。
-- 稳健性：模拟器无法重启或不再响应时，采集提前结束但保留已存的帧；启动器会还原被最小化的窗口；读不出的画面保存在 `logs/unread` 供排查。
-- AutoPilot：在前 4,000 条 Udacity 样本上完成 5 个真实 GPU trial、确认与最终独立测试，campaign 为 completed / done；只有一个筛选和一个确认 seed，结论为候选未证实优于基线。LLM 未启用；测试覆盖了数据集工具与创建 campaign 的链路。
+- 稳健性：独占写入、每 100 帧原子快照、显式 `--resume` 恢复 catalog 尾部及日志，默认两次瞬时异常重试；启动器会还原最小化窗口，并重新启动失联的自有模拟器。真实强制终止后自动重启采集到 800 帧，再续采到 2,400 帧，原图哈希与日志计数验证通过；方向覆盖不够则返回 2，控制台与 AutoPilot 拒绝使用未通过自检的数据。
+- AutoPilot：在前 4,000 条 Udacity 样本上完成 5 个真实 GPU trial、确认与最终独立测试，campaign 为 completed / done；只有一个筛选和一个确认 seed，结论为候选未证实优于基线。该 campaign 关闭 LLM；测试覆盖了数据集工具与创建 campaign 的链路。
+- 后续审查：模型驾驶、视觉专家标注与接管模式新增 20,000 帧，与原数据合并为 36,000 帧；增加新数据权重初始化和可选空间回归头，均完成真实训练及 ONNX 导出，保留原测试划分。新模型标准长测仍在 89 / 100 秒丢路，诊断继续行驶后也驶出道路，整圈仍未验收。驾驶成功判定增加零越界和至少 90% 的有效测量覆盖率。LLM 已另行完成真实 `list_datasets`、`get_campaign` 调用；新模型 HTTP / gRPC 对 22 张实际画面的结果与本地 ONNX 一致。证据见报告第 8 节。
 - 审查修复：空数据集转为 AutoPilot 校验错误；采集总时限在段内与重置返回后检查、镜像样本不超过目标帧数；Udacity 配对评估拒绝无法重启场景的远程连接；起步标定帧排除出 CTE 指标，车速拒绝非有限值；控制台显示所选场景车速；离线 ONNX 评估跟随模型的输入尺寸与固定 batch。
-- 测试：新增 tests/test_collect.py、tests/test_udacity_sim.py，以及控制台、AutoPilot、缩小输入尺寸的 ONNX 评估用例；模拟器用例使用替身，不需要 Unity。Windows 最终统一回归 610 / 610，559 秒；WSL 源码导出收集 610 项，539 通过、71 按环境跳过，238 秒。前端构建与页面检查通过。细节见 [auto_collection 报告](experiments/semester_2026_fall/auto_collection/README.md)。
+- 测试：新增采集、模拟器、控制台、AutoPilot、ONNX 与权重初始化用例；模拟器回归使用替身，不需要 Unity。首轮 Windows 610 / 610，WSL 539 通过、71 跳过；本轮 Windows 全量 631 / 631，648 秒，WSL 全量 560 通过、71 跳过，236 秒。末轮来源哈希时序调整后，两平台各有 54 项采集与闭环回归全部通过。前端构建与页面检查通过。细节见 [auto_collection 报告](experiments/semester_2026_fall/auto_collection/README.md)。
 
 ## 3. 本学期不做什么
 

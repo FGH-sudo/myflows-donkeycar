@@ -117,8 +117,155 @@ class DatasetRegistryTest(unittest.TestCase):
         self.assertEqual(sum(summary["histogram"]["counts"]), 5)
         self.assertEqual(label_summary([]), {"frames": 0})
 
+    def test_collection_rounds_merge_without_reencoding_images_or_mixing_episode_numbers(self):
+        from apps.collect.merge import merge
+        from apps.common.datasets import CATALOG
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            originals = []
+            for name, value in (("round-one", 40), ("round-two", 120)):
+                directory = root / COLLECTED_ROOT / name
+                with TubWriter(directory, meta={"id": name, "environment": "same", "simulator": "test",
+                                               "image_size": "8x16"}, extra_fields=EXTRA_FIELDS) as writer:
+                    for angle in (-.2, .2):
+                        image = writer.add(picture(value), angle, .2, **{"collect/episode": 0})
+                        originals.append((directory / "images" / image).read_bytes())
+                    writer.close(summary={"accepted": True})
+            result = merge(root, "aggregate", ["round-one", "round-two"])
+            self.assertEqual((result["frames"], result["summary"]["episodes"]), (4, 2))
+            out = root / COLLECTED_ROOT / "aggregate"
+            rows = [json.loads(line) for line in (out / CATALOG).read_text(encoding="utf-8").splitlines()]
+            self.assertEqual([r["collect/episode"] for r in rows], [0, 0, 1, 1])
+            self.assertEqual([(out / "images" / r["cam/image_array"]).read_bytes() for r in rows], originals)
+            self.assertEqual(len(load_donkey_index(out, .5, 1.)), 4)
+            with self.assertRaises(DatasetError):
+                merge(root, "duplicate", ["round-one", "runs/datasets/round-one"])
+            import shutil
+
+            shutil.copytree(root / COLLECTED_ROOT / "round-one", root / COLLECTED_ROOT / "copied-round")
+            with self.assertRaisesRegex(DatasetError, "重复副本"):
+                merge(root, "duplicate-copy", ["round-one", "copied-round"])
+            self.assertFalse((root / COLLECTED_ROOT / "duplicate-copy").exists())
+
+    def test_checkpoints_interrupted_writes_and_resume_recover_the_catalog(self):
+        from apps.common.datasets import CATALOG, dataset_dir, read_meta
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            directory = root / COLLECTED_ROOT / "resumable"
+            meta = {"id": "resumable", "simulator": "test", "expert": {"kind": "test"}}
+            with self.assertRaisesRegex(RuntimeError, "interrupted"):
+                with TubWriter(directory, meta=meta, extra_fields=EXTRA_FIELDS, checkpoint_every=1) as writer:
+                    writer.add(picture(), .1, .2, **{"collect/episode": 0})
+                    writer.add(picture(), -.1, .2, **{"collect/episode": 0})
+                    self.assertEqual(read_meta(directory)["frames"], 2)
+                    self.assertFalse(describe(root, "resumable")["ready"])
+                    with self.assertRaisesRegex(DatasetError, "正在采集"):
+                        dataset_dir(root, "resumable")
+                    with self.assertRaisesRegex(ValueError, "正在采集"):
+                        load_donkey_index(directory, .5, 1.)
+                    with self.assertRaisesRegex(DatasetError, "另一个"):
+                        TubWriter(directory, meta=meta, extra_fields=EXTRA_FIELDS, resume=True)
+                    raise RuntimeError("interrupted")
+            self.assertEqual(read_meta(directory)["status"], "interrupted")
+            original = (directory / CATALOG).read_bytes()
+            with (directory / CATALOG).open("ab") as catalog:
+                catalog.write(b'{"cam/image_array":')
+            (directory / "images/2_0.5000.jpg").write_bytes((directory / "images/0_0.1000.jpg").read_bytes())
+            with TubWriter(directory, meta=meta, extra_fields=EXTRA_FIELDS, resume=True) as writer:
+                self.assertEqual((writer.count, len(writer.records)), (2, 2))
+                self.assertEqual((directory / CATALOG).read_bytes(), original)
+                self.assertFalse((directory / "images/2_0.5000.jpg").exists())
+                self.assertTrue(list((directory / "recovery").glob("*/catalog-tail.bin")))
+                self.assertTrue(list((directory / "recovery").glob("*/2_0.5000.jpg")))
+                self.assertEqual(writer.add(picture(), .3, .2, **{"collect/episode": 1}), "2_0.3000.jpg")
+                writer.close(summary={"accepted": True})
+            self.assertEqual(len(load_donkey_index(directory, .5, 1.)), 3)
+            self.assertTrue(describe(root, "resumable")["ready"])
+            manifest = json.loads((directory / f"{CATALOG}_manifest").read_text(encoding="utf-8"))
+            self.assertEqual(manifest["start_index"], 0)
+            contents = (directory / CATALOG).read_bytes()
+            start = 0
+            for length in manifest["line_lengths"]:
+                self.assertIsInstance(json.loads(contents[start:start+length]), dict)
+                start += length
+            self.assertEqual(start, len(contents))
+
+    def test_resume_rejects_changed_experts_and_complete_corrupt_records_without_changes(self):
+        from apps.common.datasets import CATALOG
+
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp) / "data"
+            with TubWriter(directory, meta={"expert": {"kind": "old"}}) as writer:
+                writer.add(picture(), .1, .2)
+                writer.close()
+            before = (directory / CATALOG).read_bytes()
+            with self.assertRaisesRegex(DatasetError, "expert"):
+                TubWriter(directory, meta={"expert": {"kind": "new"}}, resume=True)
+            self.assertEqual((directory / CATALOG).read_bytes(), before)
+            (directory / CATALOG).write_bytes(before + b'not json\n')
+            with self.assertRaisesRegex(DatasetError, "损坏"):
+                TubWriter(directory, meta={"expert": {"kind": "old"}}, resume=True)
+            self.assertEqual((directory / CATALOG).read_bytes(), before + b'not json\n')
+
+    def test_resume_refuses_changed_camera_calibration_before_mutating_files(self):
+        from apps.common.datasets import CATALOG
+
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp) / "calibration"
+            meta = {"collection": {"horizon": 64, "hood_rows": 16, "chroma_tolerance": 30.}}
+            with TubWriter(directory, meta=meta) as writer:
+                writer.add(picture(), .1, .2)
+                writer.close()
+            before = (directory / CATALOG).read_bytes(), (directory / "dataset.json").read_bytes()
+            for key, value in (("horizon", 65), ("hood_rows", 17), ("chroma_tolerance", 31.)):
+                with self.subTest(key=key), self.assertRaisesRegex(DatasetError, key):
+                    TubWriter(directory, meta={"collection": {**meta["collection"], key: value}}, resume=True)
+                self.assertEqual(((directory / CATALOG).read_bytes(), (directory / "dataset.json").read_bytes()), before)
+
+    def test_a_hard_process_exit_releases_the_writer_lock_and_recovers_unsnapshotted_frames(self):
+        import subprocess
+        import sys
+        from apps.collect.recorder import recover_logs
+        from apps.common.datasets import read_meta
+
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp) / "hard-exit"
+            script = (
+                "import os,sys,numpy as np\n"
+                "from apps.common.datasets import TubWriter\n"
+                "from apps.collect.recorder import EXTRA_FIELDS\n"
+                "w=TubWriter(sys.argv[1],meta={'id':'hard-exit'},extra_fields=EXTRA_FIELDS,checkpoint_every=3)\n"
+                "for i in range(5):w.add(np.zeros((12,16,3),np.uint8),.1,.2,**{'collect/episode':0,'collect/t':i*.05})\n"
+                "os._exit(7)\n"
+            )
+            result = subprocess.run([sys.executable, "-c", script, str(directory)], cwd=Path(__file__).resolve().parents[1],
+                                    capture_output=True, timeout=30)
+            self.assertEqual(result.returncode, 7, result.stderr)
+            self.assertEqual((read_meta(directory)["status"], read_meta(directory)["frames"]), ("collecting", 3))
+            first = TubWriter(directory, meta={"id": "hard-exit"}, extra_fields=EXTRA_FIELDS, resume=True)
+            rows = recover_logs(directory, first)
+            self.assertEqual((first.count, rows[0]["frames_stored"], rows[0]["termination"]), (5, 5, "interrupted"))
+            first.close()
+            with TubWriter(directory, meta={"id": "hard-exit"}, extra_fields=EXTRA_FIELDS, resume=True) as second:
+                first.close()  # a former owner cannot overwrite the new owner's live metadata
+                self.assertEqual(read_meta(directory)["status"], "collecting")
+                with self.assertRaisesRegex(DatasetError, "关闭"):
+                    first.add(picture(), .5, .2)
+                second.close()
+
 
 class PolicyTest(unittest.TestCase):
+    def test_nonfinite_control_settings_are_rejected(self):
+        from apps.collect.policy import clip
+
+        for bad in (float("nan"), float("inf"), -float("inf")):
+            for make in (lambda: clip(bad), lambda: SpeedHold(bad), lambda: CteExpert(bad, .1),
+                         lambda: Perturbation(random.Random(0), interval_s=(1., bad))):
+                with self.assertRaises(ValueError):
+                    make()
+
     def test_the_expert_steers_against_the_error_and_its_rate(self):
         expert = CteExpert(.5, .2, rate_smoothing=1.)
         self.assertAlmostEqual(expert(1., 0.), -.5)
@@ -335,6 +482,34 @@ class EpisodeLoopTest(unittest.TestCase):
                                         restartable=False)
         self.assertEqual((len(episodes), episodes[0]["termination"]), (1, "collision"))
         self.assertIn("cannot be restarted", ended_early)
+
+    def test_transient_simulator_errors_retry_with_a_finite_budget(self):
+        clock = Clock()
+        stream = LaneStream(clock)
+        first_step = stream.step
+        failed = False
+
+        def step(action):
+            nonlocal failed
+            if not failed and len(stream.actions) == 4:
+                failed = True
+                raise TimeoutError("temporary disconnect")
+            return first_step(action)
+
+        stream.step = step
+        writer = TubWriterStub()
+        rows, ended_early = collect(stream, writer, self.pilot(), seed=1, clock=clock, max_restarts=1,
+                                    limits=Limits(frames=20, episode_s=60., max_episodes=5, wall_s=300.))
+        self.assertIsNone(ended_early)
+        self.assertEqual(writer.count, 20)
+        self.assertEqual([r["termination"] for r in rows], ["simulator_error", "frame_target"])
+        self.assertEqual(sum(r["frames_stored"] for r in rows), 20)
+        stream = LaneStream(clock)
+        stream.reset = lambda **_: (_ for _ in ()).throw(TimeoutError("still down"))
+        rows, ended_early = collect(stream, TubWriterStub(), self.pilot(), seed=1, clock=clock, max_restarts=2,
+                                    limits=Limits(frames=20, episode_s=60., max_episodes=10, wall_s=300.))
+        self.assertEqual(len(rows), 2)
+        self.assertIn("could not start", ended_early)
 
     def test_summary_checks_flag_a_short_one_sided_or_failing_collection(self):
         good = [{"frames_stored": 60, "frames_seen": 66, "perturbed_frames": 6, "seconds": 3., "termination": "time_limit",

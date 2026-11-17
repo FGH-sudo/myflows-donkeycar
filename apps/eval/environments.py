@@ -13,6 +13,7 @@ describes itself for the manifest and the report. The episode loop and the metri
 from __future__ import annotations
 
 from contextlib import contextmanager
+import math
 import time
 
 DONKEY = "donkey-generated-roads-v0"
@@ -74,6 +75,9 @@ class UdacityMonitor:
 
         self.default_speed = float(speed_mph)
         self.stuck_s, self.lost_frames, self.warmup_s = float(stuck_s), int(lost_frames), float(warmup_s)
+        if not all(math.isfinite(v) for v in (self.default_speed, self.stuck_s, self.warmup_s)) \
+                or min(self.default_speed, self.stuck_s) <= 0 or self.warmup_s < 0 or self.lost_frames < 1:
+            raise ValueError("invalid Udacity speed, stuck timeout or road-loss frame limit")
         self.finder = finder or RoadFinder()
         self.reset({}, 0.)
 
@@ -106,7 +110,8 @@ class UdacityMonitor:
         self.lost = 0 if view.found else self.lost + 1
         if stop is None and self.lost >= self.lost_frames:
             stop = "road_lost"
-        return {"cte": view.lateral if view.found and calibrated else None, "odometer": self.odometer, "stop": stop}
+        return {"cte": view.lateral if view.found and calibrated else None, "cte_eligible": bool(calibrated),
+                "odometer": self.odometer, "stop": stop}
 
 
 class UdacityEnvironment:
@@ -126,6 +131,7 @@ class UdacityEnvironment:
         self.speed_mph = float(protocol.get("target_speed_mph") or 12.)
         rules = protocol.get("rules") or {}
         self.stuck_s, self.lost_frames = float(rules.get("stuck_s", 4.)), int(rules.get("lost_frames", 30))
+        UdacityMonitor(speed_mph=self.speed_mph, stuck_s=self.stuck_s, lost_frames=self.lost_frames)
         self.clock = time.perf_counter
 
     @contextmanager
@@ -162,7 +168,11 @@ class UdacityEnvironment:
 
 
 def for_protocol(protocol: dict):
+    if not isinstance(protocol, dict):
+        raise ValueError("simulator protocol must be an object")
     name = protocol.get("environment") or DONKEY
     if isinstance(name, str) and name.startswith("udacity-"):
         return UdacityEnvironment(protocol)
-    return DonkeyEnvironment(protocol)
+    if name == DONKEY:
+        return DonkeyEnvironment(protocol)
+    raise ValueError(f"未知的模拟环境：{name}")

@@ -327,6 +327,8 @@ export interface DatasetInfo {
   default: boolean
   frames: number
   ready: boolean
+  status?: string | null
+  accepted?: boolean | null
   environment: string | null
   simulator: string | null
   image: { width: number; height: number } | null

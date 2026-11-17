@@ -46,6 +46,7 @@ SINGLE_ARGS = {
     "feature_cache": bool, "transfer_probe": bool, "lora_rank": int, "lora_alpha": float,
     # A known data set (apps.common.datasets): the default DonkeyCar set when absent.
     "data": str,
+    "regression_head": str,
 }
 TRANSFER_ARCHS = ("resnet18", "mobilenet_v2", "alexnet")
 MAX_FREEZE_STAGES = 5
@@ -249,6 +250,13 @@ def validate_single(args: dict, repo_root: Path) -> dict:
         raise ValidationError("epochs 与 batch 必须为正整数")
     if out.get("compat", "myflows") not in ("myflows", "torchvision"):
         raise ValidationError("compat 只能是 myflows 或 torchvision")
+    if out.get("regression_head", "global") not in ("global", "spatial"):
+        raise ValidationError("regression_head 必须为 global 或 spatial")
+    if out.get("regression_head") == "spatial" and (out.get("arch", "resnet18") != "resnet18"
+                                                   or out.get("compat", "myflows") != "myflows" or out.get("pretrained")):
+        raise ValidationError("spatial 回归头只支持 MyFlows 结构的 ResNet18")
+    if out.get("regression_head") == "global":
+        out.pop("regression_head")
     if out.get("backbone_lr_mult", 1.) < 0:
         raise ValidationError("backbone_lr_mult 必须非负")
     if out.get("freeze_mode", "both") not in ("both", "params", "bn") or out.get("bn_unfreeze", "follow") not in ("follow", "keep-frozen"):

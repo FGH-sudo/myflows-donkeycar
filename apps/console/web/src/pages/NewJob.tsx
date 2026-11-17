@@ -624,6 +624,14 @@ function TrainingForm({
                 </Form.Item>
               </Col>
               <Col xs={24} sm={12} md={8}>
+                <Form.Item name="regression_head" label="转向回归头" initialValue="global">
+                  <Select options={[
+                    { value: 'global', label: '全局平均（已有模型）' },
+                    { value: 'spatial', label: '空间特征（保留道路位置）' },
+                  ]} />
+                </Form.Item>
+              </Col>
+              <Col xs={24} sm={12} md={8}>
                 <Form.Item name="max_samples" label="样本数（0 = 全量）">
                   <InputNumber min={0} style={{ width: '100%' }} />
                 </Form.Item>

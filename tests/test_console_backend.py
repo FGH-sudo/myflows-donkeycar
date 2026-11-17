@@ -777,6 +777,28 @@ class DatasetChoiceTest(unittest.TestCase):
         with self.assertRaisesRegex(ValidationError, "不存在"):
             validate_single({"data": "never-collected"}, self.root)
 
+    def test_an_active_collection_is_visible_but_cannot_start_training(self):
+        meta = self.root / "runs/datasets/udacity-lake-001/dataset.json"
+        value = json.loads(meta.read_text(encoding="utf-8"))
+        value["status"] = "collecting"
+        meta.write_text(json.dumps(value), encoding="utf-8")
+        listed = self.client.get("/api/datasets").json()
+        self.assertEqual((listed[1]["status"], listed[1]["ready"]), ("collecting", False))
+        refused = self.client.post("/api/jobs", json={"type": "single", "args": {"data": "udacity-lake-001"}})
+        self.assertEqual(refused.status_code, 422)
+        self.assertEqual(self.client.get("/api/jobs").json(), [])
+
+    def test_interrupted_and_rejected_sets_need_recovery_before_automatic_training(self):
+        meta = self.root / "runs/datasets/udacity-lake-001/dataset.json"
+        original = json.loads(meta.read_text(encoding="utf-8"))
+        for status, accepted in (("interrupted", True), ("complete", False)):
+            with self.subTest(status=status, accepted=accepted):
+                meta.write_text(json.dumps({**original, "status": status, "summary": {"accepted": accepted}}), encoding="utf-8")
+                self.assertFalse(self.client.get("/api/datasets").json()[1]["ready"])
+                refused = self.client.post("/api/jobs", json={"type": "single", "args": {"data": "udacity-lake-001"}})
+                self.assertEqual(refused.status_code, 422)
+                self.assertEqual(self.client.get("/api/jobs").json(), [])
+
     def test_the_api_lists_the_sets_and_a_job_on_a_collected_set_passes_it_on(self):
         listed = self.client.get("/api/datasets").json()
         self.assertEqual([row["data"] for row in listed], ["mycar/data", "runs/datasets/udacity-lake-001"])

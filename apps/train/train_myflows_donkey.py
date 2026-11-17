@@ -77,7 +77,7 @@ from MyFlows.ops.precision import BACKENDS as PRECISION_BACKENDS, MIXED
 from MyFlows.data.pipeline import MultiprocessDataLoader
 from MyFlows.distributed.shards import split_global_batch
 from MyFlows.train.regularization import RegularizationConfig, apply_regularization
-from MyFlows.utils.checkpoint import named_state, read_checkpoint_metadata
+from MyFlows.utils.checkpoint import named_state, read_checkpoint_metadata, resolve_checkpoint_paths
 from MyFlows.utils.initializers import make_initializer
 from MyFlows.utils.model_inspector import format_inspection_report, format_model_summary, inspect_graph, model_summary
 from tools.export_resnet_onnx import export_resnet18_onnx
@@ -212,7 +212,7 @@ class _StepPhases:
                 "cupy_pool_peak_used_mib": self.peak_used / 2**20, "cupy_pool_peak_total_mib": self.peak_pool / 2**20}
 
 
-# Arguments that do not change the numbers of a training trajectory: paths, logging, checkpoint cadence, data
+# Arguments that do not change continuation from a saved training state: paths, logging, checkpoint cadence, data
 # loading parallelism (sample order and augmentation do not depend on it), timeouts. Everything else is in
 # the TrainingState fingerprint; --lr may differ on --resume-state (a rollback halves it) and is recorded.
 _NON_TRAJECTORY_ARGS = {
@@ -221,6 +221,7 @@ _NON_TRAJECTORY_ARGS = {
     "save_png_plots", "summary_once", "check_shape", "check_content", "num_workers", "gpu_lock_timeout",
     "phase_timing_every", "sync_timeout", "worker_memory_mb", "epochs", "lr", "log_dir", "logdir", "plot_prefix",
     "split_out", "monitor", "monitor_interval_s", "nvtx", "nvtx_nodes", "profile_steps", "initial_validation", "transfer_probe",
+    "init_checkpoint",  # only the initial weights; resumes already contain their complete model state
 }
 
 
@@ -229,6 +230,7 @@ _LATER_DEFAULTS = {"arch": "resnet18", "pretrained": None, "freeze_stages": 0, "
                    "backbone_lr_mult": 1., "stage_lr_mults": None, "compat": "myflows"}
 _LATER_DEFAULTS.update(unfreeze_schedule=None, freeze_mode="both", bn_unfreeze="follow")
 _LATER_DEFAULTS.update(feature_cache=False, lora_rank=0, lora_alpha=None)
+_LATER_DEFAULTS.update(regression_head="global")
 
 
 def trajectory_config(args: argparse.Namespace) -> dict:
@@ -325,11 +327,14 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--log-dir", type=str, default="mycar/logs", help="训练日志目录")
     ap.add_argument("--log-file", type=str, default=None, help="训练日志文件；默认按时间生成")
     ap.add_argument("--resume", action="store_true", help="从 --out 对应训练断点续训（从断点记录的 epoch 与 step 继续）")
+    ap.add_argument("--init-checkpoint", help="从同构模型断点初始化权重，在新数据集上从第 1 个 epoch 和全新优化器开始训练")
     ap.add_argument("--checkpoint-every", type=int, default=100, help="每多少 step 保存一次训练断点(0=只在 epoch 末保存)")
     ap.add_argument("--stop-file", type=str, default="mycar/logs/STOP_TRAINING", help="检测到该文件时保存断点并退出")
     ap.add_argument("--export-onnx", action="store_true", help="训练结束后导出 ONNX 推理图")
     ap.add_argument("--onnx-out", type=str, default=None, help="ONNX 输出路径，默认跟 --best-out 同名 .onnx")
     ap.add_argument("--stem", type=str, default="cifar", choices=("cifar", "imagenet"), help="小分辨率建议 cifar")
+    ap.add_argument("--regression-head", choices=("global", "spatial"), default="global",
+                    help="ResNet 回归头：global 沿用全局平均；spatial 保留道路特征的空间位置")
     ap.add_argument("--arch", type=str, default="resnet18", choices=("resnet18", "mobilenet_v2", "alexnet"),
                     help="网络结构；mobilenet_v2 / alexnet（以及带 --pretrained 的 resnet18）与 torchvision 结构一致")
     ap.add_argument("--pretrained", type=str, default=None,
@@ -515,6 +520,7 @@ class TrainPlan:
     fingerprint: str | None = None
     fixed_state: str | None = None
     transfer_state: dict | None = None
+    initialization: dict | None = None
 
     @property
     def world_size(self) -> int:
@@ -539,6 +545,7 @@ def _resume_position(args, out_base: Path, best_base: Path) -> dict:
     position = {"resume_found": True, "start_epoch": epoch + 1, "start_step": 0,
                 "start_global_step": int(training.get("global_step", 0)), "best_loss": saved_best_loss(best_base),
                 "early_stopping_state": training.get("early_stopping"), "transfer_state": training.get("transfer_state")}
+    position["initialization"] = training.get("initialization")
     if training and not training.get("epoch_complete", True):
         if int(training.get("global_batch", 0)) == int(args.batch):
             position.update(start_epoch=epoch, start_step=int(training.get("next_step", 0)),
@@ -574,6 +581,7 @@ def _apply_resume_state(args: argparse.Namespace, plan: "TrainPlan") -> None:
         raise SystemExit("[resume-state] 旧 TrainingState 未保存完整随机数状态，不能精确续训")
     plan.seeds = saved_seeds or plan.seeds
     plan.resume_meta = state
+    plan.initialization = state.get("initialization")
     plan.end_epoch = int(state["end_epoch"])
     if state.get("epoch_complete"):
         plan.start_epoch, plan.start_step = int(state["epoch"]) + 1, 0
@@ -743,6 +751,22 @@ def prepare(args: argparse.Namespace) -> tuple[TrainPlan, TeeLogger]:
         split_file=str(split_path) if split_path is not None else None,
     )
     plan.seeds = derive_seeds(args.seed, plan.world_size)
+    if getattr(args, "init_checkpoint", None):
+        import hashlib
+
+        if args.resume or args.resume_state or args.pretrained or distributed:
+            raise SystemExit("--init-checkpoint 只用于新的单进程训练，不能与 --resume / --resume-state / --pretrained 合用")
+        source = _checkpoint_stem((ROOT / args.init_checkpoint).resolve())
+        if source in (out_base, best_base):
+            raise SystemExit("--init-checkpoint 不能与 --out 或 --best-out 相同，请为新训练指定新的输出路径")
+        files = list(resolve_checkpoint_paths(source))
+        if not all(p.is_file() for p in files):
+            raise SystemExit("--init-checkpoint 必须是完整的 JSON+NPZ 断点")
+        hashes = {}
+        for p in files:
+            with p.open("rb") as handle:
+                hashes[p.suffix[1:]] = hashlib.file_digest(handle, "sha256").hexdigest()
+        plan.initialization = {"checkpoint": str(source), "sha256": hashes, "optimizer": "fresh"}
     if args.seed is None and (args.state_every or args.resume_state):
         # Even an unseeded run needs private, saved streams for exact resume.
         streams = derive_seeds(random.getrandbits(32), plan.world_size)
@@ -796,6 +820,8 @@ def prepare(args: argparse.Namespace) -> tuple[TrainPlan, TeeLogger]:
                            "enabled": monitoring_enabled(args.monitor, plan.run_dir) or os.environ.get(EXTERNAL_MONITOR_ENV) == "1"},
             "phase_timing_every": args.phase_timing_every,
         }
+        if plan.initialization:
+            run_config["initialization"] = plan.initialization
         (run_dir / "config.json").write_text(json.dumps(record(run_config, clocks=True), ensure_ascii=False, indent=2, default=str),
                                              encoding="utf-8")
         print(f"控制台运行目录: {run_dir}")
@@ -856,8 +882,20 @@ def _build_model(args, batch: int, h: int, w: int, dtype, conv_backend: str, dro
     y_var = ms.Variable(np.zeros((batch, 2), dtype=dtype), name="y", requires_grad=False)
     initializer = make_initializer(args.initializer, seed=args.seed) if args.seed is not None else args.initializer
     transfer = transfer_config(args, require_weights=load_pretrained)
+    head = getattr(args, "regression_head", "global")
+    if head not in ("global", "spatial"):
+        raise ValueError("regression_head must be global or spatial")
+    if head != "global" and transfer is not None:
+        raise ValueError("spatial 回归头目前只用于 MyFlows 结构的 ResNet18")
     if transfer is None:
-        model = ms.ResNet18(
+        model_type = ms.ResNet18
+        head_kwargs = {}
+        if head == "spatial":
+            from apps.train.common.regression_model import SpatialResNet18
+
+            model_type = SpatialResNet18
+            head_kwargs = {"image_h": h, "image_w": w}
+        model = model_type(
             in_channels=3,
             output_dim=2,
             stem=args.stem,
@@ -867,6 +905,7 @@ def _build_model(args, batch: int, h: int, w: int, dtype, conv_backend: str, dro
             initializer=initializer,
             conv_backend=conv_backend,
             dropout_seed=dropout_seed,
+            **head_kwargs,
         )
         if args.backbone_lr_mult != 1. or args.stage_lr_mults or args.unfreeze_schedule:
             from MyFlows.transfer import TransferLearningManager
@@ -1022,6 +1061,17 @@ def _train_rank(plan: TrainPlan, rank, sync, device, profiler) -> dict:
         opt.learning_rate = float(args.lr)  # the state carries the old rate; a rollback resumes with a smaller one
     elif plan.resume_found:
         ms.load_checkpoint([model], opt, str(out_base))
+    elif plan.initialization:
+        # The source epoch, optimizer moments and data cursor belong to another run.
+        import hashlib
+
+        for path in resolve_checkpoint_paths(plan.initialization["checkpoint"]):
+            with path.open("rb") as handle:
+                digest = hashlib.file_digest(handle, "sha256").hexdigest()
+            if digest != plan.initialization["sha256"][path.suffix[1:]]:
+                raise ValueError("初始化断点在等待 GPU 期间发生变化，请重新启动本次训练")
+        ms.load_checkpoint([model], None, plan.initialization["checkpoint"])
+        say(f"[initialization] 从 {plan.initialization['checkpoint']} 载入模型权重，优化器与训练位置重新开始")
     params, buffers = named_state(model)
     synced_params = {}
     if sync is not None:
@@ -1183,6 +1233,8 @@ def _train_rank(plan: TrainPlan, rank, sync, device, profiler) -> dict:
         """训练断点只由 rank 0 写（各 Worker 状态相同），元数据记下续训位置与早停计数。"""
         training = {"global_step": global_step, "global_batch": plan.global_batch, "epoch_complete": epoch_complete,
                     "workers": world, "distributed": plan.mode}
+        if plan.initialization:
+            training["initialization"] = plan.initialization
         if manager:
             training["transfer_state"] = manager.state_dict()
         if not epoch_complete:
@@ -1212,6 +1264,7 @@ def _train_rank(plan: TrainPlan, rank, sync, device, profiler) -> dict:
             "group_learning_rates": opt.group_learning_rates(),
             "transfer_state": manager.state_dict() if manager else None,
             "initial_validation": initial_validation,
+            **({"initialization": plan.initialization} if plan.initialization else {}),
             "config": trajectory_config(args), "seeds": plan.seeds, "data_hash": plan.data_hash,
             "val_hash": plan.val_hash,
         }
@@ -1797,6 +1850,7 @@ def _export_onnx(args, plan: TrainPlan) -> None:
         device=args.device,
         graph_opt=bool(args.graph_opt),
         base_width=int(args.base_width),
+        regression_head=getattr(args, "regression_head", "global"),
     )
     print(f"已导出 ONNX: {onnx_path} (batch=1)")
 

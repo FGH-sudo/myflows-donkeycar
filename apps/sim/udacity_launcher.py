@@ -18,7 +18,6 @@ On other systems start the simulator by hand, choose Autonomous Mode and use ``-
 
 from __future__ import annotations
 
-import json
 import os
 from pathlib import Path
 import subprocess
@@ -207,8 +206,9 @@ class UdacityLauncher:
         if self.directory is not None:
             # The supervisor of a guarded worker kills the simulator from this record if the worker dies.
             created = psutil.Process(self.process.pid).create_time()
-            (self.directory / ".owned-simulator.json").write_text(
-                json.dumps({"pid": self.process.pid, "create_time": created}), encoding="utf-8")
+            from apps.eval.simulator import write_json
+
+            write_json(self.directory / ".owned-simulator.json", {"pid": self.process.pid, "create_time": created})
         self._configure()
         self.window = self._wait(lambda: self._win.windows(self.process.pid, "UnityWndClass"), 60.,
                                  "the simulator window did not appear")[0]

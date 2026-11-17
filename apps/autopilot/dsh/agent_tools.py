@@ -206,7 +206,8 @@ class AgentTools:
     def _list_datasets(self, _cid, _args, _source) -> dict:
         from apps.common.datasets import list_datasets
 
-        keep = ("data", "id", "default", "frames", "ready", "environment", "simulator", "image", "image_size", "source")
+        keep = ("data", "id", "default", "frames", "ready", "status", "accepted", "environment", "simulator",
+                "image", "image_size", "source")
         rows = []
         for item in list_datasets(self.service.repo_root):
             row = {key: item.get(key) for key in keep}
