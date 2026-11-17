@@ -209,6 +209,8 @@ PDF 把任务分成基础部分和拓展优化。本草案按下面的顺序推�
 
 用户要求：让项目流程兼容 [car-behavioral-cloning-paddle](https://github.com/jm12138/car-behavioral-cloning-paddle) 的模拟环境（Udacity self-driving-car-sim，term 1），跑通训练与推理部署闭环以及 Agent 等功能，并为 DonkeyCar 与该环境各写一个无需人工参与的自动采集脚本。设计见 [system_design.md 第 11 节](system_design.md#11-第二个模拟器与无人值守采集2026-11-16)，实测见 [auto_collection 报告](experiments/semester_2026_fall/auto_collection/README.md)。
 
+2026-11-17 用户明确验收范围：专家主要用于数据采集与标注；正式模型驾驶和闭环评估不中途切换专家。默认采集由专家全程控制，不启用模型与专家切换。模型跑偏与整圈成绩属于训练效果记录，不作为当前工程闭环开发的阻塞项。
+
 - 数据集选择：训练、控制台、AutoPilot（`fixed.data`）与 LLM 工具（`list_datasets`）都可以选 `runs/datasets/<id>` 下采集的数据集，默认仍是 `mycar/data`；划分文件名与 `data_hash` 随数据集区分。
 - DonkeySim 采集（`python -m apps.collect.donkey_auto`）：CTE 的 PD 专家、每段换一条路、转向扰动。4,000 帧训练的 ResNet18 在 4 个默认 reset 场景上与现有驾驶模型持平（平均绝对 CTE 0.188 对 0.170，都没有出界或碰撞）。
 - Udacity 接入：websockets 实现的 Socket.IO/Engine.IO 服务端（20 Hz 节拍）、Windows 上自动完成配置对话框、菜单与场景重启的启动器、同协议的替身模拟器（测试与 CI 用）。

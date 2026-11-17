@@ -12,7 +12,7 @@
 
 较长的驾驶暴露了短场景没有覆盖的问题：12 mph 的 FastAPI 驾驶在 86.2 秒、约 436 米处卡住。因此这些短场景只证明该范围内的驾驶与部署链路可用，不能据此声称整圈稳定。长时间驾驶结果见第 3.6 节。新数据集上的真实 GPU AutoPilot 联调也已结束（5 个有效 trial，含确认与独立测试）；LLM 未启用，结果不支持候选配置优于基线的结论。
 
-2026-11-17 继续审查后，采集增加了异常重启、显式续采、独占写入、质量拒绝和模型驾驶时的专家接管；真实强制终止与续采验证通过。新增 20,000 帧恢复数据并完成两次训练，但长时间纯模型驾驶仍未通过。LLM 已另行完成真实只读工具调用。后续结果见第 8 节；第 2–7 节保留首轮实验的配置和指标。
+2026-11-17 继续审查后，采集增加了异常重启、显式续采、独占写入、质量拒绝及可选的学习模型辅助采集实验；真实强制终止与续采验证通过。新增 20,000 帧恢复数据并完成两次训练，长时间驾驶的模型效果另行记录。按用户明确的范围，工程闭环验收与模型效果分开：默认由专家采集数据，训练后的驾驶和评估由模型控制，不中途切换专家，也不把整圈效果作为当前工程开发的阻塞项。LLM 已另行完成真实只读工具调用。后续结果见第 8 节；第 2–7 节保留首轮实验的配置和指标。
 
 ## 2. DonkeySim
 
@@ -210,7 +210,9 @@ AutoPilot campaign 在控制台“AutoPilot → 新建”中选数据集 `udacit
 
 ### 8.1 当前验收结论
 
-采集、数据选择、训练、导出、HTTP / gRPC 推理及 AutoPilot 的软件流程可运行；湖区整圈自主驾驶没有通过。新采集器能够恢复进程中断、重启失联的自有模拟器并拒绝不合格数据，但视觉专家和横向位置估计在桥出口仍有盲区，丛林赛道也未验证。因此“自动执行采集”已经实现，不能把“采集自检通过”解释为标注无误或训练后能够跑完整圈。
+已验证的采集、数据选择、训练、导出、HTTP / gRPC 推理及规则 AutoPilot 软件流程已跑通。工程验收关注各阶段能正常执行、数据与模型衔接正确、控制能够回传、结果和异常能被记录；跑偏、卡住及整圈成绩作为模型效果保留，不作为当前工程开发的阻塞项。真实 LLM 验证范围是只读工具调用，未另跑 LLM 主导的完整训练 campaign。
+
+默认数据采集由专家控制并产生标签；正式驾驶与闭环评估始终使用模型的转向预测，不中途切换专家。此前长测也未启用专家接管。第 8.3 节的 `--learner` 仅记录已有的可选采集实验，默认不启用，不列入主流程。湖区整圈效果、桥出口视觉估计盲区及未验证的丛林赛道继续如实记录，采集自检也不等同于标注真值或整圈保证。
 
 ### 8.2 已修复的采集与接口问题
 
@@ -257,7 +259,7 @@ AutoPilot campaign 在控制台“AutoPilot → 新建”中选数据集 `udacit
 
 驾驶摘要新增 checks：到达时限、零越界、标定后有效 CTE 覆盖率至少 90% 才返回成功；尚无圈数遥测时 lap_count 为 null。可用 `--camera-every N --out ...` 保存无损 PNG，与每帧 JSONL 对应；summary 保存实际规则、场景和来源。单次失败返回 2，推理或连接异常返回 1，中断返回 130。
 
-原始证据在 `runs/pipelines/udacity-recovery-001/drive-onnx-12mph/`、`runs/pipelines/udacity-spatial-002/drive-onnx-12mph/` 和 `drive-probe-12mph/`。下一步仍需改进专家的桥出口感知及恢复覆盖，并以标准长片段和独立新会话验收；当前候选不替换原驾驶模型。
+原始证据在 `runs/pipelines/udacity-recovery-001/drive-onnx-12mph/`、`runs/pipelines/udacity-spatial-002/drive-onnx-12mph/` 和 `drive-probe-12mph/`。这些结果属于模型效果记录，后续训练改进可复用，不据此继续扩展途中专家接管，也不阻塞当前工程功能验收；当前候选不自动替换原驾驶模型。
 
 ### 8.5 LLM 与回归验证
 
@@ -272,12 +274,12 @@ AutoPilot campaign 在控制台“AutoPilot → 新建”中选数据集 `udacit
 
 ### 8.6 新增命令
 
-在第 6 节环境下执行，使用新的数据集名称；重复续采时保持相同专家、学习模型与标定配置，只提高目标和预算：
+在第 6 节环境下执行，默认全程由专家采集和标注，不传 `--learner`；重复续采时保持相同专家与标定配置，只提高目标和预算：
 
 ```text
-python -m apps.collect.udacity_auto --name udacity-recovery-next --learner runs/pipelines/udacity-lake-001/train/checkpoints/best.onnx --learner-limit 0.08 --learner-lateral 0.2 --frames 8000 --episode-s 300 --wall-s 600 --speed 12 --seed 17 --no-perturb
-python -m apps.collect.udacity_auto --name udacity-recovery-next --learner runs/pipelines/udacity-lake-001/train/checkpoints/best.onnx --learner-limit 0.08 --learner-lateral 0.2 --frames 12000 --episode-s 300 --wall-s 900 --speed 12 --seed 17 --no-perturb --resume
-python -m apps.collect.merge --name udacity-aggregate-next --sources udacity-lake-001 udacity-recovery-next
+python -m apps.collect.udacity_auto --name udacity-expert-next --frames 8000 --episode-s 240 --wall-s 900 --speed 11 --seed 17
+python -m apps.collect.udacity_auto --name udacity-expert-next --frames 12000 --episode-s 240 --wall-s 1200 --speed 11 --seed 17 --resume
+python -m apps.collect.merge --name udacity-aggregate-next --sources udacity-lake-001 udacity-expert-next
 ```
 
 新数据上的同结构权重初始化使用训练入口的 `--init-checkpoint <源 best>`，并为 `--out`、`--best-out` 和 `--run-dir` 指定新路径；它不能与 resume、预训练迁移或分布式训练合用。新头使用 `--regression-head spatial`（本轮空间模型为随机初始化）；旧模型保持 global。合并后如果继续已有实验，必须保留各来源原有验证 / 测试样本的归属，不能把此前测试帧重新随机放进训练集；本轮使用已存档的 composite split。

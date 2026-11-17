@@ -218,6 +218,8 @@ TensorBoard 直接写事件 protobuf，训练进程不再为日志加载 torch�
 
 Udacity 可选 `--learner`：模型与视觉专家意见接近且横向位置在范围内时由模型驾驶，否则专家接管，标签始终是专家输出，逐帧记录模型建议与接管。`apps.collect.merge` 合并已验收且环境与尺寸相同的数据，保存来源 catalog 和内容哈希、原图片与 episode，直接复制 JPEG 字节。`--init-checkpoint` 可在同结构模型上载入权重开始新数据训练，优化器与训练位置重新开始，记录初始化文件 SHA-256；`--resume` 则延续原训练状态。MyFlows ResNet18 可选 `--regression-head spatial` 保留池化特征的位置，默认 global 保持已有模型兼容。
 
+主流程采用专家控制器采集和标注，默认不启用上述 `--learner` 实验。专家不在训练后的正式驾驶或闭环评估中接管；模型预测控制转向，Udacity 沿用目标速度控制器。工程闭环是否跑通与模型驾驶效果分别记录，当前开发不以整圈成绩为阻塞条件。
+
 总时限在每帧及重置返回后检查，最多还需等待当前模拟器调用结束及停车；镜像写入也受帧数目标约束，奇数目标不会多写一帧。AutoPilot 对空数据集返回校验错误。
 
 - DonkeySim（`apps/collect/donkey_auto.py`）：专家是遥测 CTE 的 PD 控制器，固定油门；每段先发 `regen_road` 按种子换一条路。
