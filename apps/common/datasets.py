@@ -60,12 +60,7 @@ def dataset_dir(repo_root: str | Path, data: str | None = None, *, must_exist: b
         raise DatasetError("数据集路径离开了项目目录")
     if must_exist and not path.is_dir():
         raise DatasetError(f"数据目录 {normalize(data)} 不存在")
-    meta = read_meta(path)
-    if meta.get("status") == "collecting":
-        raise DatasetError("数据集正在采集，请在采集完成或续采恢复后再训练")
-    if meta.get("status") == "interrupted" or (isinstance(meta.get("summary"), dict)
-                                               and meta["summary"].get("accepted") is False):
-        raise DatasetError("数据集已中断或未通过采集自检，请先续采并通过自检")
+    require_usable_dataset(path)
     return path
 
 
@@ -75,6 +70,24 @@ def read_meta(directory: str | Path) -> dict:
     except (OSError, ValueError):
         return {}
     return meta if isinstance(meta, dict) else {}
+
+
+def _unavailable_reason(meta: dict) -> str | None:
+    if meta.get("status") == "collecting":
+        return "数据集正在采集，请等待采集完成或续采恢复"
+    summary = meta.get("summary")
+    if meta.get("status") in ("interrupted", "rejected") or (isinstance(summary, dict) and summary.get("accepted") is False):
+        return "数据集已中断或未通过采集自检，请先续采并通过自检"
+    return None
+
+
+def require_usable_dataset(directory: str | Path) -> dict:
+    """Check collection status at training and merge entry points, including direct paths."""
+    meta = read_meta(directory)
+    reason = _unavailable_reason(meta)
+    if reason is not None:
+        raise DatasetError(reason)
+    return meta
 
 
 def describe(repo_root: str | Path, data: str | None = None) -> dict:
@@ -96,8 +109,7 @@ def describe(repo_root: str | Path, data: str | None = None) -> dict:
     summary = meta.get("summary") if isinstance(meta.get("summary"), dict) else {}
     status = meta.get("status") if isinstance(meta.get("status"), str) else None
     return {"data": path, "id": dataset_key(path), "default": default, "frames": int(frames),
-            "ready": (directory / "images").is_dir() and frames > 0 and status not in ("collecting", "interrupted")
-                     and summary.get("accepted") is not False,
+            "ready": (directory / "images").is_dir() and frames > 0 and _unavailable_reason(meta) is None,
             "status": status, "accepted": summary.get("accepted") if isinstance(summary.get("accepted"), bool) else None,
             "environment": meta.get("environment") or ("donkey-generated-roads-v0" if default else None),
             "simulator": meta.get("simulator") or ("donkey" if default else None),

@@ -35,7 +35,7 @@ sys.path.insert(0, str(ROOT))
 
 from apps.common.donkey_data import load_donkey_index
 from apps.common.image_preprocess import imread_nchw, read_rgb
-from apps.common.splits import load_split, select_split
+from apps.common.splits import select_saved_split
 from tools.device_runtime import create_ort_inference_session, print_ort_device
 
 
@@ -94,8 +94,7 @@ def main() -> None:
     if not index:
         raise SystemExit("未找到带 cam/image_array 的 tub 行")
     if args.split_file:
-        payload = load_split((ROOT / args.split_file).resolve())
-        index = select_split(index, payload["splits"], args.split)
+        index = select_saved_split(index, (ROOT / args.split_file).resolve(), args.split)
         print(f"[split] file={(ROOT / args.split_file).resolve()} split={args.split} samples={len(index)}")
         if not index:
             raise SystemExit(f"split {args.split!r} 为空")

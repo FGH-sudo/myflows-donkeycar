@@ -11,6 +11,7 @@ from apps.common.splits import (
     load_split,
     resolve_splits,
     save_split,
+    select_saved_split,
     select_split,
 )
 from apps.train.common.training_control import BestScore, EarlyStopping
@@ -120,6 +121,33 @@ class SplitAndTrainingControlTest(unittest.TestCase):
             self.assertEqual(load_split(path, source_count=4)["splits"]["train"], [0, 1])
             with self.assertRaisesRegex(ValueError, "source_count"):
                 resolve_splits(list(range(5)), split_file=path)
+
+    def test_saved_time_block_contract_is_checked_for_training_and_offline_evaluation(self):
+        rows = [(Path(f"images/{i}_0.jpg"), 0., .5) for i in range(6)]
+        paths = [row[0] for row in rows]
+        splits = {"train": [0], "val": [3], "test": [4]}
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "split.json"
+            save_split(path, splits, source_count=5, seed=0, kind="time_block", meta={"gap": 1})
+            self.assertEqual(select_saved_split(rows, path, "test"), [rows[4]])  # a legacy prefix split
+            save_split(path, splits, source_count=5, seed=0, kind="time_block",
+                       meta={"gap": 1, "contract": 2}, source_paths=paths[:5])
+            with self.assertRaisesRegex(ValueError, "within 1 rows"):
+                resolve_splits(rows[:5], split_file=path, source_paths=paths[:5])
+            with self.assertRaisesRegex(ValueError, "within 1 rows"):
+                select_saved_split(rows, path, "test")
+            with self.assertRaisesRegex(ValueError, "source_count"):
+                select_saved_split(rows[:4], path, "val")
+
+    def test_new_positional_split_refuses_reordered_images_of_the_same_size(self):
+        rows = [(Path(f"images/{i}_0.jpg"), 0., .5) for i in range(4)]
+        paths = [row[0] for row in rows]
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "split.json"
+            splits, _ = resolve_splits(rows, split_out=path, val_size=1, source_paths=paths)
+            self.assertEqual(select_saved_split(rows, path, "val"), select_split(rows, splits, "val"))
+            with self.assertRaisesRegex(ValueError, "source_order_hash"):
+                select_saved_split(rows[::-1], path, "val")
 
 
 if __name__ == "__main__":

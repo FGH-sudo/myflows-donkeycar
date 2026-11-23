@@ -1,17 +1,26 @@
-"""A ResNet regression head that retains a coarse spatial layout of the road."""
+"""ResNet configuration shared by road-image training, evaluation and export."""
 
-from MyFlows.layers.resnet import ResNet18
+from MyFlows.layers.resnet import BASIC_RESNETS, ResNet18, ResNet34
 from MyFlows.core.device import xp
 from MyFlows.utils.initializers import make_initializer
 from MyFlows.ops.convolution import Flatten_Op, MaxPool2d_Op
 
 
-class SpatialResNet18(ResNet18):
-    """Keep the pooled feature grid before the steering/throttle head.
+def input_size(args, first_image) -> tuple[int, int]:
+    """Use the training resize when specified, otherwise the source frame size."""
+    if args.image_size:
+        try:
+            h, w = (int(v) for v in str(args.image_size).lower().split("x"))
+        except ValueError:
+            raise SystemExit(f"--image-size 应为 HxW，例如 224x224：{args.image_size}") from None
+        if h < 32 or w < 32:
+            raise SystemExit("--image-size 的高和宽至少为 32")
+        return h, w
+    return tuple(first_image.shape[:2])
 
-    Global averaging discards the feature locations; steering also depends on where a road feature lies in
-    the picture. This optional head retains those locations. The established ResNet18 path stays separate.
-    """
+
+class _SpatialHead:
+    """Keep the pooled feature grid before the steering/throttle head."""
 
     def __init__(self, *args, image_h=120, image_w=160, initializer=None, **kwargs):
         super().__init__(*args, initializer=initializer, **kwargs)
@@ -31,3 +40,20 @@ class SpatialResNet18(ResNet18):
         features = Flatten_Op(MaxPool2d_Op(self.spatial_features(input_node), self.pool_kernel, stride=2,
                                          backend=self.conv_backend))
         return self.dropout(features) if self.dropout is not None else features
+
+
+class SpatialResNet18(_SpatialHead, ResNet18):
+    """ResNet-18 with a spatial regression head."""
+
+
+class SpatialResNet34(_SpatialHead, ResNet34):
+    """ResNet-34 with a spatial regression head."""
+
+
+def build_regression_resnet(arch, head, image_h, image_w, **kwargs):
+    if head == "global":
+        return BASIC_RESNETS[arch](**kwargs)
+    if head == "spatial":
+        model_type = {"resnet18": SpatialResNet18, "resnet34": SpatialResNet34}[arch]
+        return model_type(image_h=image_h, image_w=image_w, **kwargs)
+    raise ValueError("regression_head must be global or spatial")

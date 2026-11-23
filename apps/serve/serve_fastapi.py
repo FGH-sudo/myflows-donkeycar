@@ -226,8 +226,8 @@ app = None
 def main() -> None:
   ap = argparse.ArgumentParser()
   ap.add_argument("--model", type=str, required=True)
-  ap.add_argument("--image-w", type=int, default=DEFAULT_IMAGE_W)
-  ap.add_argument("--image-h", type=int, default=DEFAULT_IMAGE_H)
+  ap.add_argument("--image-w", type=int, default=DEFAULT_IMAGE_W, help="ONNX 输入宽度为动态尺寸时使用")
+  ap.add_argument("--image-h", type=int, default=DEFAULT_IMAGE_H, help="ONNX 输入高度为动态尺寸时使用")
   ap.add_argument("--port", type=int, default=DEFAULT_FASTAPI_PORT)
   ap.add_argument("--host", type=str, default=DEFAULT_BIND_HOST)
   ap.add_argument("--device", type=str, default=DEFAULT_DEVICE, choices=("auto", "cpu", "cuda"))

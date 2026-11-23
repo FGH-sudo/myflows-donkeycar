@@ -167,10 +167,6 @@ def model_predictor(item, device):
         from apps.serve.onnx_predictor import OnnxPredictor
 
         predictor = OnnxPredictor(path, width, height, device=device)
-        # Camera dimensions are declared by fixed-shape exports; dynamic exports use the training config.
-        shape = predictor.input_shape
-        if len(shape) == 4 and all(isinstance(dim, int) and dim > 0 for dim in shape[2:]):
-            predictor.image_h, predictor.image_w = shape[2:]
         return lambda frame: float(predictor.predict(frame)[0])
     from mycar.myflows_pilot import MyFlowsResNet18Pilot
 

@@ -22,6 +22,7 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 
 import MyFlows as ms
+from apps.common.datasets import require_usable_dataset
 from apps.common.donkey_data import load_donkey_index
 from apps.common.image_preprocess import imread_nchw, pad_fixed_batch
 from apps.common.splits import resolve_splits, select_split
@@ -131,6 +132,7 @@ def main() -> None:
     sys.stdout = tee
     sys.stderr = tee
 
+    require_usable_dataset(data_dir)
     raw_index = load_donkey_index(
         data_dir,
         args.fixed_throttle,
@@ -154,6 +156,7 @@ def main() -> None:
         val_size=args.val_size,
         test_size=args.test_size,
         seed=args.split_seed,
+        source_paths=[rel for rel, *_ in index],
     )
     val_index = []
     if splits is not None:

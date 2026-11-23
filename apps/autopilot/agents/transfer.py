@@ -16,12 +16,12 @@ from __future__ import annotations
 import math
 import statistics
 from pathlib import Path
+from MyFlows.transfer.registry import ARCHS
 
 from ..spec import TRANSFER_DEFAULTS, transfer_status
 from .base import Finding, Proposal, Specialist, cite
 
 ROOT = Path(__file__).resolve().parents[3]
-ARCHS = ("resnet18", "mobilenet_v2", "alexnet")
 OVERFIT_RISE = 0.10  # final val loss this much above the best epoch's: the run over-fitted
 
 

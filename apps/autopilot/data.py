@@ -7,8 +7,7 @@ from pathlib import Path
 from apps.common.datasets import CATALOG, dataset_dir, dataset_key, normalize
 from apps.common.donkey_data import load_donkey_index
 from apps.common.splits import (TIME_BLOCK_SEPARATED, build_split, build_time_block_split, entries_hash,
-                                frame_numbers, load_split, save_split, select_split, time_block_contract,
-                                validate_time_split_gap)
+                                frame_numbers, load_split, save_split, select_split, time_block_contract)
 
 from .provenance import data_hash, file_hash
 
@@ -47,9 +46,10 @@ def ensure_split(repo_root: Path, splits_dir: Path, *, max_samples: int, val_siz
     name = (f"{dataset_key(data)}-{max_samples or 'all'}-val{val_size}" + (f"-test{test_size}" if test_size else "")
             + f"{tag}-s{split_seed}.json")
     path = Path(splits_dir) / name
+    source_paths = [rel for rel, *_ in index]
     meta = {}
     if kind == "time_block":
-        splits = build_time_block_split(frame_numbers([rel for rel, *_ in index]), val_size=val_size,
+        splits = build_time_block_split(frame_numbers(source_paths), val_size=val_size,
                                         test_size=test_size, block_size=block_size, gap=gap, seed=split_seed)
         meta = {"block_size": block_size, "gap": gap, "purged": len(splits.pop("purged")),
                 "contract": TIME_BLOCK_SEPARATED}
@@ -58,11 +58,12 @@ def ensure_split(repo_root: Path, splits_dir: Path, *, max_samples: int, val_siz
     else:
         raise ValueError(f"未知的划分方式：{kind}")
     if path.exists():
-        saved = load_split(path, source_count=len(index))
+        saved = load_split(path, source_paths=source_paths)
         if saved["splits"] != splits:
             raise ValueError(f"已有划分文件 {path} 与当前数据不一致；请换 split_seed 或删除旧文件")
     else:
-        save_split(path, splits, source_count=len(index), seed=split_seed, kind=kind, meta=meta)
+        save_split(path, splits, source_count=len(index), seed=split_seed, kind=kind, meta=meta,
+                   source_paths=source_paths)
     try:
         rel = path.resolve().relative_to(repo_root.resolve()).as_posix()
     except ValueError:
@@ -76,12 +77,8 @@ def describe_split(repo_root: Path, split_file: str, *, index: list | None = Non
     path = path if path.is_absolute() else Path(repo_root) / path
     if index is None:
         index = load_index(repo_root, max_samples, data)
-    payload = load_split(path, source_count=len(index))
-    contract = None
-    if payload.get("kind") == "time_block":
-        contract = time_block_contract(payload)
-        validate_time_split_gap(frame_numbers([rel for rel, *_ in index]), payload["splits"], payload.get("gap", 0),
-                                separate_held_out=contract >= TIME_BLOCK_SEPARATED)
+    payload = load_split(path, source_paths=[rel for rel, *_ in index])
+    contract = time_block_contract(payload) if payload.get("kind") == "time_block" else None
     val = select_split(index, payload["splits"], "val")
     train = select_split(index, payload["splits"], "train")
     test = select_split(index, payload["splits"], "test")

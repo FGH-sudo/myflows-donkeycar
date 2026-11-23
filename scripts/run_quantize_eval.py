@@ -31,7 +31,7 @@ sys.path.insert(0, str(ROOT))
 
 from apps.common.donkey_data import load_donkey_index
 from apps.common.image_preprocess import imread_nchw
-from apps.common.splits import load_split, select_split
+from apps.common.splits import select_saved_split
 from tools.device_runtime import create_ort_inference_session, print_ort_device
 from MyFlows.utils.metrics import angle_sign_accuracy
 from MyFlows.utils.quantize import quantize_onnx_dynamic, quantize_onnx_static
@@ -67,8 +67,7 @@ def _load_rows(
         force_fixed_throttle=bool(force_fixed_throttle),
     )
     if split_file:
-        payload = load_split(split_file)
-        index = select_split(index, payload["splits"], split)
+        index = select_saved_split(index, split_file, split)
         print(f"[split] file={Path(split_file).resolve()} split={split} samples={len(index)}")
     if max_samples > 0:
         index = index[:max_samples]

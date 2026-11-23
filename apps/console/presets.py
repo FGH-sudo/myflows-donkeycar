@@ -7,6 +7,8 @@ import math
 from pathlib import Path
 
 from MyFlows.distributed.constants import KNOWN_TASKS, LEGAL_MODES
+from MyFlows.layers.resnet import BASIC_RESNETS
+from MyFlows.transfer.registry import ARCHS as TRANSFER_ARCHS
 
 from apps.common.datasets import DEFAULT_DATA, DatasetError, dataset_dir, dataset_key
 from apps.common.datasets import normalize as normalize_dataset
@@ -47,8 +49,8 @@ SINGLE_ARGS = {
     # A known data set (apps.common.datasets): the default DonkeyCar set when absent.
     "data": str,
     "regression_head": str,
+    "no_compress_checkpoints": bool,
 }
-TRANSFER_ARCHS = ("resnet18", "mobilenet_v2", "alexnet")
 MAX_FREEZE_STAGES = 5
 # Parallel modes of the formal training entry: distributed value -> transports, as in apps.train.
 TRAINING_PARALLEL = {"none": ("none",), "ps": ("grpc_proto", "socket_json"), "ring": ("grpc_proto",)}
@@ -252,9 +254,9 @@ def validate_single(args: dict, repo_root: Path) -> dict:
         raise ValidationError("compat 只能是 myflows 或 torchvision")
     if out.get("regression_head", "global") not in ("global", "spatial"):
         raise ValidationError("regression_head 必须为 global 或 spatial")
-    if out.get("regression_head") == "spatial" and (out.get("arch", "resnet18") != "resnet18"
+    if out.get("regression_head") == "spatial" and (out.get("arch", "resnet18") not in BASIC_RESNETS
                                                    or out.get("compat", "myflows") != "myflows" or out.get("pretrained")):
-        raise ValidationError("spatial 回归头只支持 MyFlows 结构的 ResNet18")
+        raise ValidationError("spatial 回归头需要 MyFlows 结构的 ResNet")
     if out.get("regression_head") == "global":
         out.pop("regression_head")
     if out.get("backbone_lr_mult", 1.) < 0:
@@ -302,10 +304,15 @@ def validate_single(args: dict, repo_root: Path) -> dict:
             raise ValidationError(f"全局 batch（{out.get('batch', 1)}）必须不小于 Worker 数（{workers}）")
         if out.get("dtype", "float32") != "float32":
             raise ValidationError("分布式训练按 FP32 交换梯度，只支持 float32")
-        # ResNet-18 has ~11.2M values at width 64 (they scale with width squared); Socket JSON spells each
-        # with ~18 bytes and keeps the 64 MB frame limit, which holds up to width 32.
-        if out["transport"] == "socket_json" and out.get("base_width", 64) > 32:
-            raise ValidationError("Socket JSON 单条消息有 64 MB 上限，只能训练 ResNet 宽度不超过 32 的模型；请改用 gRPC")
+        # ResNet-18 has ~11.2M values at width 64 (scales with width squared; ResNet-34 has ~21.3M). Socket JSON
+        # spells each with ~18 bytes and keeps the 64 MB frame limit, which holds up to width 32 (ResNet-18) / 24 (ResNet-34).
+        arch = out.get("arch", "resnet18")
+        max_socket_width = 24 if arch == "resnet34" else 32
+        if out["transport"] == "socket_json" and out.get("base_width", 64) > max_socket_width:
+            label = "ResNet-34" if arch == "resnet34" else "ResNet-18"
+            raise ValidationError(
+                f"Socket JSON 单条消息有 64 MB 上限，只能训练 {label} 宽度不超过 {max_socket_width} 的模型；请改用 gRPC"
+            )
     if out.get("base_width", 64) < 1:
         raise ValidationError("base_width 必须为正整数")
     _check_transfer(out, Path(repo_root))
@@ -371,7 +378,7 @@ def _check_transfer(out: dict, repo_root: Path) -> None:
         raise ValidationError("freeze_stages 需要 pretrained")
     if out.get("input_norm", "auto") not in ("auto", "none", "imagenet"):
         raise ValidationError("input_norm 只能是 auto、none 或 imagenet")
-    if (arch != "resnet18" or pretrained or out.get("compat") == "torchvision") and out.get("distributed", "none") != "none":
+    if (arch not in BASIC_RESNETS or pretrained or out.get("compat") == "torchvision") and out.get("distributed", "none") != "none":
         raise ValidationError("迁移训练（arch / pretrained）目前只支持单进程")
     size = out.get("image_size")
     if size:
@@ -400,7 +407,9 @@ def single_label(args: dict) -> str:
                 f"{MODE_LABELS.get((args['distributed'], args['transport']), args['distributed'])}"
                 f" · {args['workers']}w")
     data = f" · {dataset_key(args['data'])}" if args.get("data") else ""
-    return f"ResNet18 · {parallel} · {args.get('max_samples') or '全部'} 样本{data}"
+    arch = args.get("arch", "resnet18")
+    label = BASIC_RESNETS[arch].__name__ if arch in BASIC_RESNETS else arch
+    return f"{label} · {parallel} · {args.get('max_samples') or '全部'} 样本{data}"
 
 
 TRAIN_MODULE = "apps.train.train_myflows_donkey"

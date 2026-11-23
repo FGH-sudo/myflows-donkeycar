@@ -143,25 +143,36 @@ class CampaignStore:
 # results used the old Adam.
 SEED_FACTS = [
     {"id": "seed-cifar-w64-batch16", "kind": "resource", "task": "donkey_resnet18_single",
-     "model": {"stem": "cifar", "base_width": 64}, "when": {"batch_min": 16, "workers_max": 1},
+     "model": {"arch": "resnet18", "stem": "cifar", "base_width": 64}, "when": {"batch_min": 16, "workers_max": 1},
      "outcome": "tight",
      "fact": "cifar stem、w64、batch 16 时显存吃紧：layer1 每个卷积的 im2col 缓冲约 708 MB",
      "source": "docs/experiments/semester_2026_fall（第 19 讲 GEMM 报告）"},
     {"id": "seed-two-w64-workers-batch4", "kind": "resource", "task": "donkey_resnet18_single",
-     "model": {"stem": "cifar", "base_width": 64}, "when": {"workers_min": 2, "per_worker_batch_min": 4},
+     "model": {"arch": "resnet18", "stem": "cifar", "base_width": 64}, "when": {"workers_min": 2, "per_worker_batch_min": 4},
      "outcome": "oom",
      "fact": "两个 w64 worker 各用 batch 4 时超过 8 GB 显存：WDDM 会悄悄换页、看起来像卡死，"
              "需要按 Worker 限制显存池（--worker-memory-mb），限制后直接显存不足",
      "source": "分布式正式训练联调（80d02af）"},
     {"id": "seed-socket-json-width", "kind": "resource", "task": "donkey_resnet18_single",
-     "model": {}, "when": {"transport": "socket_json", "base_width_min": 33}, "outcome": "rejected",
-     "fact": "模型宽度大于 32 时 Socket JSON 单条消息超过 64 MB 上限，传输被拒绝",
+     "model": {"arch": "resnet18"}, "when": {"transport": "socket_json", "base_width_min": 33}, "outcome": "rejected",
+     "fact": "ResNet-18 宽度大于 32 时 Socket JSON 单条消息超过 64 MB 上限，传输被拒绝",
+     "source": "apps/console/presets.py validate_single"},
+    {"id": "seed-socket-json-resnet34-width", "kind": "resource", "task": "donkey_resnet18_single",
+     "model": {"arch": "resnet34"}, "when": {"transport": "socket_json", "base_width_min": 25}, "outcome": "rejected",
+     "fact": "ResNet-34 宽度大于 24 时 Socket JSON 单条消息超过 64 MB 上限，传输被拒绝",
      "source": "apps/console/presets.py validate_single"},
 ]
 
 
 def _model_of(args: dict) -> dict:
-    return {"stem": args.get("stem", "cifar"), "base_width": int(args.get("base_width", 64))}
+    return {
+        "arch": args.get("arch") or "resnet18",
+        "stem": args.get("stem") or "cifar",
+        "base_width": int(args.get("base_width", 64)),
+        "image_size": args.get("image_size") or "120x160",
+        "regression_head": args.get("regression_head") or "global",
+        "pretrained": bool(args.get("pretrained")),
+    }
 
 
 def _workers(args: dict) -> int:
@@ -235,8 +246,13 @@ class KnowledgeBase:
         workers = _workers(args)
         when = {"batch_min": int(args.get("batch", 1)), "workers": workers,
                 "distributed": args.get("distributed", "none"), "dtype": args.get("dtype", "float32")}
-        fact_id = f"oom-{model['stem']}-w{model['base_width']}-b{when['batch_min']}-{when['distributed']}{workers}"
+        fact_id = (
+            f"oom-{model['arch']}-{model['stem']}-w{model['base_width']}-{model['image_size']}"
+            f"-{model['regression_head']}-{'pt' if model['pretrained'] else 'sc'}"
+            f"-{when['dtype']}-b{when['batch_min']}-{when['distributed']}{workers}"
+        )
         return self.add({"id": fact_id, "kind": "resource", "task": task, "model": model, "when": when,
-                         "outcome": "oom", "fact": f"{model['stem']} stem、w{model['base_width']}、batch "
+                         "outcome": "oom", "fact": f"{model['arch']}、{model['stem']} stem、w{model['base_width']}、"
+                         f"{model['image_size']}（{model['regression_head']}，{when['dtype']}）、batch "
                          f"{when['batch_min']}（{workers} 个进程）训练时显存不足", "source": evidence,
                          "code_hash": code_hash, "origin": "trial"})

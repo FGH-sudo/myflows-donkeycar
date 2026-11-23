@@ -148,6 +148,36 @@ class DatasetRegistryTest(unittest.TestCase):
                 merge(root, "duplicate-copy", ["round-one", "copied-round"])
             self.assertFalse((root / COLLECTED_ROOT / "duplicate-copy").exists())
 
+    def test_failed_merge_can_retry_the_same_output_after_the_source_is_repaired(self):
+        from apps.collect.merge import merge
+        from apps.common.datasets import CATALOG
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            datasets = root / COLLECTED_ROOT
+            for name, value in (("a-round", 40), ("b-round", 120)):
+                with TubWriter(datasets / name, meta={"id": name}) as writer:
+                    image = writer.add(picture(value), .2, .3)
+                    writer.close(summary={"accepted": True})
+            catalog = datasets / "b-round" / CATALOG
+            original = catalog.read_text(encoding="utf-8")
+            broken = json.loads(original)
+            broken["user/angle"] = "unknown"
+            catalog.write_text(json.dumps(broken) + "\n", encoding="utf-8")
+            with self.assertRaisesRegex(DatasetError, "catalog"):
+                merge(root, "aggregate", ["a-round", "b-round"])
+            self.assertFalse((datasets / "aggregate").exists())
+            catalog.write_text(original, encoding="utf-8", newline="\n")
+            image = datasets / "b-round" / "images" / image
+            jpeg = image.read_bytes()
+            image.write_bytes(b"corrupt jpeg")
+            with self.assertRaisesRegex(DatasetError, "JPEG"):
+                merge(root, "aggregate", ["a-round", "b-round"])
+            self.assertFalse((datasets / "aggregate").exists())
+            self.assertFalse(list(datasets.glob(".merge-*")))
+            image.write_bytes(jpeg)
+            self.assertEqual(merge(root, "aggregate", ["a-round", "b-round"])["frames"], 2)
+
     def test_checkpoints_interrupted_writes_and_resume_recover_the_catalog(self):
         from apps.common.datasets import CATALOG, dataset_dir, read_meta
 
@@ -169,6 +199,11 @@ class DatasetRegistryTest(unittest.TestCase):
                         TubWriter(directory, meta=meta, extra_fields=EXTRA_FIELDS, resume=True)
                     raise RuntimeError("interrupted")
             self.assertEqual(read_meta(directory)["status"], "interrupted")
+            from apps.train.train_myflows_donkey import build_parser, load_rows
+
+            with self.assertRaisesRegex(DatasetError, "已中断"):
+                load_rows(build_parser().parse_args([]), directory)
+            self.assertEqual(len(load_donkey_index(directory, .5, 1.)), 2)
             original = (directory / CATALOG).read_bytes()
             with (directory / CATALOG).open("ab") as catalog:
                 catalog.write(b'{"cam/image_array":')

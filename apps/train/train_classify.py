@@ -17,6 +17,7 @@ from apps.common.gpu_lock import GpuLock
 from apps.train.common.outcome import write_result
 from MyFlows.monitoring.record import MonitorProcess, monitoring_enabled
 from MyFlows.monitoring.schema import record
+from MyFlows.layers.resnet import BASIC_RESNETS
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -47,8 +48,8 @@ def build(config):
     if config["arch"] == "small":
         model = SmallClassifier(width=width, seed=seed, backend=backend)
     else:
-        model = ms.ResNet18(output_dim=10, stem="cifar", base_width=width, conv_backend=backend,
-                            initializer=make_initializer("kaiming_normal", seed=seed))
+        model = BASIC_RESNETS[config["arch"]](output_dim=10, stem="cifar", base_width=width, conv_backend=backend,
+                                             initializer=make_initializer("kaiming_normal", seed=seed))
     x = ms.Variable(np.zeros((batch, 3, 32, 32), np.float32), name="image", requires_grad=False)
     y = ms.Variable(np.zeros(batch, np.int64), name="label", requires_grad=False)
     logits = model(x)
@@ -202,7 +203,7 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--run-dir", required=True)
     parser.add_argument("--data", default="runs/datasets/cifar10")
-    parser.add_argument("--arch", choices=("small", "resnet18"), default="small")
+    parser.add_argument("--arch", choices=("small", *BASIC_RESNETS), default="small")
     parser.add_argument("--width", type=int, default=16)
     parser.add_argument("--epochs", type=int, default=3)
     parser.add_argument("--batch", type=int, default=64)

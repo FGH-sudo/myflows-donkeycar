@@ -16,7 +16,7 @@ if str(ROOT) not in sys.path:
 
 import MyFlows as ms  # noqa: E402
 from MyFlows.core.device import asnumpy
-from tools.device_runtime import create_ort_inference_session, print_ort_device, resolve_myflows_device
+from tools.device_runtime import resolve_myflows_device
 
 
 class MyFlowsResNet18Pilot:
@@ -45,6 +45,7 @@ class MyFlowsResNet18Pilot:
         self.debug = bool(debug)
         self._last_print = 0.0
         self.session = None
+        self._onnx_predictor = None
         self.input_name = None
         self.input_dtype = np.float32
 
@@ -58,17 +59,20 @@ class MyFlowsResNet18Pilot:
             try:
                 import onnxruntime as ort
 
+                from apps.serve.onnx_predictor import OnnxPredictor
+
                 sess_options = ort.SessionOptions()
                 sess_options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
                 sess_options.intra_op_num_threads = max(1, (os.cpu_count() or 4) - 1)
                 sess_options.inter_op_num_threads = 1
-                self.session, providers = create_ort_inference_session(
-                    onnx_path, self.device, sess_options=sess_options
+                predictor = OnnxPredictor(
+                    onnx_path, self.image_w, self.image_h, device=self.device, sess_options=sess_options
                 )
-                print_ort_device(providers, self.device)
-                self.input_name = self.session.get_inputs()[0].name
-                input_type = self.session.get_inputs()[0].type
-                self.input_dtype = np.float32 if "float" in input_type and "double" not in input_type else np.float64
+                self._onnx_predictor = predictor
+                self.session = predictor.session
+                self.input_name = predictor.input_name
+                self.input_dtype = predictor.input_dtype
+                self.image_w, self.image_h = predictor.image_w, predictor.image_h
                 print(f"[MyFlowsPilot] loaded ONNX {onnx_path}")
                 return
             except Exception as exc:
@@ -120,14 +124,15 @@ class MyFlowsResNet18Pilot:
         return np.transpose(x, (2, 0, 1))[np.newaxis, ...]
 
     def run(self, img_arr):
-        x = self._preprocess(img_arr)
-        if x is None:
-            return 0.0, 0.0
-
         start = time.time()
-        if self.session is not None:
-            pred = np.asarray(self.session.run(None, {self.input_name: x})[0]).reshape(-1)
+        if self._onnx_predictor is not None:
+            if img_arr is None or np.ndim(img_arr) != 3:
+                return 0.0, 0.0
+            pred = self._onnx_predictor.predict(np.asarray(img_arr))
         else:
+            x = self._preprocess(img_arr)
+            if x is None:
+                return 0.0, 0.0
             self.x.value = x.astype(self.input_dtype, copy=False)
             self.model.eval()
             self.graph.forward()

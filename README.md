@@ -36,21 +36,18 @@
 - 分布式实验中的资源采样（nvidia-smi + psutil，约 1 秒一次）和 CUDA Event 阶段计时。
 - MyFlows/monitoring：NVML 优先、nvidia-smi 兜底的整卡 GPU 采样与后台记录器（JSONL）。
 - 正式训练的数据并行：`apps.train.train_myflows_donkey` 单进程与 PS / Ring 多 Worker 共用同一个训练循环；每步按样本数平均梯度与 BN 滑动统计量并核对各 Worker 状态一致，停止时所有 Worker 在同一步保存断点，可按断点中的 epoch 与 step 续训。
-- 训练控制台 apps/console：浏览器中查看全部历史/实时运行的 loss、阶段耗时、GPU 占用和 PS/Ring 拓扑，并能发起、排队和停止正式训练（单进程或 PS / Ring 数据并行）与分布式实验。
-- ResNet18 图像回归模型。
-- DonkeyCar 数据读取、训练、验证和 ONNX 评估入口。
-- TensorBoard 训练可视化、checkpoint、Grad-CAM、INT8 和推理服务基础。
-- DonkeyCar 模拟器（按平台使用 Windows / Linux / macOS 版本）、本地数据和模型运行环境。
+- 训练控制台 apps/console：浏览器中查看全部历史/实时运行的 loss、阶段耗时、GPU 占用、PS/Ring 拓扑与 AutoPilot 状态，并能发起、排队和停止正式训练（单进程或 PS / Ring 数据并行）与分布式实验。
+- 模型与迁移学习：支持 `ResNet18` / `ResNet34`（含可选 `stem` 与 `base_width`）以及 `AlexNet` / `MobileNetV2` 等轻量或迁移模型，支持线性/MLP 回归头、预训练参数导入、分层冻结与 LoRA 微调。
+- AutoPilot 自动实验闭环（`apps/autopilot`）：围绕实验 Spec、GPU 锁与显存感知配置过滤、在线发散/OOM 监控、自动回退、证据归因与按模型/分辨率/回归头/精度隔离的经验记忆库驱动训练搜索。
+- DonkeyCar 与 Udacity 数据、评估与部署管线：覆盖视觉自动采集与数据集融合（`apps/collect`）、DonkeyCar 训练/验证与 ONNX 导出、TensorBoard 指标与资源曲线、Grad-CAM、INT8 量化、闭环驾驶评测（`apps/eval`）以及 FastAPI / gRPC 推理服务（`apps/serve`）。
+- 模拟器与本地环境：集成 DonkeySim 与 Udacity 模拟器启动及控制适配（按平台支持 Windows / Linux / macOS）。
 
-以下内容仍是本学期的待开发项：
+## 当前已知限制与后续重点
 
-- ResNet 分片与整批的逐步梯度严格等价（当前仍超差）。
-- AutoPilot Agent。
-- 框架级 GPU 监控的剩余部分：TensorBoard 资源曲线、分布式实验内部监控切换到 NVML；Windows WDDM 下无法读取单进程显存，控制台只显示整卡显存和各 Worker 的 RSS。
-- 三种 CNN 的预训练参数导入、冻结和迁移训练。
-- 自动化 DonkeyCar 闭环评估。
-
-本学期不再把 VGG 作为训练、评估或模型对比方向。相关源码暂时保留，避免在文档整理阶段同时引入代码兼容性风险。
+- 当前数据并行主要围绕单机多进程共享单卡验证；`resnet34` 在 `socket_json` 传输下 `base_width` 限制为不超过 24，多机真实跨网部署尚未系统验证。
+- Windows WDDM 驱动下无法读取单进程细粒度显存占用，控制台与监控以整卡显存及各 Worker 进程 RSS 为准。
+- AutoPilot、Console、分布式容错与安全边界的工程稳定性仍在按路线 A 持续加固；Udacity 自动驾驶闭环性能与数据闭环质量将按路线 B 重点推进。
+- 本学期不再把 VGG 作为训练、评估或模型对比方向。相关源码暂时保留，避免同时引入兼容性风险。
 
 ## 目录
 
@@ -104,7 +101,7 @@
 .venv/bin/python -m tools.run_tests --scope all
 ~~~
 
-第一阶段已修复原先偶发失败的图像分类用例；2026-09-19 分布式阶段交付时统一回归为 204 项通过，2026-09-23 加入训练控制台与 GPU 采样后为 229 项通过。
+第一阶段已修复原先偶发失败的图像分类用例；2026-09-19 分布式阶段交付时统一回归为 204 项通过，2026-09-23 加入训练控制台与 GPU 采样后为 229 项通过，2026-11-23 Stage 0 加固与统一回归后为 651 项全部通过（原生 CUDA `compute-sanitizer` 28 项零错误/零竞争通过）。
 
 ## 当前有效入口
 
@@ -128,6 +125,14 @@ Set-Location apps\console\web; npm ci; npm run build; Set-Location ..\..\..
 ~~~powershell
 .\.venv\Scripts\python.exe -m apps.train.train_myflows_donkey --max-samples 200 --epochs 1 --device auto
 ~~~
+
+ResNet-34 使用 3、4、6、3 个残差块。以下命令用 512 张道路图像试跑，训练断点和最佳模型各用独立的文件名保存。
+
+~~~powershell
+.\.venv\Scripts\python.exe -m apps.train --arch resnet34 --device cuda --image-size 80x160 --batch 4 --max-samples 512 --val-size 32 --epochs 1 --seed 7 --no-compress-checkpoints --unique-run
+~~~
+
+CUDA 原生后端会自动加速残差块中步长为 1、填充为 1 的 3×3 卷积。两种深度都可用 `--no-compress-checkpoints` 缩短保存时间，代价是 NPZ 文件稍大。续训和 ONNX 导出支持两种 NPZ 格式。
 
 用 2 个 Worker 做数据并行训练（`--distributed ring` 为 Ring AllReduce，`ps` 为 Parameter Server；`--batch` 是全局 batch，按 Worker 切分）：
 

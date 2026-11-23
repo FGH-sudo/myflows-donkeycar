@@ -7,6 +7,7 @@ import hashlib
 import json
 import math
 import operator
+import tempfile
 from pathlib import Path
 from typing import Any, Sequence
 
@@ -217,6 +218,7 @@ def save_split(
     seed: int,
     kind: str = "random",
     meta: dict | None = None,
+    source_paths: Sequence[str | Path] | None = None,
 ) -> Path:
     out = Path(path)
     out.parent.mkdir(parents=True, exist_ok=True)
@@ -228,13 +230,32 @@ def save_split(
         **(meta or {}),
         "splits": {name: list(map(int, splits.get(name, []))) for name in SPLIT_NAMES},
     }
-    out.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    if source_paths is not None:
+        if len(source_paths) != source_count:
+            raise ValueError("source_paths must match the split source_count")
+        payload["source_order_hash"] = _source_order_hash(source_paths)
+    handle = tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=out.parent, prefix=".split-",
+                                         suffix=".tmp", delete=False)
+    temporary = Path(handle.name)
+    try:
+        with handle:
+            json.dump(payload, handle, ensure_ascii=False, indent=2)
+        temporary.replace(out)
+    finally:
+        temporary.unlink(missing_ok=True)
     return out
 
 
-def load_split(path: str | Path, *, source_count: int | None = None) -> dict[str, Any]:
+def _source_order_hash(paths: Sequence[str | Path]) -> str:
+    names = json.dumps([Path(path).as_posix() for path in paths], ensure_ascii=False, separators=(",", ":"))
+    return hashlib.sha256(names.encode("utf-8")).hexdigest()
+
+
+def load_split(path: str | Path, *, source_count: int | None = None,
+               source_paths: Sequence[str | Path] | None = None, allow_prefix: bool = False) -> dict[str, Any]:
+    """Read a positional split and validate its dataset when the ordered source paths are available."""
     payload = json.loads(Path(path).read_text(encoding="utf-8"))
-    if int(payload.get("version", 0)) != 1:
+    if not isinstance(payload, dict) or payload.get("version") != 1:
         raise ValueError("unsupported split file version")
     splits = payload.get("splits")
     if not isinstance(splits, dict):
@@ -244,6 +265,13 @@ def load_split(path: str | Path, *, source_count: int | None = None) -> dict[str
         raise ValueError("split source_count must be a non-negative integer")
     if source_count is not None and total != source_count:
         raise ValueError(f"split source_count {total} does not match dataset size {source_count}")
+    if source_paths is not None:
+        if allow_prefix:
+            source_paths = source_paths[:total]
+        if len(source_paths) != total:
+            raise ValueError(f"split source_count {total} does not match available dataset size {len(source_paths)}")
+        if "source_order_hash" in payload and payload["source_order_hash"] != _source_order_hash(source_paths):
+            raise ValueError("split source_order_hash does not match the dataset image order")
     seen = set()
     for name in SPLIT_NAMES:
         indices = splits.get(name, [])
@@ -253,6 +281,12 @@ def load_split(path: str | Path, *, source_count: int | None = None) -> dict[str
             raise ValueError(f"split {name} contains duplicate or overlapping indices")
         seen.update(indices)
     payload["splits"] = {name: splits.get(name, []) for name in SPLIT_NAMES}
+    if payload.get("kind") == "time_block":
+        contract = time_block_contract(payload)
+        gap = _count(payload.get("gap", 0), "gap")
+        if source_paths is not None:
+            validate_time_split_gap(frame_numbers(source_paths), payload["splits"], gap,
+                                    separate_held_out=contract >= TIME_BLOCK_SEPARATED)
     return payload
 
 
@@ -271,6 +305,12 @@ def select_split(rows: Sequence[Any], splits: dict[str, list[int]], name: str) -
     return selected
 
 
+def select_saved_split(rows: Sequence[tuple[Path, float, float]], path: str | Path, name: str) -> list:
+    """Select from a saved split over a full or prefix catalog, as used by offline tools."""
+    payload = load_split(path, source_paths=[rel for rel, *_ in rows], allow_prefix=True)
+    return select_split(rows, payload["splits"], name)
+
+
 def resolve_splits(
     rows: Sequence[Any],
     *,
@@ -281,11 +321,12 @@ def resolve_splits(
     val_size: int | None = None,
     test_size: int | None = None,
     seed: int = 42,
+    source_paths: Sequence[str | Path] | None = None,
 ) -> tuple[dict[str, list[int]] | None, Path | None]:
     """Load or build splits if requested; otherwise return ``(None, None)``."""
 
     if split_file:
-        payload = load_split(split_file, source_count=len(rows))
+        payload = load_split(split_file, source_count=len(rows), source_paths=source_paths)
         return payload["splits"], Path(split_file)
     if not split_enabled(
         val_ratio=val_ratio,
@@ -303,7 +344,8 @@ def resolve_splits(
         test_size=test_size,
         seed=seed,
     )
-    saved = save_split(split_out, splits, source_count=len(rows), seed=seed) if split_out else None
+    saved = save_split(split_out, splits, source_count=len(rows), seed=seed,
+                       source_paths=source_paths) if split_out else None
     return splits, saved
 
 

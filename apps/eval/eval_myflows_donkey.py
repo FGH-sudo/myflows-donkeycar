@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-离线评估当前 MyFlows ResNet-18 在 DonkeyCar tub 上的预测能力：
+离线评估 MyFlows ResNet-18/34 在 DonkeyCar tub 上的预测能力：
 - angle/throttle 回归误差（MSE/MAE 等，见 MyFlows.utils.metrics）
 - angle 符号正确率（用于判断“方向反了”的问题）
 - 预测幅度分布（用于判断“拐弯幅度太小”）
@@ -29,8 +29,10 @@ sys.path.insert(0, str(ROOT))
 import MyFlows as ms
 from apps.common.donkey_data import load_donkey_index
 from apps.common.image_preprocess import imread_nchw, read_rgb
-from apps.common.splits import load_split, select_split
+from apps.common.splits import select_saved_split
 from apps.train.common.checkpoints import checkpoint_stem as normalize_checkpoint_stem
+from apps.train.common.regression_model import build_regression_resnet, input_size
+from MyFlows.layers.resnet import BASIC_RESNETS
 from tools.device_runtime import myflows_asnumpy, print_myflows_device, resolve_myflows_device
 from MyFlows.utils.metrics import DonkeyRegressionEvaluator
 
@@ -49,6 +51,11 @@ def main() -> None:
         help="评估用 catalog（默认 catalog_generated.catalog）",
     )
     ap.add_argument("--checkpoint", type=str, default="mycar/models/myflow_resnet18_best.onnx")
+    ap.add_argument("--arch", choices=tuple(BASIC_RESNETS), default="resnet18")
+    ap.add_argument("--stem", choices=("cifar", "imagenet"), default="cifar")
+    ap.add_argument("--base-width", type=int, default=64)
+    ap.add_argument("--regression-head", choices=("global", "spatial"), default="global")
+    ap.add_argument("--image-size", help="训练时使用的 HxW，默认沿用首帧尺寸")
     ap.add_argument("--fixed-throttle", type=float, default=0.5)
     ap.add_argument("--force-fixed-throttle", action="store_true", help="忽略 catalog 中的 user/throttle，强制使用 --fixed-throttle")
     ap.add_argument("--max-samples", type=int, default=2000, help="最多评估多少条(0=catalog 全部)")
@@ -88,8 +95,7 @@ def main() -> None:
         raise SystemExit("未找到带 cam/image_array 的 tub 行，请确认已采数且 catalog 有图名。")
 
     if args.split_file:
-        payload = load_split((ROOT / args.split_file).resolve())
-        index = select_split(index, payload["splits"], args.split)
+        index = select_saved_split(index, (ROOT / args.split_file).resolve(), args.split)
         print(f"[split] file={(ROOT / args.split_file).resolve()} split={args.split} samples={len(index)}")
         if not index:
             raise SystemExit(f"split {args.split!r} 为空")
@@ -100,8 +106,7 @@ def main() -> None:
     # 用第一条样本确定输入尺寸
     first_p = data_dir / index[0][0]
     first_rgb = read_rgb(first_p)
-    h0, w0 = first_rgb.shape[:2]
-    h, w = h0, w0
+    h, w = input_size(args, first_rgb)
     dtype = np.float32
 
     device = resolve_myflows_device(args.device)
@@ -113,12 +118,9 @@ def main() -> None:
 
     # 构图：输出 [angle, throttle]
     x_var = ms.Variable(np.zeros((B, 3, h, w), dtype=dtype), name="X")
-    model = ms.ResNet18(
-        in_channels=3,
-        output_dim=2,
-        stem="cifar",
-        base_width=64,
-        name="resnet18_donkey",
+    model = build_regression_resnet(
+        args.arch, args.regression_head, h, w, in_channels=3, output_dim=2, stem=args.stem,
+        base_width=args.base_width, name=f"{args.arch}_donkey",
     )
     out = model(x_var)
     graph = ms.Graph(out)

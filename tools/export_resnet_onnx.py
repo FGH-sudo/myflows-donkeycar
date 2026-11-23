@@ -14,6 +14,8 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 import MyFlows as ms
+from apps.train.common.regression_model import build_regression_resnet
+from MyFlows.layers.resnet import BASIC_RESNETS
 from tools.device_runtime import print_myflows_device, resolve_myflows_device
 
 
@@ -32,7 +34,7 @@ def _resolve_repo_path(path: str | Path) -> Path:
     return candidate if candidate.is_absolute() else ROOT / candidate
 
 
-def export_resnet18_onnx(
+def export_resnet_onnx(
     checkpoint: str | Path,
     *,
     output: str | Path | None = None,
@@ -44,8 +46,9 @@ def export_resnet18_onnx(
     graph_opt: bool = True,
     base_width: int = 64,
     regression_head: str = "global",
+    arch: str = "resnet18",
 ) -> Path:
-    """Load a ResNet-18 checkpoint and export an ONNX graph for deployment."""
+    """Load a MyFlows BasicBlock ResNet checkpoint and export its inference graph."""
     checkpoint_path = _checkpoint_stem(_resolve_repo_path(checkpoint).resolve())
     json_path = checkpoint_path.with_suffix(".json")
     npz_path = checkpoint_path.with_suffix(".npz")
@@ -68,22 +71,13 @@ def export_resnet18_onnx(
         np.zeros((batch_size, 3, image_h, image_w), dtype=np.float32),
         name="X",
     )
-    model_type = ms.ResNet18
-    head_kwargs = {}
-    if regression_head == "spatial":
-        from apps.train.common.regression_model import SpatialResNet18
-
-        model_type = SpatialResNet18
-        head_kwargs = {"image_h": image_h, "image_w": image_w}
-    elif regression_head != "global":
-        raise ValueError("regression_head must be global or spatial")
-    model = model_type(
+    model = build_regression_resnet(
+        arch, regression_head, image_h, image_w,
         in_channels=3,
         output_dim=2,
         stem=stem,
         base_width=int(base_width),
-        name="resnet18_donkey",
-        **head_kwargs,
+        name=f"{arch}_donkey",
     )
     logits = model(x_var)
     model.eval()
@@ -98,6 +92,10 @@ def export_resnet18_onnx(
         output_names=["control"],
     )
     return Path(exported)
+
+
+# Existing callers of the ResNet-18 helper keep its default architecture.
+export_resnet18_onnx = export_resnet_onnx
 
 
 def export_vgg11_onnx(
@@ -159,7 +157,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(
         description="Export a trained MyFlows Donkey checkpoint to ONNX."
     )
-    parser.add_argument("--model", choices=("resnet18", "vgg11"), default="resnet18")
+    parser.add_argument("--model", choices=(*BASIC_RESNETS, "vgg11"), default="resnet18")
     parser.add_argument(
         "--checkpoint",
         type=str,
@@ -176,7 +174,7 @@ def main() -> None:
     parser.add_argument("--image-w", type=int, default=160, help="Input image width.")
     parser.add_argument("--image-h", type=int, default=120, help="Input image height.")
     parser.add_argument("--stem", choices=("cifar", "imagenet"), default="cifar")
-    parser.add_argument("--base-width", type=int, default=64, help="ResNet-18 first-stage width used in training.")
+    parser.add_argument("--base-width", type=int, default=64, help="ResNet first-stage width used in training.")
     parser.add_argument("--regression-head", choices=("global", "spatial"), default="global")
     parser.add_argument("--device", choices=("auto", "cpu", "cuda"), default="auto")
     parser.add_argument("--no-graph-opt", action="store_true", help="Disable graph optimization during export.")
@@ -194,8 +192,9 @@ def main() -> None:
                 graph_opt=not args.no_graph_opt,
             )
         else:
-            exported = export_resnet18_onnx(
+            exported = export_resnet_onnx(
                 args.checkpoint,
+                arch=args.model,
                 output=args.output,
                 batch_size=args.batch_size,
                 image_w=args.image_w,

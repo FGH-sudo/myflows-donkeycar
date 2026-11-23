@@ -709,6 +709,7 @@ class ConsoleApiTest(unittest.TestCase):
             ({"distributed": "ps", "dtype": "float64"}, "只支持 float32"),
             ({"distributed": "ps", "workers": 99}, "Worker 数必须在"),
             ({"distributed": "ps", "transport": "socket_json"}, "宽度不超过 32"),
+            ({"arch": "resnet34", "base_width": 32, "distributed": "ps", "transport": "socket_json"}, "宽度不超过 24"),
         ):
             response = self.client.post("/api/jobs", json={"type": "single", "args": {"epochs": 1, "batch": 8, **args}})
             self.assertEqual(response.status_code, 422, args)
@@ -718,6 +719,14 @@ class ConsoleApiTest(unittest.TestCase):
                 "epochs": 1, "batch": 8, "distributed": "ring", "workers": 2, "export_onnx": True}}).json()
             plain = self.client.post("/api/jobs", json={"type": "single", "args": {
                 "epochs": 1, "batch": 8, "workers": 4, "transport": "grpc_proto"}}).json()
+            r34_socket = self.client.post("/api/jobs", json={"type": "single", "args": {
+                "arch": "resnet34", "base_width": 24, "epochs": 1, "batch": 8,
+                "distributed": "ps", "workers": 2, "transport": "socket_json"}})
+            r34_grpc = self.client.post("/api/jobs", json={"type": "single", "args": {
+                "arch": "resnet34", "base_width": 32, "epochs": 1, "batch": 8,
+                "distributed": "ps", "workers": 2, "transport": "grpc_proto"}})
+            self.assertEqual(r34_socket.status_code, 200, r34_socket.text)
+            self.assertEqual(r34_grpc.status_code, 200, r34_grpc.text)
         command = job["command"]
         self.assertEqual([command[command.index(flag) + 1] for flag in ("--distributed", "--workers", "--transport")],
                          ["ring", "2", "grpc_proto"])

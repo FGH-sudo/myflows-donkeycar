@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-gRPC 推理服务：加载 ONNX（或 MyFlows JSON+NPZ）对单张 RGB 图预测。
+gRPC 推理服务：加载 ONNX 对单张 RGB 图预测。
 
 生成 stub（首次）:
   python -m grpc_tools.protoc -I proto --python_out=generated/grpc --grpc_python_out=generated/grpc proto/infer.proto
@@ -18,7 +18,6 @@ import uuid
 from concurrent import futures
 from pathlib import Path
 
-import cv2
 import grpc
 import numpy as np
 
@@ -121,8 +120,8 @@ class InferServicer(infer_pb2_grpc.InferServiceServicer):
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--model", type=str, required=True)
-    ap.add_argument("--image-w", type=int, default=DEFAULT_IMAGE_W)
-    ap.add_argument("--image-h", type=int, default=DEFAULT_IMAGE_H)
+    ap.add_argument("--image-w", type=int, default=DEFAULT_IMAGE_W, help="ONNX 输入宽度为动态尺寸时使用")
+    ap.add_argument("--image-h", type=int, default=DEFAULT_IMAGE_H, help="ONNX 输入高度为动态尺寸时使用")
     ap.add_argument("--port", type=int, default=DEFAULT_GRPC_PORT)
     ap.add_argument("--host", type=str, default=DEFAULT_BIND_HOST,
                     help="监听地址，默认只监听本机；对其他机器开放时传 0.0.0.0")

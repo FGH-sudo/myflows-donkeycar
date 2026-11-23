@@ -19,6 +19,7 @@ from pathlib import Path
 
 URLS = {
     "resnet18": ("resnet18-f37072fd.pth", "ResNet18_Weights.IMAGENET1K_V1"),
+    "resnet34": ("resnet34-b627a593.pth", "ResNet34_Weights.IMAGENET1K_V1"),
     "mobilenet_v2": ("mobilenet_v2-b0353104.pth", "MobileNet_V2_Weights.IMAGENET1K_V1"),
     "alexnet": ("alexnet-owt-7be5be79.pth", "AlexNet_Weights.IMAGENET1K_V1"),
 }

@@ -30,6 +30,7 @@ from apps.common.donkey_data import load_donkey_index
 from apps.common.gpu_lock import GpuLock
 from apps.common.image_preprocess import imread_nchw
 from apps.common.splits import build_time_block_split, frame_numbers
+from MyFlows.transfer.registry import ARCHS
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -54,7 +55,7 @@ def classify(angle: float, edges: list[float]) -> int:
 
 def build_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    ap.add_argument("--arch", default="resnet18", choices=("small", "resnet18", "mobilenet_v2", "alexnet"))
+    ap.add_argument("--arch", default="resnet18", choices=("small", *ARCHS))
     ap.add_argument("--dataset", default="donkey", choices=("donkey", "cifar10"))
     ap.add_argument("--cifar-root", default="runs/datasets/cifar10")
     ap.add_argument("--dropout", type=float, default=0.)

@@ -48,6 +48,7 @@ type FormValues = CampaignSpec & {
 // E2 transfer learning: torchvision-compatible structures and the number of frozen stages (0..5).
 const ARCH_OPTIONS = [
   { value: 'resnet18', label: 'ResNet18' },
+  { value: 'resnet34', label: 'ResNet34' },
   { value: 'mobilenet_v2', label: 'MobileNetV2' },
   { value: 'alexnet', label: 'AlexNet' },
 ]
@@ -72,6 +73,7 @@ export default function NewCampaign() {
   const splitKind = Form.useWatch(['fixed', 'split_kind'], form)
   const pretrained = Form.useWatch(['fixed', 'pretrained'], form)
   const arch = Form.useWatch(['fixed', 'arch'], form)
+  const fixedBackboneShape = Boolean(pretrained) || arch === 'mobilenet_v2' || arch === 'alexnet'
   // preserve: the rollback fields live in a collapsed panel that is not mounted until opened
   const rollbackEnabled = Form.useWatch(['rollback', 'enabled'], { form, preserve: true })
 
@@ -308,14 +310,14 @@ export default function NewCampaign() {
                 </Col>
                 <Col xs={12} md={4}>
                   <Form.Item name={['fixed', 'base_width']} label="ResNet 宽度">
-                    <InputNumber min={1} style={{ width: '100%' }} disabled={Boolean(pretrained) || Boolean(arch && arch !== 'resnet18')} />
+                    <InputNumber min={1} style={{ width: '100%' }} disabled={fixedBackboneShape} />
                   </Form.Item>
                 </Col>
                 <Col xs={12} md={4}>
                   <Form.Item name={['fixed', 'stem']} label="Stem">
                     <Select
                       options={['cifar', 'imagenet'].map((v) => ({ value: v, label: v }))}
-                      disabled={Boolean(pretrained) || Boolean(arch && arch !== 'resnet18')}
+                      disabled={fixedBackboneShape}
                     />
                   </Form.Item>
                 </Col>
@@ -323,7 +325,7 @@ export default function NewCampaign() {
                   <Form.Item
                     name={['fixed', 'arch']}
                     label="网络结构"
-                    tooltip="MobileNetV2、AlexNet 以及带预训练权重的 ResNet18 与 torchvision 结构逐层一致（E2）"
+                    tooltip="MobileNetV2、AlexNet 以及带预训练权重的 ResNet 与 torchvision 结构一致"
                   >
                     <Select options={ARCH_OPTIONS} placeholder="ResNet18" allowClear />
                   </Form.Item>

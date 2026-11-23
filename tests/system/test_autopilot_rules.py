@@ -170,6 +170,28 @@ class PrecheckTest(unittest.TestCase):
                          "seed-two-w64-workers-batch4")
         self.assertIsNone(self.knowledge.predicted_failure("donkey_resnet18_single", {**two_workers, "batch": 4}))
 
+    def test_oom_facts_are_scoped_by_arch_resolution_head_and_dtype(self):
+        self.knowledge.record_oom(
+            "donkey_resnet18_single",
+            {"arch": "resnet34", "stem": "cifar", "base_width": 64, "image_size": "224x224",
+             "regression_head": "spatial", "dtype": "float32", "batch": 8},
+            evidence="test", code_hash=None,
+        )
+        self.assertIsNotNone(self.knowledge.predicted_failure(
+            "donkey_resnet18_single",
+            {"arch": "resnet34", "stem": "cifar", "base_width": 64, "image_size": "224x224",
+             "regression_head": "spatial", "dtype": "float32", "batch": 8},
+        ))
+        for alt in (
+            {"arch": "resnet18", "stem": "cifar", "base_width": 64, "image_size": "224x224",
+             "regression_head": "spatial", "dtype": "float32", "batch": 8},
+            {"arch": "resnet34", "stem": "cifar", "base_width": 64, "image_size": "80x160",
+             "regression_head": "spatial", "dtype": "float32", "batch": 8},
+            {"arch": "resnet34", "stem": "cifar", "base_width": 64, "image_size": "224x224",
+             "regression_head": "global", "dtype": "float32", "batch": 8},
+        ):
+            self.assertIsNone(self.knowledge.predicted_failure("donkey_resnet18_single", alt), alt)
+
 
 class OnlineMonitorTest(unittest.TestCase):
     ONLINE = {"divergence_windows": 3, "divergence_factor": 3.0, "window_steps": 2, "hang_timeout_s": 5,

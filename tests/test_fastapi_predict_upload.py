@@ -136,6 +136,53 @@ class FastApiPredictUploadTest(unittest.TestCase):
 
 
 class ServeBindingTest(unittest.TestCase):
+    def test_fixed_onnx_batch_and_resolution_across_http_grpc_and_pilot(self):
+        from concurrent.futures import ThreadPoolExecutor
+
+        import onnx
+        from onnx import TensorProto, helper
+
+        from apps.serve import serve_grpc
+        from apps.serve.onnx_predictor import OnnxPredictor
+        from mycar.myflows_pilot import MyFlowsResNet18Pilot
+
+        rgb = np.full((12, 16, 3), (51, 102, 204), dtype=np.uint8)
+        ok, png = cv2.imencode(".png", cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR))
+        self.assertTrue(ok)
+        graph = helper.make_graph(
+            [helper.make_node("ReduceMean", ["image"], ["prediction"], axes=[2, 3], keepdims=0)],
+            "rgb-means", [helper.make_tensor_value_info("image", TensorProto.FLOAT, [2, 3, 4, 6])],
+            [helper.make_tensor_value_info("prediction", TensorProto.FLOAT, [2, 3])],
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            path = root / "model.onnx"
+            onnx.save(helper.make_model(graph, opset_imports=[helper.make_opsetid("", 13)], ir_version=8), path)
+            with TestClient(serve_fastapi.create_app(path, device="cpu", log_file=root / "http.jsonl")) as client:
+                info = client.get("/model_info").json()
+                self.assertEqual((info["image_w"], info["image_h"]), (6, 4))
+                http = client.post("/predict", files={"file": ("frame.png", png.tobytes(), "image/png")})
+                self.assertEqual(http.status_code, 200, http.text)
+            predictor = OnnxPredictor(path, 160, 120, device="cpu")
+            with ThreadPoolExecutor(max_workers=1) as pool:
+                grpc = serve_grpc.grpc
+                server = grpc.server(pool)
+                port = server.add_insecure_port("127.0.0.1:0")
+                serve_grpc.infer_pb2_grpc.add_InferServiceServicer_to_server(
+                    serve_grpc.InferServicer(predictor, root / "grpc.jsonl"), server)
+                server.start()
+                try:
+                    with grpc.insecure_channel(f"127.0.0.1:{port}") as channel:
+                        stub = serve_grpc.infer_pb2_grpc.InferServiceStub(channel)
+                        out = stub.Predict(serve_grpc.infer_pb2.PredictRequest(
+                            image_rgb=rgb.tobytes(), width=rgb.shape[1], height=rgb.shape[0], channels=3), timeout=5)
+                finally:
+                    server.stop(0).wait(5)
+            pilot = MyFlowsResNet18Pilot(path, device="cpu")
+            np.testing.assert_allclose(http.json()["outputs"], [.2, .4, .8], atol=1e-6)
+            np.testing.assert_array_equal(list(out.outputs), http.json()["outputs"])
+            self.assertAlmostEqual(pilot.run(rgb)[0], .2, places=6)
+
     def test_servers_listen_on_loopback_unless_told_otherwise(self):
         self.assertEqual(serve_config.DEFAULT_BIND_HOST, "127.0.0.1")
         self.assertEqual(serve_config.grpc_bind_address("127.0.0.1", 50051), "127.0.0.1:50051")

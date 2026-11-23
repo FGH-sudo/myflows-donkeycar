@@ -6,6 +6,7 @@ import json
 import math
 from pathlib import Path
 import statistics
+from MyFlows.layers.resnet import BASIC_RESNETS
 
 from ..files import read_json
 from ..provenance import canonical, file_hash
@@ -22,14 +23,15 @@ def comparison_record(result, config, *, split_hash, code, source):
         return None
     pretrained = bool(config.get("pretrained"))
     arch = config.get("arch", "resnet18")
-    tv = pretrained or arch != "resnet18" or config.get("compat") == "torchvision"
+    tv = pretrained or arch not in BASIC_RESNETS or config.get("compat") == "torchvision"
     norm = config.get("input_norm", "auto")
     norm = ("imagenet" if pretrained else "none") if norm == "auto" else norm
     controls = {k: config.get(k, default) for k, default in
                 (("batch", None), ("epochs", None), ("lr", None), ("dtype", "float32"),
                  ("conv_backend", "auto"), ("dropout", 0.), ("weight_decay", 0.),
                  ("augment", False), ("mixup", False), ("cutmix", False), ("graph_opt", False),
-                 ("initializer", "kaiming_normal"), ("distributed", "none"), ("workers", 1))}
+                 ("initializer", "kaiming_normal"), ("distributed", "none"), ("workers", 1),
+                 ("regression_head", "global"))}
     controls.update(arch=arch, compat="torchvision" if tv else "myflows", stem="imagenet" if tv else config.get("stem", "cifar"),
                     width=64 if tv else config.get("base_width", 64), image_size=config.get("image_size") or "120x160",
                     norm=norm, train=samples.get("train"), trained=samples["trained"], split_hash=split_hash,

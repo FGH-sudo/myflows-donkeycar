@@ -8,8 +8,11 @@ from pathlib import Path
 from MyFlows.utils.checkpoint import read_checkpoint_metadata
 
 
-DEFAULT_RESNET_CHECKPOINT_OUT = "mycar/logs/myflow_resnet18_checkpoint"
-DEFAULT_RESNET_BEST_OUT = "mycar/models/myflow_resnet18_best"
+def default_resnet_paths(arch="resnet18"):
+    return f"mycar/logs/myflow_{arch}_checkpoint", f"mycar/models/myflow_{arch}_best"
+
+
+DEFAULT_RESNET_CHECKPOINT_OUT, DEFAULT_RESNET_BEST_OUT = default_resnet_paths()
 
 
 def checkpoint_stem(path: Path) -> Path:

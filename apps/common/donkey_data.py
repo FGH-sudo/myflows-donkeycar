@@ -5,7 +5,10 @@ from __future__ import annotations
 
 import json
 import math
+from collections.abc import Iterator
 from pathlib import Path
+
+from .datasets import CATALOG, DatasetError, read_meta
 
 
 def parse_angle_from_filename(name: str) -> float:
@@ -66,60 +69,69 @@ def load_generated_road_images_index(
     return rows
 
 
+def read_donkey_catalog(
+    data_dir: Path, catalog_path: Path, fixed_throttle: float, angle_scale: float, *,
+    force_fixed_throttle: bool = False, strict: bool = False,
+) -> Iterator[tuple[dict, tuple[Path, float, float]]]:
+    """Read each usable image and its labels together with the originating record."""
+    bad = missing = 0
+    seen = set()
+    images_root = (data_dir / "images").resolve() if strict else None
+    with catalog_path.open("r", encoding="utf-8") as handle:
+        for line_number, line in enumerate(handle, 1):
+            if not line.strip():
+                continue
+            try:
+                record = json.loads(line)
+                if not isinstance(record, dict) or not record.get("cam/image_array"):
+                    raise ValueError("缺少 cam/image_array")
+                rel = image_rel_path(record["cam/image_array"])
+                image = data_dir / rel
+                if not image.is_file():
+                    raise FileNotFoundError(rel)
+                if strict:
+                    resolved = image.resolve()
+                    if not resolved.is_relative_to(images_root) or resolved in seen:
+                        raise ValueError("图片重复或离开了 images 目录")
+                    seen.add(resolved)
+                angle_value = record.get("user/angle")
+                angle = (parse_angle_from_filename(rel.name) if angle_value is None else float(angle_value)) * float(angle_scale)
+                throttle_value = record.get("user/throttle")
+                throttle = float(fixed_throttle if force_fixed_throttle or throttle_value is None else throttle_value)
+                if not math.isfinite(angle) or not math.isfinite(throttle):
+                    raise ValueError("标签必须是有限数值")
+            except (OSError, TypeError, ValueError, OverflowError) as exc:
+                if strict:
+                    raise DatasetError(f"catalog {catalog_path} 第 {line_number} 行无效：{exc}") from exc
+                if isinstance(exc, FileNotFoundError):
+                    missing += 1
+                else:
+                    bad += 1
+                continue
+            yield record, (rel, angle, throttle)
+    if missing:
+        print(f"[data] catalog 中缺失图片数: {missing}")
+    if bad:
+        print(f"[data] catalog 中跳过无效记录数: {bad}")
+
+
 def load_donkey_index(
     data_dir: Path,
     fixed_throttle: float,
     angle_scale: float,
-    catalog_name: str | None = "catalog_generated.catalog",
+    catalog_name: str | None = CATALOG,
     force_fixed_throttle: bool = False,
 ) -> list[tuple[Path, float, float]]:
     """返回 (图片相对 data_dir 的路径, angle, throttle)，优先读 catalog，失败则解析文件名。"""
     data_dir = Path(data_dir)
-    from .datasets import read_meta
 
     if read_meta(data_dir).get("status") == "collecting":
         raise ValueError("数据集正在采集，请等待完成或先用 --resume 恢复采集")
     if catalog_name:
         catalog_path = data_dir / catalog_name
         if catalog_path.is_file():
-            rows: list[tuple[Path, float, float]] = []
-            bad = 0
-            missing = 0
-            with catalog_path.open("r", encoding="utf-8") as handle:
-                for line in handle:
-                    line = line.strip()
-                    if not line:
-                        continue
-                    try:
-                        rec = json.loads(line)
-                        image_name = rec.get("cam/image_array")
-                        if not image_name:
-                            bad += 1
-                            continue
-                        rel = image_rel_path(str(image_name))
-                        if not (data_dir / rel).is_file():
-                            missing += 1
-                            continue
-                        angle_value = rec.get("user/angle")
-                        if angle_value is None:
-                            angle_value = parse_angle_from_filename(rel.name)
-                        throttle_value = rec.get("user/throttle", fixed_throttle)
-                        angle = float(angle_value) * float(angle_scale)
-                        if force_fixed_throttle:
-                            throttle = float(fixed_throttle)
-                        else:
-                            throttle = float(fixed_throttle if throttle_value is None else throttle_value)
-                    except Exception:
-                        bad += 1
-                        continue
-                    if not math.isfinite(angle) or not math.isfinite(throttle):
-                        bad += 1
-                        continue
-                    rows.append((rel, angle, throttle))
-            if missing:
-                print(f"[data] catalog 中缺失图片数: {missing}")
-            if bad:
-                print(f"[data] catalog 中跳过无效记录数: {bad}")
+            rows = [row for _, row in read_donkey_catalog(data_dir, catalog_path, fixed_throttle, angle_scale,
+                                                         force_fixed_throttle=force_fixed_throttle)]
             if rows:
                 print(f"[data] source=catalog:{catalog_name} samples={len(rows)}")
                 return rows

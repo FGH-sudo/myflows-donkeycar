@@ -14,7 +14,7 @@ import numpy as np
 import MyFlows as ms
 from apps.common.donkey_data import load_donkey_index
 from apps.common.image_preprocess import read_rgb
-from apps.common.splits import load_split, select_split
+from apps.common.splits import select_saved_split
 from MyFlows.utils.gradcam import chw_float_image, gradcam_for_image, heatmap_chw
 from MyFlows.utils.tensorboard_logger import TensorBoardLogger
 from apps.train.common.checkpoints import checkpoint_stem
@@ -60,8 +60,7 @@ def main() -> None:
     )
     split_file = (ROOT / args.split_file).resolve() if args.split_file else None
     if split_file:
-        payload = load_split(split_file)
-        index = select_split(index, payload["splits"], args.split)
+        index = select_saved_split(index, split_file, args.split)
         print(f"[split] file={split_file} split={args.split} samples={len(index)}")
     elif args.split != "all":
         raise SystemExit("--split requires --split-file")

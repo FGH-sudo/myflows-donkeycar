@@ -24,13 +24,13 @@ class ExportResNetOnnxToolTest(unittest.TestCase):
             fake_graph = Mock()
             fake_graph.forward = Mock()
             fake_ms.Variable = Mock(return_value=fake_x)
-            fake_ms.ResNet18 = Mock(return_value=fake_model)
             fake_ms.Graph = Mock(return_value=fake_graph)
             fake_ms.load_checkpoint = Mock()
             fake_ms.export_onnx = Mock(return_value=str(output))
 
             with (
                 patch.object(export_tool, "ms", fake_ms),
+                patch.object(export_tool, "build_regression_resnet", return_value=fake_model) as build_model,
                 patch.object(export_tool, "resolve_myflows_device", return_value="cpu"),
                 patch.object(export_tool, "print_myflows_device"),
             ):
@@ -44,6 +44,7 @@ class ExportResNetOnnxToolTest(unittest.TestCase):
                 )
 
             self.assertEqual(exported, output)
+            self.assertEqual(build_model.call_args.args, ("resnet18", "global", 120, 160))
             fake_ms.Variable.assert_called_once()
             x_value = fake_ms.Variable.call_args.args[0]
             self.assertEqual(x_value.shape, (1, 3, 120, 160))

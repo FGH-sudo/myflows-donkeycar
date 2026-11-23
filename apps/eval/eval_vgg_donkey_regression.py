@@ -23,7 +23,7 @@ sys.path.insert(0, str(ROOT))
 import MyFlows as ms
 from apps.common.donkey_data import load_donkey_index
 from apps.common.image_preprocess import imread_nchw
-from apps.common.splits import load_split, select_split
+from apps.common.splits import select_saved_split
 from apps.train.common.checkpoints import checkpoint_stem
 from tools.device_runtime import myflows_asnumpy, print_myflows_device, resolve_myflows_device
 from MyFlows.layers.vgg import VGG11
@@ -64,8 +64,7 @@ def main() -> None:
         force_fixed_throttle=bool(args.force_fixed_throttle),
     )
     if args.split_file:
-        payload = load_split((ROOT / args.split_file).resolve())
-        index = select_split(index, payload["splits"], args.split)
+        index = select_saved_split(index, (ROOT / args.split_file).resolve(), args.split)
         print(f"[split] file={(ROOT / args.split_file).resolve()} split={args.split} samples={len(index)}")
         if not index:
             raise SystemExit(f"split {args.split!r} 为空")

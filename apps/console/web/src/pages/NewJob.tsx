@@ -518,6 +518,7 @@ function TrainingForm({
   const dtype = Form.useWatch('dtype', form) as string | undefined
   const convBackend = Form.useWatch('conv_backend', form) as string | undefined
   const baseWidth = Form.useWatch('base_width', form) as number | undefined
+  const arch = Form.useWatch('arch', form) as string | undefined
   const convChoices = useMemo(
     () => convOptions(convBackends, device, true, dtype === 'float64'),
     [convBackends, device, dtype],
@@ -534,20 +535,24 @@ function TrainingForm({
     const base = Math.floor(batch / workers)
     return Array.from({ length: workers }, (_, i) => base + (i < batch % workers ? 1 : 0))
   }, [parallel, batch, workers])
+  const maxSocketWidth = arch === 'resnet34' ? 24 : 32
   const parallelError = !parallel
     ? null
     : batch !== undefined && batch < workers
       ? `全局 Batch（${batch}）必须不小于 Worker 数（${workers}）`
       : dtype === 'float64'
         ? '分布式训练按 FP32 交换梯度，只支持 float32'
-        : transport === 'socket_json' && (baseWidth ?? 64) > 32
-          ? 'Socket JSON 单条消息有 64 MB 上限，只能训练 ResNet 宽度不超过 32 的模型；请改用 gRPC'
+        : transport === 'socket_json' && (baseWidth ?? 64) > maxSocketWidth
+          ? `Socket JSON 单条消息有 64 MB 上限，只能训练 ${arch === 'resnet34' ? 'ResNet-34' : 'ResNet-18'} 宽度不超过 ${maxSocketWidth} 的模型；请改用 gRPC`
           : null
 
   useEffect(() => {
     if (!preset?.args) return
     const { distributed: d = 'none', transport: t, workers: w, ...rest } = preset.args as Record<string, unknown>
-    form.setFieldsValue({ augment: false, graph_opt: false, export_onnx: false, early_stopping: false, conv_backend: 'auto', ...rest })
+    form.setFieldsValue({
+      arch: 'resnet18', augment: false, graph_opt: false, export_onnx: false, early_stopping: false,
+      no_compress_checkpoints: false, conv_backend: 'auto', ...rest,
+    })
     setParallelKey(d === 'none' ? 'none/none' : `${d}/${t ?? 'grpc_proto'}`)
     if (typeof w === 'number' && w > 0) setWorkers(w)
   }, [preset, form])
@@ -621,6 +626,11 @@ function TrainingForm({
               <Col xs={24} md={8}>
                 <Form.Item name="image_size" label="输入尺寸 HxW" tooltip="留空则与首帧一致（DonkeyCar 为 120x160）">
                   <Input placeholder="例如 80x160" allowClear />
+                </Form.Item>
+              </Col>
+              <Col xs={24} sm={12} md={8}>
+                <Form.Item name="arch" label="网络结构" initialValue="resnet18">
+                  <Select options={[{ value: 'resnet18', label: 'ResNet-18' }, { value: 'resnet34', label: 'ResNet-34' }]} />
                 </Form.Item>
               </Col>
               <Col xs={24} sm={12} md={8}>
@@ -705,6 +715,10 @@ function TrainingForm({
               <Form.Item name="export_onnx" label="结束后导出 ONNX" valuePropName="checked">
                 <Switch />
               </Form.Item>
+              <Form.Item name="no_compress_checkpoints" label="保存未压缩断点" valuePropName="checked"
+                tooltip="缩短写盘时间，训练断点和最佳模型文件会稍大">
+                <Switch />
+              </Form.Item>
             </div>
             {usesNative ? <NativeLibraryNotice status={nativeLibrary} /> : null}
           </Form>
@@ -725,10 +739,10 @@ function TrainingForm({
             </div>
           </Panel>
         ) : null}
-        <Panel title="配置摘要" subtitle="ResNet18 正式训练">
+        <Panel title="配置摘要" subtitle={arch === 'resnet34' ? 'ResNet-34 正式训练' : 'ResNet-18 正式训练'}>
           <SummaryList
             rows={[
-              ['任务', preset?.label],
+              ['预设', preset?.label],
               ['并行', parallel ? `${TRAIN_PARALLEL.find((o) => o.value === parallelKey)?.title} · ${workers} Worker` : '单进程'],
               ['样本数', maxSamples ? <span className="num" key="m">{maxSamples}</span> : '全量'],
               [

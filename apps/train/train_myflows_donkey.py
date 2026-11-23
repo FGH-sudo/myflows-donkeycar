@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-用 MyFlows 的 ResNet-18 在 DonkeyCar 图像数据上做转向回归（OpenCV 读取）：
+用 MyFlows 的 ResNet-18/34 在 DonkeyCar 图像数据上做转向回归（OpenCV 读取）：
 - 数据目录：`--data`（默认 `mycar/data`），其中必须包含 `images/*.jpg`
 - 优先读取 `--catalog` 指定的 catalog；不存在时回退到从文件名解析 angle
 - catalog 缺少 throttle 或文件名模式下，`throttle` 固定为 `--fixed-throttle`（默认 0.5）
@@ -57,6 +57,7 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 
 import MyFlows as ms
+from apps.common.datasets import require_usable_dataset
 from apps.common.donkey_data import load_donkey_index as _load_donkey_index
 from apps.common.image_preprocess import imread_nchw as _imread_nchw
 from apps.common.image_preprocess import pad_fixed_batch as _pad_fixed_batch
@@ -64,15 +65,16 @@ from apps.common.gpu_lock import GpuLock
 from apps.common.splits import entries_hash, resolve_splits, select_split
 from apps.train.common import outcome
 from apps.train.common.checkpoints import (
-    DEFAULT_RESNET_BEST_OUT,
-    DEFAULT_RESNET_CHECKPOINT_OUT,
     checkpoint_stem as _checkpoint_stem,
+    default_resnet_paths,
     saved_best_loss,
     with_run_id as _with_run_id,
 )
 from apps.train.common.training_control import BestScore, EarlyStopping
 from apps.train.common.logging import TeeLogger
+from apps.train.common.regression_model import build_regression_resnet, input_size
 from MyFlows.core.device import asnumpy, cuda_available, set_device, xp
+from MyFlows.layers.resnet import BASIC_RESNETS
 from MyFlows.ops.precision import BACKENDS as PRECISION_BACKENDS, MIXED
 from MyFlows.data.pipeline import MultiprocessDataLoader
 from MyFlows.distributed.shards import split_global_batch
@@ -80,7 +82,7 @@ from MyFlows.train.regularization import RegularizationConfig, apply_regularizat
 from MyFlows.utils.checkpoint import named_state, read_checkpoint_metadata, resolve_checkpoint_paths
 from MyFlows.utils.initializers import make_initializer
 from MyFlows.utils.model_inspector import format_inspection_report, format_model_summary, inspect_graph, model_summary
-from tools.export_resnet_onnx import export_resnet18_onnx
+from tools.export_resnet_onnx import export_resnet_onnx
 from tools.device_runtime import myflows_scalar_float, print_myflows_device, resolve_myflows_device
 from MyFlows.utils.training_observer import global_gradient_norm
 from MyFlows.utils.training_dashboard import TrainingDashboard
@@ -217,7 +219,7 @@ class _StepPhases:
 # the TrainingState fingerprint; --lr may differ on --resume-state (a rollback halves it) and is recorded.
 _NON_TRAJECTORY_ARGS = {
     "out", "best_out", "run_dir", "log_file", "stop_file", "resume", "resume_state", "state_every", "state_dir",
-    "keep_states", "checkpoint_every", "unique_run", "run_id", "export_onnx", "onnx_out", "no_tensorboard",
+    "keep_states", "checkpoint_every", "no_compress_checkpoints", "unique_run", "run_id", "export_onnx", "onnx_out", "no_tensorboard",
     "save_png_plots", "summary_once", "check_shape", "check_content", "num_workers", "gpu_lock_timeout",
     "phase_timing_every", "sync_timeout", "worker_memory_mb", "epochs", "lr", "log_dir", "logdir", "plot_prefix",
     "split_out", "monitor", "monitor_interval_s", "nvtx", "nvtx_nodes", "profile_steps", "initial_validation", "transfer_probe",
@@ -271,7 +273,7 @@ def _load_training_sample(sample: tuple[str, float, float, int, int, str]) -> tu
 
 
 def build_parser() -> argparse.ArgumentParser:
-    ap = argparse.ArgumentParser(description="MyFlows ResNet-18 训练 Donkey tub")
+    ap = argparse.ArgumentParser(description="用 MyFlows 训练 Donkey tub 道路图像回归模型")
     ap.add_argument("--data", type=str, default="mycar/data", help="Donkey tub 根目录(含 images 与 catalog)")
     ap.add_argument("--catalog", type=str, default="catalog_generated.catalog", help="优先读取的 catalog 文件名；不存在时回退到解析 images 文件名")
     ap.add_argument("--fixed-throttle", type=float, default=0.5, help="catalog 缺少 throttle 或文件名模式下使用的固定 user/throttle")
@@ -311,8 +313,8 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--min-delta", type=float, default=1e-4, help="early stopping 最小改善幅度")
     ap.add_argument("--initializer", type=str, default="kaiming_normal", help="权重初始化：kaiming_normal/xavier_uniform/xavier_normal/kaiming_uniform/normal/constant")
     ap.add_argument("--seed", type=int, default=None, help="权重初始化的随机种子；不设则每次随机（分布式时各 Worker 仍从同一份初始权重出发）")
-    ap.add_argument("--out", type=str, default=DEFAULT_RESNET_CHECKPOINT_OUT, help="训练断点输出基名，会生成 .json + .npz")
-    ap.add_argument("--best-out", type=str, default=DEFAULT_RESNET_BEST_OUT, help="最佳模型输出基名，会生成 .json + .npz")
+    ap.add_argument("--out", type=str, help="训练断点输出基名，会生成 .json + .npz")
+    ap.add_argument("--best-out", type=str, help="最佳模型输出基名，会生成 .json + .npz")
     ap.add_argument(
         "--run-id",
         type=str,
@@ -329,14 +331,16 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--resume", action="store_true", help="从 --out 对应训练断点续训（从断点记录的 epoch 与 step 继续）")
     ap.add_argument("--init-checkpoint", help="从同构模型断点初始化权重，在新数据集上从第 1 个 epoch 和全新优化器开始训练")
     ap.add_argument("--checkpoint-every", type=int, default=100, help="每多少 step 保存一次训练断点(0=只在 epoch 末保存)")
+    ap.add_argument("--no-compress-checkpoints", action="store_true",
+                    help="以未压缩 NPZ 保存训练断点和最佳模型，缩短写盘时间，支持续训和导出")
     ap.add_argument("--stop-file", type=str, default="mycar/logs/STOP_TRAINING", help="检测到该文件时保存断点并退出")
     ap.add_argument("--export-onnx", action="store_true", help="训练结束后导出 ONNX 推理图")
     ap.add_argument("--onnx-out", type=str, default=None, help="ONNX 输出路径，默认跟 --best-out 同名 .onnx")
     ap.add_argument("--stem", type=str, default="cifar", choices=("cifar", "imagenet"), help="小分辨率建议 cifar")
     ap.add_argument("--regression-head", choices=("global", "spatial"), default="global",
                     help="ResNet 回归头：global 沿用全局平均；spatial 保留道路特征的空间位置")
-    ap.add_argument("--arch", type=str, default="resnet18", choices=("resnet18", "mobilenet_v2", "alexnet"),
-                    help="网络结构；mobilenet_v2 / alexnet（以及带 --pretrained 的 resnet18）与 torchvision 结构一致")
+    ap.add_argument("--arch", type=str, default="resnet18", choices=(*BASIC_RESNETS, "mobilenet_v2", "alexnet"),
+                    help="ResNet-18 和 ResNet-34 支持自定义 stem、宽度和空间回归头")
     ap.add_argument("--pretrained", type=str, default=None,
                     help="ImageNet 预训练权重：imagenet = runs/pretrained/converted/<arch>.npz，或转换后的 .npz 路径；"
                          "载入主干、替换回归头，结果里记录载入报告")
@@ -346,9 +350,9 @@ def build_parser() -> argparse.ArgumentParser:
                     help="输入尺寸 HxW（如 224x224）；默认与首帧一致")
     ap.add_argument("--input-norm", type=str, default="auto", choices=("auto", "none", "imagenet"),
                     help="输入归一化；auto = 有 --pretrained 时按 ImageNet 均值/标准差，否则不归一化")
-    ap.add_argument("--base-width", type=int, default=64, help="ResNet-18 第一阶段通道数（后续阶段依次翻倍）；导出 ONNX 时沿用")
+    ap.add_argument("--base-width", type=int, default=64, help="ResNet 第一阶段通道数，后续阶段依次翻倍，导出 ONNX 时沿用")
     ap.add_argument("--compat", choices=("myflows", "torchvision"), default="myflows",
-                    help="ResNet18 结构，torchvision 允许同构从零训练的迁移对照")
+                    help="ResNet 结构，torchvision 允许同构从零训练的迁移对照")
     ap.add_argument("--backbone-lr-mult", type=float, default=1., help="骨干学习率相对于任务头的倍率")
     ap.add_argument("--stage-lr-mults", help="按阶段指定倍率，如 stem:0.01,layer1:0.1")
     ap.add_argument("--unfreeze-schedule", help="零起始 epoch 的冻结段数，如 0:4,2:3,4:2")
@@ -628,6 +632,7 @@ def _restore_rng_state(streams: dict, saved: dict) -> None:
 def load_rows(args: argparse.Namespace, data_dir: Path) -> tuple[list, dict | None, Path | None]:
     """The sample rows a run sees (catalog, the first or a seeded random ``--max-samples``) and their split.
     Shared with apps.train.evaluate_donkey, which must select exactly the same rows."""
+    require_usable_dataset(data_dir)
     index = _load_donkey_index(
         data_dir,
         fixed_throttle=args.fixed_throttle,
@@ -656,6 +661,7 @@ def load_rows(args: argparse.Namespace, data_dir: Path) -> tuple[list, dict | No
         val_size=args.val_size,
         test_size=args.test_size,
         seed=args.split_seed,
+        source_paths=[rel for rel, *_ in index],
     )
     return index, splits, split_path
 
@@ -686,9 +692,14 @@ def prepare(args: argparse.Namespace) -> tuple[TrainPlan, TeeLogger]:
     )
     plot_prefix = args.plot_prefix or f"myflows_train_{run_stamp}"
     tb_logdir = (ROOT / args.logdir).resolve() if args.logdir else (
-        log_dir / "tensorboard" / f"resnet18_{run_stamp}"
+        log_dir / "tensorboard" / f"{args.arch}_{run_stamp}"
     )
 
+    default_out, default_best = default_resnet_paths(args.arch if args.arch in BASIC_RESNETS else "resnet18")
+    if args.out is None:
+        args.out = default_out
+    if args.best_out is None:
+        args.best_out = default_best
     if args.resume and args.unique_run:
         raise SystemExit("--unique-run 仅用于全新训练；续训请去掉该参数并显式指定 --out。")
     run_id = (args.run_id or "").strip() or None
@@ -828,26 +839,13 @@ def prepare(args: argparse.Namespace) -> tuple[TrainPlan, TeeLogger]:
     return plan, tee
 
 
-def input_size(args, first_image) -> tuple[int, int]:
-    """(H, W)：--image-size 或首帧尺寸。"""
-    if args.image_size:
-        try:
-            h, w = (int(v) for v in str(args.image_size).lower().split("x"))
-        except ValueError:
-            raise SystemExit(f"--image-size 应为 HxW，例如 224x224：{args.image_size}") from None
-        if h < 32 or w < 32:
-            raise SystemExit("--image-size 的高和宽至少为 32")
-        return h, w
-    return tuple(first_image.shape[:2])
-
-
 def transfer_config(args, *, require_weights=True) -> dict | None:
-    """--arch / --pretrained / --freeze-stages 的有效配置；默认的 MyFlows ResNet18（旧结构）返回 None。"""
-    if args.lora_rank < 0 or args.lora_rank and (args.arch != "resnet18" or not args.pretrained):
-        raise SystemExit("--lora-rank 需要预训练的 ResNet18 和正整数秩")
+    """解析迁移训练配置。MyFlows 的原生 ResNet 使用可配置的 stem 和宽度。"""
+    if args.lora_rank < 0 or args.lora_rank and (args.arch not in BASIC_RESNETS or not args.pretrained):
+        raise SystemExit("--lora-rank 需要预训练的 ResNet18/ResNet34 和正整数秩")
     if args.lora_alpha is not None and not args.lora_rank:
         raise SystemExit("--lora-alpha 需要 --lora-rank")
-    if args.arch == "resnet18" and not args.pretrained and args.compat == "myflows":
+    if args.arch in BASIC_RESNETS and not args.pretrained and args.compat == "myflows":
         if args.freeze_stages:
             raise SystemExit("--freeze-stages 需要 --pretrained")
         if args.input_norm == "imagenet":
@@ -886,26 +884,19 @@ def _build_model(args, batch: int, h: int, w: int, dtype, conv_backend: str, dro
     if head not in ("global", "spatial"):
         raise ValueError("regression_head must be global or spatial")
     if head != "global" and transfer is not None:
-        raise ValueError("spatial 回归头目前只用于 MyFlows 结构的 ResNet18")
+        raise ValueError("spatial 回归头需要 MyFlows 结构的 ResNet")
     if transfer is None:
-        model_type = ms.ResNet18
-        head_kwargs = {}
-        if head == "spatial":
-            from apps.train.common.regression_model import SpatialResNet18
-
-            model_type = SpatialResNet18
-            head_kwargs = {"image_h": h, "image_w": w}
-        model = model_type(
+        model = build_regression_resnet(
+            args.arch, head, h, w,
             in_channels=3,
             output_dim=2,
             stem=args.stem,
             base_width=int(args.base_width),
-            name="resnet18_donkey",
+            name=f"{args.arch}_donkey",
             dropout=args.dropout,
             initializer=initializer,
             conv_backend=conv_backend,
             dropout_seed=dropout_seed,
-            **head_kwargs,
         )
         if args.backbone_lr_mult != 1. or args.stage_lr_mults or args.unfreeze_schedule:
             from MyFlows.transfer import TransferLearningManager
@@ -1241,7 +1232,8 @@ def _train_rank(plan: TrainPlan, rank, sync, device, profiler) -> dict:
             training.update(next_step=next_step, loss_sum=loss_sum, loss_count=loss_count)
         if early_stopper is not None:
             training["early_stopping"] = {"best": early_stopper.best, "bad_epochs": early_stopper.bad_epochs}
-        return ms.save_checkpoint([model], opt, epoch, filepath=str(out_base), loss=loss, training=training)
+        return ms.save_checkpoint([model], opt, epoch, filepath=str(out_base), loss=loss, training=training,
+                                  compress=not args.no_compress_checkpoints)
 
     @profiler.annotate("checkpoint")
     def save_state(epoch, *, epoch_complete, samples, wall_s, next_step=0, loss_sum=0.0, loss_count=0,
@@ -1514,7 +1506,8 @@ def _train_rank(plan: TrainPlan, rank, sync, device, profiler) -> dict:
                 best_epoch = ep + 1
                 if lead:
                     with profiler.range("checkpoint"):
-                        best_json, best_npz = ms.save_checkpoint([model], None, ep, filepath=str(best_base), loss=best_loss)
+                        best_json, best_npz = ms.save_checkpoint([model], None, ep, filepath=str(best_base),
+                                                                loss=best_loss, compress=not args.no_compress_checkpoints)
                     print(f"已保存最佳模型: {best_json} + {best_npz} (loss={best_loss:.6f})")
                     dashboard.log_checkpoint("best", f"epoch={ep+1} path={best_json} best_loss={best_loss:.6f}", ep + 1)
             if lead and args.state_every:
@@ -1685,12 +1678,12 @@ def _result(args, plan: TrainPlan | None, summary: dict, *, started_unix_s: floa
         "status": status, "exit_code": exit_code, "failure": outcome.categorized_failure(failure), "task": "donkey_resnet18_single",
         "config": {key: getattr(args, key) for key in ("lr", "batch", "num_workers", "epochs", "max_samples",
                                                        "seed", "dtype", "device", "conv_backend", "distributed",
-                                                       "workers", "transport", "base_width", "stem", "weight_decay",
-                                                       "dropout", "augment", "val_size", "split_seed", "arch",
-                                                       "pretrained", "freeze_stages", "image_size", "input_norm",
-                                                       "backbone_lr_mult", "stage_lr_mults", "compat",
-                                                       "unfreeze_schedule", "freeze_mode", "bn_unfreeze", "feature_cache",
-                                                       "lora_rank", "lora_alpha")},
+                                                       "workers", "transport", "base_width", "stem", "regression_head",
+                                                       "data", "weight_decay", "dropout", "augment", "val_size",
+                                                       "split_seed", "arch", "pretrained", "freeze_stages",
+                                                       "image_size", "input_norm", "backbone_lr_mult",
+                                                       "stage_lr_mults", "compat", "unfreeze_schedule", "freeze_mode",
+                                                       "bn_unfreeze", "feature_cache", "lora_rank", "lora_alpha")},
         "metrics": {"val_angle_mae": at_best if at_best is not None else final, "val_angle_mae_final": final,
                     "best_val_angle_mae": summary.get("best_val_angle_mae"), "val_loss": summary.get("val_loss"),
                     "best_loss": summary.get("best_loss"), "last_train_loss": summary.get("last_mean_loss"),
@@ -1812,7 +1805,7 @@ def main() -> None:
 
 def _export_onnx(args, plan: TrainPlan) -> None:
     transfer = transfer_config(args, require_weights=False)
-    if transfer and transfer["arch"] != "resnet18":
+    if transfer and transfer["arch"] not in BASIC_RESNETS:
         print(f"ONNX 导出暂不支持 {transfer['arch']}，跳过")
         return
     best_base = Path(plan.best_base)
@@ -1840,7 +1833,7 @@ def _export_onnx(args, plan: TrainPlan) -> None:
             ms.set_default_dtype(previous_dtype)
         print(f"已导出 ONNX: {onnx_path} (batch=1)")
         return
-    export_resnet18_onnx(
+    export_resnet_onnx(
         best_base,
         output=onnx_path,
         batch_size=1,
@@ -1851,6 +1844,7 @@ def _export_onnx(args, plan: TrainPlan) -> None:
         graph_opt=bool(args.graph_opt),
         base_width=int(args.base_width),
         regression_head=getattr(args, "regression_head", "global"),
+        arch=args.arch,
     )
     print(f"已导出 ONNX: {onnx_path} (batch=1)")
 

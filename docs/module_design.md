@@ -30,7 +30,7 @@
 | MyFlows/ops/cuda_native/ada_plans.py、gemm_tiles.inc | RTX 4060 Laptop GPU 上 ResNet18 卷积 GEMM 的实测起始计划（布局与 M、N、K 精确匹配），以及编译进原生库的 20 种 register tile 几何（名称以 `/s<级数>` 结尾的 3 种在 TN 布局上用 cp.async 多级流水） |
 | MyFlows/monitoring/nvtx.py | 按全局 step 控制 cudaProfilerApi，标注训练阶段与节点，保存相对源码位置 |
 | MyFlows/train/ | 优化器与正则化、按组学习率与权重衰减、Adam 逐参数步数。独立连续的 FP32 CUDA 张量共用一次更新，loss_scaling.py 管理半精度训练的溢出跳步与恢复 |
-| MyFlows/utils/checkpoint.py | JSON + NPZ checkpoint 保存和恢复；参数与优化器状态按当前模型的 dtype 恢复 |
+| MyFlows/utils/checkpoint.py | JSON + NPZ checkpoint 保存和恢复。TrainingState 整目录发布并校验文件哈希，同一步重新保存会生成新版本，恢复时选最新的有效版本 |
 | MyFlows/utils/onnx_exporter.py | ONNX 导出 |
 | MyFlows/utils/metrics_core/ | 分类、回归和 DonkeyCar 指标 |
 | MyFlows/data/pipeline.py | 多进程图片读取，固定整批任务并按顺序返回；独立于 PS 训练 |
@@ -44,7 +44,7 @@
 | apps/train/train_myflows_donkey.py | ResNet18 正式训练入口：单进程与 `--distributed ps|ring --workers N` 数据并行共用同一个训练循环（`train_rank`）；断点记录续训位置（epoch、step、早停计数），验证集 loss 按真实样本精确计算，分布式时验证集按 Worker 切分后汇总 |
 | apps/autopilot/ | campaign、trial、attempt 持久状态，规划、调度、执行、验证、证据与报告，TPE 条件搜索与 TrainingState 回滚 |
 | apps/autopilot/agents/、dsh/ | GPU、算子、数据并行、基准与迁移规则，以及可选 dsh 工具适配 |
-| apps/common/splits.py | 时间段或随机划分、样本指纹、固定划分文件的创建和验证；时间块划分让训练、验证、测试两两保持间隔（`contract` 2），`separate_held_out=False` 复现只隔开训练帧的旧划分（`contract` 1），`validate_time_split_gap` 按文件的约定核对已有划分 |
+| apps/common/splits.py | 训练、离线评估和 AutoPilot 共用划分校验。时间块按文件声明的约定检查间隔。`contract` 2 隔开所有分区，旧划分按 `contract` 1 校验训练帧与留出帧。训练或 AutoPilot 新建划分时记录源图像路径及其顺序的哈希，同样条数的重新排序也会被发现 |
 | apps/common/cifar10.py、apps/train/train_classify.py | 校验并读取 CIFAR-10 二进制档，训练小型 CNN 或 ResNet18，独立保存验证表现与锁定后的测试结果 |
 | apps/train/transfer_probe.py | 在已有训练分区内部切分时间块和拟合线性探测，供迁移 Agent 生成候选 |
 | apps/train/transfer_classify.py、evaluate_donkey.py | 转向分档分类迁移实验与固定测试集上的回归模型评估 |
@@ -56,11 +56,12 @@
 | apps/eval/environments.py | 闭环评估的两个环境：DonkeySim（固定油门、遥测 CTE、3D 位置算距离）与 Udacity（速度控制器保持目标车速；CTE 是前视图像估计的横向位置，距离由速度积分，失败为卡住或连续丢路）。`apps/eval/scenarios/udacity_lake.json` 是 Udacity 湖区赛道的场景清单 |
 | apps/common/datasets.py | 数据集登记：默认的 `mycar/data` 与 `runs/datasets/<id>` 下采集的数据集；`normalize` 只接受这两类写法（拒绝绝对路径、`..` 和其他目录）；`list_datasets` / `describe` 汇总帧数、模拟器、图像尺寸、建议输入尺寸与采集自检；`TubWriter` 写出训练入口直接读取的 tub（images、逐行 JSON catalog 与 manifest、dataset.json）。控制台、AutoPilot（`fixed.data`）与 LLM 工具 `list_datasets` 都经过它 |
 | apps/collect/ | 无人值守采集。`policy.py`：CTE 的 PD 专家、速度保持、随机符号与长度的转向扰动脉冲；`recorder.py`：逐段循环（标签是专家在该帧的输出，执行的是加了扰动的转向，可存左右镜像样本）、自检与报告，模拟器无法重启或不再响应时提前结束并保留已存的帧；`donkey_auto.py`：DonkeySim，每段用 `regen_road` 换一条路；`vision.py`：Udacity 的前视图像专家（车前路面颜色找边缘点，平地车道模型拟合两侧边缘、航向与弯度，沿右边缘的平行线行驶，过桥时的边缘切换需两帧确认）；`udacity_auto.py`：Udacity 采集入口，同时写模拟器格式的 driving_log.csv |
+| apps/collect/merge.py | 逐条校验来源 catalog，复制原始 JPEG 并记录对应的来源。全部完成后发布数据集目录，普通写入失败后可重试同一个数据集 ID |
 | apps/sim/ | Udacity 模拟器（term 1）。`udacity.py`：模拟器是 Socket.IO 1.x 客户端，这里是基于 websockets 的服务端，提供 reset / step / brake，按 20 Hz 节拍发送命令，`session` 负责启动并进入自动模式、重启场景；`udacity_launcher.py`：Windows 上用窗口消息完成配置对话框、菜单点击与 ESC 重启，窗口被最小化时先还原；`udacity_fake.py`：同一协议的替身（运动学小车与渲染的体育场赛道），供测试与 CI；`udacity_drive.py`：用 ONNX、checkpoint 或推理服务驾驶一段并输出摘要 |
 | apps/serve/remote.py | 推理服务的客户端预测函数（FastAPI 上传 PNG，或 gRPC），让闭环评估与驾驶把已部署的服务放进回路 |
 | apps/eval/eval_myflows_donkey.py | MyFlows checkpoint 评估 |
 | apps/eval/eval_myflows_donkey_onnx.py | ONNX 模型评估 |
-| apps/serve/ | ONNX predictor、gRPC、FastAPI 和客户端；服务默认监听 127.0.0.1（`--host` 可改），FastAPI 在解析前限制请求体并先核对图片文件头的像素数 |
+| apps/serve/ | gRPC、FastAPI、闭环和本地 pilot 共用 ONNX 单帧预测器。固定输入尺寸取自模型，动态尺寸使用调用方配置。固定批大小大于 1 时在批内复制输入，只返回当前图像的预测。服务默认监听 127.0.0.1（可用 `--host` 修改）。FastAPI 在解析前限制请求体并先核对图片文件头的像素数 |
 | apps/console/server.py | 训练控制台入口 `python -m apps.console.server`：组装任务管理、运行索引、实时 GPU 采样并托管前端；中间件校验 Host 头并拒绝跨站的 `/api` 请求 |
 | apps/console/api.py | REST 与 SSE 路由：GPU 实时流、运行列表/详情、step/epoch/资源增量序列、日志尾部、任务提交与停止、闭环评估归档的列表、详情与逐帧记录、可选数据集（`/api/datasets`，也随预设返回） |
 | apps/console/closed_loop.py | 只读地读取归档的闭环评估（manifest、result、episodes、frames）：模型汇总与离线 MAE、逐场景相对基线的差值、按模型与场景降采样的逐帧记录（保留出界区间两端与碰撞帧）；逐帧文件解析一次后缓存 |
