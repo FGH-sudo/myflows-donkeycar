@@ -11,6 +11,7 @@ Build the web UI first: ``cd apps/console/web && npm ci && npm run build``.
 from __future__ import annotations
 
 import argparse
+import socket
 import sys
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -140,6 +141,20 @@ def create_app(*, repo_root: Path = REPO_ROOT, console_root: Path | None = None,
     return app
 
 
+def _local_interface_hosts() -> tuple[str, ...]:
+    """Local network interface IPs accepted when listening on wildcard addresses like 0.0.0.0."""
+    import psutil
+
+    hosts: list[str] = []
+    for addrs in psutil.net_if_addrs().values():
+        for addr in addrs:
+            if addr.family in (socket.AF_INET, socket.AF_INET6):
+                ip = addr.address.split("%", 1)[0].strip()
+                if ip and ip not in hosts:
+                    hosts.append(ip)
+    return tuple(hosts)
+
+
 def main(argv: list[str] | None = None) -> None:
     import uvicorn
 
@@ -150,13 +165,17 @@ def main(argv: list[str] | None = None) -> None:
     ap.add_argument("--console-root", default=None, help="控制台任务目录，默认 runs/console")
     ap.add_argument("--autopilot-root", default=None, help="AutoPilot campaign 目录，默认 runs/autopilot")
     ap.add_argument("--no-dsh", action="store_true", help="不启动 AutoPilot 专用 dsh（LLM 层），只用规则策略")
+    ap.add_argument("--allowed-host", action="append", default=[], help="额外允许访问控制台的 Host（可重复传入）")
     args = ap.parse_args(argv)
     if args.host not in ("127.0.0.1", "localhost", "::1"):
         print(f"[warning] 控制台可以在本机启动训练进程，监听 {args.host} 会把该能力暴露给网络中的其他机器。",
               file=sys.stderr)
+    extra_hosts = tuple(args.allowed_host)
+    if args.host in ("0.0.0.0", "::", ""):
+        extra_hosts = (*_local_interface_hosts(), *extra_hosts)
     app = create_app(console_root=Path(args.console_root).resolve() if args.console_root else None,
                      max_running=args.max_running, enable_dsh=not args.no_dsh,
-                     allowed_hosts=(args.host,),
+                     allowed_hosts=(args.host, *extra_hosts),
                      autopilot_root=Path(args.autopilot_root).resolve() if args.autopilot_root else None)
     app.state.port = args.port
     print(f"MyFlows 训练控制台: http://{args.host}:{args.port}  (GPU 采样: {app.state.sampler.backend_name})")

@@ -51,8 +51,8 @@ from apps.serve.onnx_predictor import OnnxPredictor
 
 class PredictJsonBody(BaseModel):
   image_b64: str = Field(..., description="JPEG/PNG 的 base64")
-  width: int = 160
-  height: int = 120
+  width: int | None = None
+  height: int | None = None
 
 
 class _RequestBodyLimit:
@@ -203,7 +203,9 @@ def create_app(
   def predict_json(request: Request, body: PredictJsonBody):
     if not body.image_b64:
       raise HTTPException(400, "image_b64 为空")
-    if body.width <= 0 or body.height <= 0 or body.width * body.height > DEFAULT_MAX_PIXELS:
+    if (body.width is None) != (body.height is None):
+      raise HTTPException(400, "width 与 height 需同时指定或同时省略")
+    if body.width is not None and (body.width <= 0 or body.height <= 0 or body.width * body.height > DEFAULT_MAX_PIXELS):
       raise HTTPException(400, "width/height 非法")
     if len(body.image_b64) > 4 * ((max_upload_bytes + 2) // 3):
       raise HTTPException(413, f"图像过大，限制 {max_upload_mb} MB")
@@ -212,7 +214,7 @@ def create_app(
     except Exception as exc:
       raise HTTPException(400, f"base64 解码失败: {exc}") from exc
     rgb = _decode_image(raw)
-    if rgb.shape[0] != body.height or rgb.shape[1] != body.width:
+    if body.width is not None and (rgb.shape[0] != body.height or rgb.shape[1] != body.width):
       rgb = cv2.resize(rgb, (body.width, body.height))
     return _predict_rgb(rgb, request.state.request_id)
 

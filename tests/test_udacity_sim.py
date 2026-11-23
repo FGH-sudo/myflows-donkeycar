@@ -641,3 +641,16 @@ class UdacityClosedLoopTest(unittest.TestCase):
             from apps.serve.remote import remote_predictor
 
             remote_predictor("ftp://example.invalid")
+
+    def test_drive_delegates_to_guarded_worker_for_owned_simulator_binary(self):
+        from apps.sim import udacity_drive
+
+        with tempfile.TemporaryDirectory() as tmp:
+            fake_bin = Path(tmp) / "unity.exe"
+            fake_bin.write_text("stub", encoding="utf-8")
+            with mock.patch.object(udacity_drive, "guarded_worker", return_value=0) as guarded:
+                code = udacity_drive.main(["--model", "x.onnx", "--sim", str(fake_bin), "--seconds", "10"])
+            self.assertEqual(code, 0)
+            self.assertEqual(guarded.call_count, 1)
+            self.assertEqual(guarded.call_args.args[0], "apps.sim.udacity_drive")
+            self.assertIn("--guard-dir", guarded.call_args.args[1])

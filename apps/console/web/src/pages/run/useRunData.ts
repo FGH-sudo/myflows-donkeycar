@@ -28,11 +28,27 @@ type Action =
   | { type: 'status'; summary: RunSummary; rankStatus: RankStatus[]; ranks: number[] }
 
 const EMPTY: RunState = { loaded: false, steps: {}, epochs: {}, resources: null, cursor: {}, summary: null, rankStatus: [], ranks: [] }
+const MAX_LIVE_POINTS = 6000
+const TARGET_LIVE_POINTS = 4000
+
+function downsampleIndices(len: number, target: number): number[] {
+  if (len <= target || target < 2) return Array.from({ length: len }, (_, i) => i)
+  const out: number[] = [0]
+  const step = (len - 1) / (target - 1)
+  for (let i = 1; i < target - 1; i++) out.push(Math.round(i * step))
+  out.push(len - 1)
+  return out
+}
 
 function concatColumns(a: Columns | undefined, b: Columns): Columns {
   if (!a) return b
   const out: Columns = { ...a }
   for (const [k, v] of Object.entries(b)) out[k] = [...(a[k] ?? new Array(a.x?.length ?? 0).fill(null)), ...v]
+  const len = out.x?.length ?? 0
+  if (len > MAX_LIVE_POINTS) {
+    const idx = downsampleIndices(len, TARGET_LIVE_POINTS)
+    for (const k of Object.keys(out)) out[k] = idx.map((i) => out[k][i] ?? null)
+  }
   return out
 }
 
@@ -46,6 +62,14 @@ function concatResources(a: ResourceSeries | null, b: ResourceSeries): ResourceS
     rss[rank] = [...prev, ...values]
   }
   out.rank_rss_mib = rss
+  if (out.t.length > MAX_LIVE_POINTS) {
+    const idx = downsampleIndices(out.t.length, TARGET_LIVE_POINTS)
+    out.t = idx.map((i) => out.t[i])
+    for (const k of RESOURCE_KEYS) out[k] = idx.map((i) => out[k]?.[i] ?? null)
+    const trimmedRss: Record<string, (number | null)[]> = {}
+    for (const [rank, values] of Object.entries(out.rank_rss_mib)) trimmedRss[rank] = idx.map((i) => values[i] ?? null)
+    out.rank_rss_mib = trimmedRss
+  }
   return out
 }
 

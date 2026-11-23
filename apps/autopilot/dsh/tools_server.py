@@ -53,6 +53,8 @@ class ToolServer:
         self.campaign = campaign
         self.timeout_s = timeout_s
         self.names = tooldefs.visible_tools(source)
+        # Never forward loopback Bearer tokens or MCP tool payloads through system HTTP(S) proxies.
+        self._opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 
     # ---- JSON-RPC ----------------------------------------------------------------------------------
     def handle(self, message: dict) -> dict | None:
@@ -111,7 +113,7 @@ class ToolServer:
             headers["X-AutoPilot-Campaign"] = self.campaign
         request = urllib.request.Request(self.console_url + path, data=data, headers=headers, method="POST")
         try:
-            with urllib.request.urlopen(request, timeout=self.timeout_s) as response:
+            with self._opener.open(request, timeout=self.timeout_s) as response:
                 return response.status, json.loads(response.read().decode("utf-8") or "null")
         except urllib.error.HTTPError as exc:
             raw = exc.read().decode("utf-8", "replace")

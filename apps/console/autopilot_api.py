@@ -120,34 +120,76 @@ def build_autopilot_router(service: AutoPilotService, *, dsh_host=None) -> APIRo
 
     @router.get("/campaigns/{cid}/stream")
     async def stream(cid: str, request: Request, since: int = Query(0, ge=0)):
-        _call(service._existing, cid)
-        state = {"since": since, "status": None}
+        store = _call(service._existing, cid)
+        initial_since = since
+        raw_last = request.headers.get("last-event-id")
+        if raw_last is not None:
+            try:
+                parsed = int(raw_last.strip())
+                if parsed >= 0:
+                    initial_since = max(since, parsed)
+            except ValueError:
+                pass
+        state = {"since": initial_since, "status": None}
 
         async def gen():
-            while not await request.is_disconnected():
-                rows = await asyncio.to_thread(service.events, cid, state["since"])
-                for row in rows:
-                    state["since"] = row["seq"]
-                    yield _sse("event", row)
-                summary = await asyncio.to_thread(service._summary, service.store(cid))
-                key = (summary["status"], summary["phase"], summary["trials"], summary["pending"])
-                if key != state["status"]:
-                    state["status"] = key
-                    yield _sse("summary", summary)
-                if summary["status"] in ("completed", "stopped", "failed", "draft", "paused"):
-                    yield _sse("end", {"status": summary["status"]})
-                    break
-                await asyncio.sleep(1.0)
+            loop = asyncio.get_running_loop()
+            wakeup = asyncio.Event()
+
+            def on_event(_row: dict) -> None:
+                try:
+                    loop.call_soon_threadsafe(wakeup.set)
+                except RuntimeError:
+                    pass
+
+            store.listeners.append(on_event)
+            try:
+                while not await request.is_disconnected():
+                    wakeup.clear()
+                    rows = await asyncio.to_thread(service.events, cid, state["since"])
+                    for row in rows:
+                        state["since"] = row["seq"]
+                        yield _sse("event", row, str(row["seq"]))
+                    summary = await asyncio.to_thread(service._summary, store)
+                    key = (summary["status"], summary["phase"], summary["trials"], summary["pending"])
+                    if key != state["status"]:
+                        state["status"] = key
+                        yield _sse("summary", summary)
+                    if summary["status"] in ("completed", "stopped", "failed", "draft", "paused"):
+                        yield _sse("end", {"status": summary["status"]})
+                        break
+                    if not wakeup.is_set():
+                        try:
+                            await asyncio.wait_for(wakeup.wait(), timeout=5.0)
+                        except asyncio.TimeoutError:
+                            pass
+            finally:
+                try:
+                    store.listeners.remove(on_event)
+                except ValueError:
+                    pass
+
         return StreamingResponse(gen(), media_type="text/event-stream", headers={"Cache-Control": "no-cache"})
 
     # ---- the embedded dsh web UI --------------------------------------------------------------
     @router.get("/dsh/status")
-    def dsh_status(ensure_web: bool = False, campaign: str | None = None):
+    def dsh_status(campaign: str | None = None):
         if dsh_host is None:
             return {"available": False, "llm_ready": False, "reason": "控制台未启用 dsh 接入"}
-        if campaign and _call(service.store, campaign).exists():
-            dsh_host.context_campaign = campaign
-        return dsh_host.status(ensure_web=ensure_web)
+        if campaign:
+            _call(service.store, campaign)
+        return dsh_host.status(ensure_web=False)
+
+    @router.post("/dsh/start")
+    def dsh_start(body: dict = Body(default_factory=dict)):
+        if dsh_host is None:
+            raise HTTPException(409, "控制台未启用 dsh 接入")
+        cid = (body or {}).get("campaign_id") or None
+        if cid:
+            if not _call(service.store, cid).exists():
+                raise HTTPException(404, f"campaign 不存在：{cid}")
+            dsh_host.context_campaign = cid
+        return dsh_host.status(ensure_web=True)
 
     @router.post("/dsh/context")
     def dsh_context(body: dict = Body(default_factory=dict)):

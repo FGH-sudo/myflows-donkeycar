@@ -246,16 +246,18 @@ def build_router(*, registry: RunRegistry, jobs: JobManager, live, sampler, repo
 
     @router.get("/runs/{run_id:path}/stream")
     async def run_stream(run_id: str, request: Request, cursor: str | None = None, fields: str | None = None,
-                         interval_s: float = Query(1.0, ge=0.2, le=30)):
+                         interval_s: float = Query(1.0, ge=0.2, le=30),
+                         max_points: int = Query(3000, ge=0, le=200000)):
         ref = ref_or_404(run_id)
         state = {"cursor": _parse_cursor(request.headers.get("last-event-id") or cursor)}
         field_list = _csv(fields)
+        point_limit = max_points or None
 
         def collect():
             fresh = registry.resolve(run_id) or ref
-            steps = registry.steps(fresh, fields=field_list, max_points=None, cursor=state["cursor"])
+            steps = registry.steps(fresh, fields=field_list, max_points=point_limit, cursor=state["cursor"])
             epochs = registry.rank_epochs(fresh, cursor=state["cursor"])
-            resources = registry.resources(fresh, max_points=None, cursor=state["cursor"])
+            resources = registry.resources(fresh, max_points=point_limit, cursor=state["cursor"])
             summary = registry.summary(fresh)
             data = registry.data(fresh)
             state["cursor"].update(steps["cursor"])

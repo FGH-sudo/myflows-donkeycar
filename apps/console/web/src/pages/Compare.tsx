@@ -18,7 +18,7 @@ import { baseLegend, modernTooltip, xAxisName } from './run/chartUtils'
 const METRICS: { key: string; label: string; single?: string }[] = [
   { key: 'val_loss', label: 'Val Loss', single: 'val_loss' },
   { key: 'val_accuracy', label: 'Val Acc' },
-  { key: 'val_angle_mae', label: '转向 MAE' },
+  { key: 'val_angle_mae', label: '转向 MAE', single: 'val_angle_mae' },
   { key: 'samples_per_s', label: '吞吐' },
   { key: 'epoch_train_wall_s', label: 'Epoch 耗时', single: 'epoch_time_s' },
   { key: 'gradient_sync_s', label: '同步耗时' },

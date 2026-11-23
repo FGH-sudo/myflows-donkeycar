@@ -227,6 +227,7 @@ class DshHost:
         self.home = (self.autopilot_root / "dsh-home").resolve()
         self.workspace = (self.autopilot_root / "dsh-workspace").resolve()
         self.token = secrets.token_urlsafe(32)
+        self.headless_token = secrets.token_urlsafe(32)
         self.console_url: str | None = None
         self.context_campaign: str | None = None
         self._lock = threading.RLock()
@@ -369,6 +370,9 @@ class DshHost:
         cache.write_text(json.dumps(result, ensure_ascii=False, indent=1), encoding="utf-8")
         return result
 
+    def token_for(self, source: str) -> str:
+        return self.headless_token if source == "llm:headless" else self.token
+
     # ---- environment and key -------------------------------------------------------------------------------
     def env(self, *, source: str = "llm:web", campaign: str | None = None) -> dict:
         env = {k: v for k, v in os.environ.items() if not _SCRUB.match(k)}
@@ -376,7 +380,7 @@ class DshHost:
             "DSH_HOME": str(self.home), "DSH_TELEMETRY_DISABLED": "1", "NO_COLOR": "1",
             "MYFLOWS_ROOT": str(self.repo_root), "MYFLOWS_PYTHON": self.python,
             "MYFLOWS_AUTOPILOT_SERVER": str(TOOLS_SERVER), "MYFLOWS_CONSOLE_URL": self.console_url or "",
-            "MYFLOWS_AUTOPILOT_TOKEN": self.token, "MYFLOWS_AUTOPILOT_SOURCE": source,
+            "MYFLOWS_AUTOPILOT_TOKEN": self.token_for(source), "MYFLOWS_AUTOPILOT_SOURCE": source,
             "MYFLOWS_AUTOPILOT_CAMPAIGN": campaign or "", "PYTHONIOENCODING": "utf-8",
         })
         env.update(self.extra_env)

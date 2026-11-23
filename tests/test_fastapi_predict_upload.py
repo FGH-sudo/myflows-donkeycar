@@ -236,6 +236,50 @@ class ServeBindingTest(unittest.TestCase):
             self.assertIn("RuntimeError: provider lost", rows[0]["error"])
             self.assertEqual(servicer.metrics.snapshot()["total_errors"], 3)
 
+    def test_predict_json_omits_resize_when_dimensions_unspecified_and_rejects_partial_dims(self):
+        shapes = []
+
+        class _SpyPredictor(_FakePredictor):
+            def predict(self, rgb):
+                shapes.append(rgb.shape)
+                return super().predict(rgb)
+
+        ok, encoded = cv2.imencode(".png", np.full((30, 40, 3), 120, dtype=np.uint8))
+        self.assertTrue(ok)
+        b64 = base64.b64encode(encoded).decode()
+        with patch.object(serve_fastapi, "OnnxPredictor", _SpyPredictor):
+            with TestClient(serve_fastapi.create_app(Path("fake.onnx"), log_file=None)) as client:
+                r = client.post("/predict_json", json={"image_b64": b64})
+                self.assertEqual(r.status_code, 200, r.text)
+                self.assertEqual(shapes[-1], (30, 40, 3))
+                self.assertEqual(r.json()["input_shape"], [30, 40, 3])
+                self.assertEqual(client.post("/predict_json", json={"image_b64": b64, "width": 20}).status_code, 400)
+                self.assertEqual(client.post("/predict_json", json={"image_b64": b64, "height": 20}).status_code, 400)
+
+    def test_grpc_create_server_accepts_payloads_above_default_4mib_limit(self):
+        from apps.serve import serve_grpc
+
+        class _SpyPredictor(_FakePredictor):
+            model_type = "regression"
+
+            def predict(self, rgb):
+                return np.asarray([0.1, 0.2], dtype=np.float32)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            server = serve_grpc.create_server(_SpyPredictor(), Path(tmp) / "grpc.jsonl", workers=1)
+            port = server.add_insecure_port("127.0.0.1:0")
+            server.start()
+            try:
+                opts = [("grpc.max_send_message_length", 16 * 1024 * 1024)]
+                with serve_grpc.grpc.insecure_channel(f"127.0.0.1:{port}", options=opts) as channel:
+                    stub = serve_grpc.infer_pb2_grpc.InferServiceStub(channel)
+                    big_rgb = bytes(1920 * 1080 * 3)  # > 6.2 MB, exceeds default 4 MiB gRPC limit
+                    res = stub.Predict(serve_grpc.infer_pb2.PredictRequest(
+                        image_rgb=big_rgb, width=1920, height=1080, channels=3), timeout=5)
+                np.testing.assert_allclose(list(res.outputs), [0.1, 0.2], atol=1e-6)
+            finally:
+                server.stop(0).wait(5)
+
 
 if __name__ == "__main__":
     unittest.main()

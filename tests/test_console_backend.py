@@ -818,3 +818,118 @@ class DatasetChoiceTest(unittest.TestCase):
         refused = self.client.post("/api/jobs", json={"type": "single", "args": {"data": "../../etc"}})
         self.assertEqual(refused.status_code, 422)
         self.assertEqual(self.client.get("/api/jobs").json(), [])
+
+
+class ConsoleHardeningTest(unittest.TestCase):
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def test_kill_tree_ignores_pid_zero_and_tolerates_access_denied(self):
+        from apps.console.jobs import kill_tree
+
+        with mock.patch("apps.console.jobs.psutil.Process") as proc_cls:
+            self.assertEqual(kill_tree(0), [])
+        proc_cls.assert_not_called()
+
+        with mock.patch("apps.console.jobs.psutil.Process", side_effect=psutil.AccessDenied(pid=1234)):
+            self.assertEqual(kill_tree(1234), [])
+
+        denied = mock.MagicMock()
+        denied.pid = 4321
+        denied.terminate.side_effect = psutil.AccessDenied(pid=4321)
+        denied.kill.side_effect = psutil.AccessDenied(pid=4321)
+        with mock.patch("apps.console.jobs.psutil.wait_procs", return_value=([], [])):
+            self.assertEqual(kill_tree(0, descendants=[denied]), [])
+
+    def test_recover_restarts_resource_recorder_and_finalize_recognizes_result_and_evaluation(self):
+        import subprocess
+
+        started = []
+        stopped = []
+
+        class _FakeRecorder:
+            def __init__(self, job_id):
+                self.job_id = job_id
+
+            def stop(self):
+                stopped.append(self.job_id)
+
+        def factory(job, pid):
+            started.append((job["id"], pid))
+            return _FakeRecorder(job["id"])
+
+        proc = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(10)"])
+        try:
+            jobs_root = self.root / "jobs"
+            jobs_root.mkdir(parents=True, exist_ok=True)
+            live_job = {
+                "id": "live-adopted", "type": "single", "label": "live", "task": "t",
+                "status": "running", "created_unix_s": time.time(), "pid": proc.pid,
+                "pid_create_time": psutil.Process(proc.pid).create_time(),
+                "stop_requested": False, "record_resources": True,
+                "run_dir": str(jobs_root / "live-adopted"), "log_path": str(jobs_root / "live.log"), "command": [],
+            }
+            (jobs_root / "live-adopted.job.json").write_text(json.dumps(live_job), encoding="utf-8")
+            manager = JobManager(jobs_root, self.root, poll_interval_s=0.05, resource_recorder_factory=factory)
+            try:
+                self.assertEqual(started, [("live-adopted", proc.pid)])
+                self.assertIn("live-adopted", manager._recorders)
+            finally:
+                manager.shutdown()
+            self.assertEqual(stopped, ["live-adopted"])
+        finally:
+            if proc.poll() is None:
+                proc.kill()
+            proc.wait(timeout=5)
+
+        mgr = JobManager(self.root / "jobs2", self.root, poll_interval_s=0.5)
+        try:
+            for name, files, code, expected in (
+                ("res-ok", {"result.json": {"status": "succeeded"}}, None, "succeeded"),
+                ("eval-ok", {"evaluation.json": {"results": [{"key": "m"}], "failures": []}}, None, "succeeded"),
+                ("eval-fail", {"evaluation.json": {"results": [], "failures": [{"key": "m"}]}}, 0, "failed"),
+            ):
+                run_dir = self.root / "jobs2" / name
+                run_dir.mkdir(parents=True, exist_ok=True)
+                for fname, payload in files.items():
+                    (run_dir / fname).write_text(json.dumps(payload), encoding="utf-8")
+                job = {"id": name, "run_dir": str(run_dir), "pid": None, "stop_requested": False}
+                mgr._finalize(job, code)
+                self.assertEqual(job["status"], expected, (name, job))
+        finally:
+            mgr.shutdown()
+
+    def test_single_run_summary_val_angle_mae_negative_seed_and_local_hosts(self):
+        from apps.console.presets import ValidationError, validate_single
+        from apps.console.server import _local_interface_hosts
+
+        console_root = self.root / "console"
+        run_dir = console_root / "job-single"
+        run_dir.mkdir(parents=True)
+        (run_dir / "config.json").write_text(json.dumps({
+            "task": "donkey_resnet18_single", "mode": "single", "args": {"epochs": 1, "batch": 4},
+        }), encoding="utf-8")
+        (run_dir / "results.json").write_text(json.dumps({
+            "status": "passed", "last_mean_loss": 0.05, "best_loss": 0.04,
+            "val_loss": 0.045, "val_angle_mae": 0.09, "steps": 10,
+            "samples_per_s": 50.0, "epoch_train_wall_s": 0.2,
+        }), encoding="utf-8")
+        registry = make_registry(self.root, jobs=[{
+            "id": "job-single", "type": "single", "label": "single", "task": "donkey_resnet18_single",
+            "status": "succeeded", "run_dir": str(run_dir), "created_unix_s": 1.0,
+        }])
+        ref = registry.resolve("console/job-single")
+        summary = registry.summary(ref)
+        self.assertEqual(summary["final"]["val_angle_mae"], 0.09)
+        self.assertEqual(summary["final"]["val"], {"loss": 0.045, "angle_mae": 0.09})
+
+        with self.assertRaisesRegex(ValidationError, "seed"):
+            validate_single({"epochs": 1, "seed": -1}, self.root)
+
+        hosts = _local_interface_hosts()
+        self.assertIsInstance(hosts, tuple)
+        self.assertTrue(all(isinstance(h, str) and "%" not in h for h in hosts))

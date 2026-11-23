@@ -644,5 +644,93 @@ class AdvisorTest(unittest.TestCase):
         self.assertIn("0 次", llm["disabled_reason"])
 
 
+class SecurityBoundaryTest(unittest.TestCase):
+    def test_token_separation_source_check_proxy_bypass_and_post_dsh_start(self):
+        import http.server
+        import socketserver
+        import threading
+
+        from apps.autopilot.dsh import tools_server
+
+        with tempfile.TemporaryDirectory() as tmp:
+            h = Harness(Path(tmp), {}, start=False)
+            try:
+                host = DshHost(repo_root=ROOT, autopilot_root=h.tmp / "autopilot",
+                               launcher=[sys.executable, str(FAKE_DSH)], port=free_port())
+                self.assertNotEqual(host.token, host.headless_token)
+                self.assertEqual(host.env(source="llm:web")["MYFLOWS_AUTOPILOT_TOKEN"], host.token)
+                self.assertEqual(host.env(source="llm:headless")["MYFLOWS_AUTOPILOT_TOKEN"], host.headless_token)
+
+                app = create_app(repo_root=h.repo, console_root=h.tmp / "console", sampler=_Sampler(),
+                                 web_dist=h.tmp / "no-dist", autopilot_root=h.tmp / "autopilot",
+                                 train_module=FAKE_MODULE, dsh_host=host, start_background=False)
+                app.state.autopilot.create_campaign(h.spec(campaign_id="sec-camp"))
+                with TestClient(app) as client:
+                    bad_src = client.post(
+                        "/api/autopilot/agent/tools/list_campaigns",
+                        json={},
+                        headers={"Authorization": f"Bearer {host.token}", "X-AutoPilot-Source": "llm:evil"},
+                    )
+                    self.assertEqual(bad_src.status_code, 400)
+                    wrong_web = client.post(
+                        "/api/autopilot/agent/tools/list_campaigns",
+                        json={},
+                        headers={"Authorization": f"Bearer {host.headless_token}", "X-AutoPilot-Source": "llm:web"},
+                    )
+                    self.assertEqual(wrong_web.status_code, 403)
+                    wrong_headless = client.post(
+                        "/api/autopilot/agent/tools/list_campaigns",
+                        json={},
+                        headers={"Authorization": f"Bearer {host.token}", "X-AutoPilot-Source": "llm:headless"},
+                    )
+                    self.assertEqual(wrong_headless.status_code, 403)
+                    ok_web = client.post(
+                        "/api/autopilot/agent/tools/list_campaigns",
+                        json={},
+                        headers={"Authorization": f"Bearer {host.token}", "X-AutoPilot-Source": "llm:web"},
+                    )
+                    self.assertEqual(ok_web.status_code, 200)
+                    ok_headless = client.post(
+                        "/api/autopilot/agent/tools/list_campaigns",
+                        json={},
+                        headers={"Authorization": f"Bearer {host.headless_token}", "X-AutoPilot-Source": "llm:headless"},
+                    )
+                    self.assertEqual(ok_headless.status_code, 200)
+
+                    with mock.patch.object(host, "status", return_value={"available": True, "llm_ready": False}) as st:
+                        client.get("/api/autopilot/dsh/status?ensure_web=1&campaign=sec-camp")
+                        st.assert_called_once_with(ensure_web=False)
+                        self.assertIsNone(host.context_campaign)
+                        started = client.post("/api/autopilot/dsh/start", json={"campaign_id": "sec-camp"})
+                        self.assertEqual(started.status_code, 200)
+                        st.assert_called_with(ensure_web=True)
+                        self.assertEqual(host.context_campaign, "sec-camp")
+
+                class _OkHandler(http.server.BaseHTTPRequestHandler):
+                    def do_POST(self):
+                        self.send_response(200)
+                        self.send_header("Content-Type", "application/json")
+                        self.end_headers()
+                        self.wfile.write(b'{"ok":true}')
+
+                    def log_message(self, *_args):
+                        pass
+
+                with socketserver.TCPServer(("127.0.0.1", 0), _OkHandler) as srv:
+                    t = threading.Thread(target=srv.serve_forever, daemon=True)
+                    t.start()
+                    try:
+                        port = srv.server_address[1]
+                        srv_tool = tools_server.ToolServer(console_url=f"http://127.0.0.1:{port}", token="tok")
+                        with mock.patch.dict(os.environ, {"HTTP_PROXY": "http://127.0.0.1:9",
+                                                          "http_proxy": "http://127.0.0.1:9"}):
+                            code, body = srv_tool.post("/api/autopilot/agent/tools/list_campaigns", {})
+                        self.assertEqual((code, body), (200, {"ok": True}))
+                    finally:
+                        srv.shutdown()
+            finally:
+                h.close()
+
+
 if __name__ == "__main__":
     unittest.main()

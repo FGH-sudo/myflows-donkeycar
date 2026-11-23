@@ -320,6 +320,8 @@ def validate_single(args: dict, repo_root: Path) -> dict:
         raise ValidationError("num_workers 不能为负数")
     if out.get("lr", 1e-3) <= 0:
         raise ValidationError("lr 必须为正数")
+    if out.get("seed") is not None and out["seed"] < 0:
+        raise ValidationError("seed 不能为负数")
     if out.get("state_every", 0) < 0 or out.get("keep_states", 1) < 1:
         raise ValidationError("state_every 不能为负数，keep_states 至少为 1")
     if (out.get("state_every") or out.get("resume_state")) and out.get("distributed", "none") != "none":

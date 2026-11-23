@@ -320,8 +320,16 @@ class RunRegistry:
                 final["samples_per_s"] = epochs[-1].get("samples_per_s")
                 final["epoch_train_wall_s"] = epochs[-1].get("epoch_train_wall_s")
         elif kind == "single" and results:
-            final = {k: results.get(k) for k in ("last_mean_loss", "best_loss", "steps", "samples_per_s",
-                                                 "epoch_train_wall_s")}
+            final = {k: results.get(k) for k in ("last_mean_loss", "best_loss", "val_angle_mae",
+                                                 "steps", "samples_per_s", "epoch_train_wall_s")}
+            val_loss = results.get("val_loss") if results.get("val_loss") is not None else results.get("best_val_loss")
+            val_summary = {}
+            if val_loss is not None:
+                val_summary["loss"] = val_loss
+            if results.get("val_angle_mae") is not None:
+                val_summary["angle_mae"] = results.get("val_angle_mae")
+            if val_summary:
+                final["val"] = val_summary
         args = config.get("args") or {}
         # apps.train records its parallel mode under "parallel"; the experiments use top-level mode/transport.
         parallel = config.get("parallel") or {}

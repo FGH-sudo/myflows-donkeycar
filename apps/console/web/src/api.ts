@@ -676,7 +676,9 @@ export const autopilot = {
     request<{ markdown: string; path: string; figures: string[] }>(`${ap(cid)}/report`, { method: 'POST' }),
   figureUrl: (cid: string, name: string) => `${ap(cid)}/report/figures/${encodeURIComponent(name)}`,
   streamUrl: (cid: string) => `${ap(cid)}/stream`,
-  dshStatus: (campaign?: string | null) => request<DshStatus>('/api/autopilot/dsh/status' + query({ ensure_web: 1, campaign })),
+  dshStatus: () => request<DshStatus>('/api/autopilot/dsh/status'),
+  dshStart: (campaign?: string | null) =>
+    request<DshStatus>('/api/autopilot/dsh/start', { method: 'POST', body: JSON.stringify({ campaign_id: campaign ?? null }) }),
   dshRestart: () => request<DshStatus>('/api/autopilot/dsh/restart', { method: 'POST' }),
   dshContext: (campaign: string) =>
     request<{ campaign_id: string }>('/api/autopilot/dsh/context', { method: 'POST', body: JSON.stringify({ campaign_id: campaign }) }),

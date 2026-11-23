@@ -8,7 +8,12 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 OUT = ROOT / "generated" / "grpc"
-PROTOS = [ROOT / "proto" / "common.proto", ROOT / "proto" / "ps.proto", ROOT / "proto" / "ring.proto"]
+PROTOS = [
+    ROOT / "proto" / "common.proto",
+    ROOT / "proto" / "ps.proto",
+    ROOT / "proto" / "ring.proto",
+    ROOT / "proto" / "infer.proto",
+]
 
 
 def main():
@@ -26,6 +31,7 @@ def main():
         "import common_pb2 as": "from generated.grpc import common_pb2 as",
         "import ps_pb2 as": "from generated.grpc import ps_pb2 as",
         "import ring_pb2 as": "from generated.grpc import ring_pb2 as",
+        "import infer_pb2 as": "from generated.grpc import infer_pb2 as",
     }
     for path in OUT.glob("*_pb2*.py"):
         text = path.read_text(encoding="utf-8")

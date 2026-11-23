@@ -519,6 +519,11 @@ function TrainingForm({
   const convBackend = Form.useWatch('conv_backend', form) as string | undefined
   const baseWidth = Form.useWatch('base_width', form) as number | undefined
   const arch = Form.useWatch('arch', form) as string | undefined
+  const selectedData = Form.useWatch('data', form) as string | undefined
+  const selectedDataset = selectedData
+    ? datasets.find((d) => d.data === selectedData)
+    : datasets.find((d) => d.default)
+  const dataReady = selectedData ? Boolean(selectedDataset?.ready) : Boolean(preset?.data_ready || selectedDataset?.ready)
   const convChoices = useMemo(
     () => convOptions(convBackends, device, true, dtype === 'float64'),
     [convBackends, device, dtype],
@@ -688,7 +693,7 @@ function TrainingForm({
               </Col>
               <Col xs={24} sm={12} md={8}>
                 <Form.Item name="seed" label="初始化种子" tooltip="留空则每次随机初始化">
-                  <InputNumber style={{ width: '100%' }} />
+                  <InputNumber min={0} style={{ width: '100%' }} />
                 </Form.Item>
               </Col>
               <Col xs={24} sm={12} md={8}>
@@ -758,7 +763,7 @@ function TrainingForm({
             placeholder="任务名称（可选），如 resnet18_ring2_e5"
             label={label}
             onLabel={setLabel}
-            disabled={!preset?.data_ready || !!parallelError}
+            disabled={!dataReady || !!parallelError}
             loading={submitting}
             onSubmit={submit}
             note="每步写入 metrics.jsonl，控制台每 500 ms 采样整卡硬件；停止任务时先保存最新断点再退出，可用 --resume 续训。"

@@ -137,6 +137,27 @@ class AutoPilotApiTest(unittest.TestCase):
         self.assertEqual(c.post("/api/autopilot/campaigns/kept-campaign/trials/..%5Cx/stop").status_code, 404)
         self.assertEqual(c.post("/api/autopilot/campaigns/kept-campaign/trials/t1x/stop").status_code, 404)
 
+    def test_stream_emits_event_ids_and_honors_last_event_id(self):
+        c = self.client
+        c.post("/api/autopilot/campaigns", json=self.h.spec(campaign_id="stream-id-test"))
+        store = self.app.state.autopilot.store("stream-id-test")
+        e1 = store.event("note", title="first", text="n1")
+        e2 = store.event("note", title="second", text="n2")
+        e3 = store.event("note", title="third", text="n3")
+        store.update_state(lambda s: s.update(status="stopped"))
+
+        with c.stream("GET", "/api/autopilot/campaigns/stream-id-test/stream") as r1:
+            body1 = "".join(r1.iter_text())
+        self.assertIn(f"id: {e1['seq']}\nevent: event", body1)
+        self.assertIn(f"id: {e3['seq']}\nevent: event", body1)
+
+        with c.stream("GET", "/api/autopilot/campaigns/stream-id-test/stream",
+                      headers={"Last-Event-ID": str(e2["seq"])}) as r2:
+            body2 = "".join(r2.iter_text())
+        self.assertNotIn('"first"', body2)
+        self.assertNotIn('"second"', body2)
+        self.assertIn('"third"', body2)
+
 
 if __name__ == "__main__":
     unittest.main()

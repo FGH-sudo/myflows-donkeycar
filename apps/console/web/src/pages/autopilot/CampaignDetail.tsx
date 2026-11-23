@@ -6,6 +6,7 @@ import {
   CheckOutlined,
   CloseOutlined,
   DashboardOutlined,
+  EditOutlined,
   FileTextOutlined,
   MessageOutlined,
   PauseOutlined,
@@ -15,10 +16,10 @@ import {
   TrophyOutlined,
 } from '@ant-design/icons'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { Alert, App, Badge, Button, Popconfirm, Space, Spin, Table, Tabs, Tag, Tooltip } from 'antd'
+import { Alert, App, Badge, Button, Form, Input, InputNumber, Modal, Popconfirm, Space, Spin, Switch, Table, Tabs, Tag, Tooltip } from 'antd'
 import type { ColumnsType } from 'antd/es/table'
 import type { ReactNode } from 'react'
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import { autopilot } from '../../api'
 import type { CampaignDetail as Detail, CampaignEvent, DiagnosisChain, Finding, PendingItem, Trial } from '../../api'
@@ -388,7 +389,7 @@ function Pending({ cid, items, onResolve }: { cid: string; items: PendingItem[];
           ))}
           {item.status === 'pending_confirmation' ? (
             <Space>
-              <Button type="primary" icon={<CheckOutlined />} onClick={() => onResolve(item.id, true)} disabled={item.kind === 'trials' && !item.precheck.passed}>
+              <Button type="primary" icon={<CheckOutlined />} onClick={() => onResolve(item.id, true)} disabled={item.kind === 'trials' && !item.proposals.some((p) => p.precheck.passed)}>
                 确认运行
               </Button>
               <Button icon={<CloseOutlined />} onClick={() => onResolve(item.id, false)}>
@@ -438,6 +439,16 @@ function Report({ cid, available }: { cid: string; available: boolean }) {
   )
 }
 
+interface EditFormValues {
+  title: string
+  max_trials: number
+  wall_time_s: number
+  trial_timeout_s: number
+  max_candidates: number
+  llm_enabled: boolean
+  llm_max_calls: number
+}
+
 export default function CampaignDetail() {
   const { cid = '' } = useParams()
   const navigate = useNavigate()
@@ -445,6 +456,16 @@ export default function CampaignDetail() {
   const tab = search.get('tab') || 'overview'
   const { message } = App.useApp()
   const queryClient = useQueryClient()
+  const [editOpen, setEditOpen] = useState(false)
+  const [savingEdit, setSavingEdit] = useState(false)
+  const [editForm] = Form.useForm<EditFormValues>()
+  const [streamAnchor, setStreamAnchor] = useState<{ cid: string; since: number } | null>(null)
+  const refreshTimer = useRef<number | null>(null)
+
+  useEffect(() => () => {
+    if (refreshTimer.current !== null) window.clearTimeout(refreshTimer.current)
+  }, [])
+
   const campaign = useQuery({
     queryKey: ['autopilot', cid, 'detail'],
     queryFn: () => autopilot.campaign(cid),
@@ -452,9 +473,25 @@ export default function CampaignDetail() {
   })
   const active = !!campaign.data && ACTIVE_CAMPAIGN.includes(campaign.data.status)
   const trials = useQuery({ queryKey: ['autopilot', cid, 'trials'], queryFn: () => autopilot.trials(cid), refetchInterval: active ? 4000 : false })
-  const events = useQuery({ queryKey: ['autopilot', cid, 'events'], queryFn: () => autopilot.events(cid), refetchInterval: active ? 4000 : false })
+  const events = useQuery({
+    queryKey: ['autopilot', cid, 'events'],
+    queryFn: async () => {
+      const rows = await autopilot.events(cid)
+      setStreamAnchor((prev) => (prev?.cid === cid ? prev : { cid, since: rows.length ? rows[rows.length - 1].seq : 0 }))
+      return rows
+    },
+    refetchInterval: active ? 4000 : false,
+  })
   const refresh = () => queryClient.invalidateQueries({ queryKey: ['autopilot', cid] })
-  useEventSource(active ? autopilot.streamUrl(cid) : null, { event: refresh, summary: refresh, end: refresh })
+  const scheduleRefresh = () => {
+    if (refreshTimer.current !== null) return
+    refreshTimer.current = window.setTimeout(() => {
+      refreshTimer.current = null
+      refresh()
+    }, 350)
+  }
+  const streamHref = active && streamAnchor?.cid === cid ? `${autopilot.streamUrl(cid)}?since=${streamAnchor.since}` : null
+  useEventSource(streamHref, { event: scheduleRefresh, summary: scheduleRefresh, end: refresh })
 
   if (campaign.isLoading) return <Spin style={{ display: 'block', marginTop: 80 }} />
   if (!campaign.data) return <Alert type="error" showIcon message="无法加载 campaign" description={String((campaign.error as Error)?.message ?? '')} />
@@ -490,6 +527,40 @@ export default function CampaignDetail() {
   )
   const pending = c.state.pending ?? []
   const waiting = pending.filter((p) => p.status === 'pending_confirmation').length
+  const editable = c.status === 'draft' || c.status === 'paused'
+
+  const openEdit = () => {
+    editForm.setFieldsValue({
+      title: c.title,
+      max_trials: c.spec.budget.max_trials,
+      wall_time_s: c.spec.budget.wall_time_s,
+      trial_timeout_s: c.spec.budget.trial_timeout_s,
+      max_candidates: c.spec.strategy.max_candidates,
+      llm_enabled: c.spec.llm.enabled,
+      llm_max_calls: c.spec.llm.max_calls,
+    })
+    setEditOpen(true)
+  }
+
+  const saveEdit = async () => {
+    const v = await editForm.validateFields()
+    setSavingEdit(true)
+    try {
+      await autopilot.update(cid, {
+        title: v.title ?? '',
+        budget: { ...c.spec.budget, max_trials: v.max_trials, wall_time_s: v.wall_time_s, trial_timeout_s: v.trial_timeout_s },
+        strategy: { ...c.spec.strategy, max_candidates: v.max_candidates },
+        llm: { ...c.spec.llm, enabled: v.llm_enabled, max_calls: v.llm_max_calls },
+      })
+      message.success('campaign 配置已更新')
+      setEditOpen(false)
+      refresh()
+    } catch (e) {
+      message.error((e as Error).message)
+    } finally {
+      setSavingEdit(false)
+    }
+  }
 
   return (
     <div>
@@ -517,6 +588,11 @@ export default function CampaignDetail() {
           <Button icon={<MessageOutlined />} onClick={() => navigate(`/autopilot/assistant?campaign=${encodeURIComponent(cid)}`)}>
             助手
           </Button>
+          {editable ? (
+            <Button icon={<EditOutlined />} onClick={openEdit}>
+              编辑配置
+            </Button>
+          ) : null}
           {c.status === 'draft' || c.status === 'paused' ? (
             <Button type="primary" icon={<CaretRightOutlined />} onClick={() => act(c.status === 'draft' ? 'start' : 'resume')}>
               {c.status === 'draft' ? '启动' : '继续'}
@@ -575,6 +651,38 @@ export default function CampaignDetail() {
           },
         ]}
       />
+      <Modal
+        open={editOpen}
+        title="编辑 campaign 配置"
+        okText="保存"
+        confirmLoading={savingEdit}
+        onOk={saveEdit}
+        onCancel={() => setEditOpen(false)}
+      >
+        <Form form={editForm} layout="vertical">
+          <Form.Item name="title" label="标题">
+            <Input />
+          </Form.Item>
+          <Form.Item name="max_trials" label="最大 trial 数" rules={[{ required: true }]}>
+            <InputNumber min={1} max={500} style={{ width: '100%' }} />
+          </Form.Item>
+          <Form.Item name="wall_time_s" label="总时间上限（秒）" rules={[{ required: true }]}>
+            <InputNumber min={1} style={{ width: '100%' }} />
+          </Form.Item>
+          <Form.Item name="trial_timeout_s" label="单 trial 超时（秒）" rules={[{ required: true }]}>
+            <InputNumber min={1} style={{ width: '100%' }} />
+          </Form.Item>
+          <Form.Item name="max_candidates" label="最多候选数" rules={[{ required: true }]}>
+            <InputNumber min={1} max={500} style={{ width: '100%' }} />
+          </Form.Item>
+          <Form.Item name="llm_enabled" label="启用 LLM 顾问" valuePropName="checked">
+            <Switch />
+          </Form.Item>
+          <Form.Item name="llm_max_calls" label="LLM 最大调用次数" rules={[{ required: true }]}>
+            <InputNumber min={0} max={30} style={{ width: '100%' }} />
+          </Form.Item>
+        </Form>
+      </Modal>
     </div>
   )
 }

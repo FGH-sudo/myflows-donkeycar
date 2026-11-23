@@ -117,6 +117,21 @@ class InferServicer(infer_pb2_grpc.InferServiceServicer):
             })
 
 
+def create_server(predictor: OnnxPredictor, log_file: Path, *, workers: int = 4,
+                  max_pixels: int = DEFAULT_MAX_PIXELS) -> grpc.Server:
+    max_msg_bytes = max(4 * 1024 * 1024, int(max_pixels) * 3 + 1024 * 1024)
+    options = [
+        ("grpc.max_receive_message_length", max_msg_bytes),
+        ("grpc.max_send_message_length", max_msg_bytes),
+    ]
+    server = grpc.server(futures.ThreadPoolExecutor(max_workers=workers), options=options)
+    infer_pb2_grpc.add_InferServiceServicer_to_server(
+        InferServicer(predictor, log_file, max_pixels=max_pixels),
+        server,
+    )
+    return server
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--model", type=str, required=True)
@@ -139,10 +154,11 @@ def main() -> None:
 
     model_path = resolve_repo_path(args.model)
     predictor = OnnxPredictor(model_path, args.image_w, args.image_h, device=args.device)
-    server = grpc.server(futures.ThreadPoolExecutor(max_workers=args.workers))
-    infer_pb2_grpc.add_InferServiceServicer_to_server(
-        InferServicer(predictor, resolve_repo_path(args.log_file), max_pixels=args.max_pixels),
-        server,
+    server = create_server(
+        predictor,
+        resolve_repo_path(args.log_file),
+        workers=args.workers,
+        max_pixels=args.max_pixels,
     )
     addr = grpc_bind_address(args.host, args.port)
     warning = exposure_warning(args.host)

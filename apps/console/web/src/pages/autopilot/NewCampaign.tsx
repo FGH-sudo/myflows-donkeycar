@@ -126,7 +126,14 @@ export default function NewCampaign() {
       objective: v.objective,
       baseline: { ...v.baseline, seeds: toNumbers(v.seeds) },
       fixed: Object.fromEntries(
-        Object.entries(v.fixed).filter(([k, val]) => k !== 'split_file' && val !== undefined && val !== null && val !== ''),
+        Object.entries(v.fixed).filter(
+          ([k, val]) =>
+            k !== 'split_file' &&
+            !(fixedBackboneShape && k === 'regression_head') &&
+            val !== undefined &&
+            val !== null &&
+            val !== '',
+        ),
       ),
       space,
       strategy: v.strategy,
@@ -351,10 +358,13 @@ export default function NewCampaign() {
                 </Col>
                 <Col xs={12} md={6}>
                   <Form.Item name={['fixed', 'regression_head']} label="转向回归头" initialValue="global">
-                    <Select options={[
-                      { value: 'global', label: '全局平均' },
-                      { value: 'spatial', label: '空间特征' },
-                    ]} />
+                    <Select
+                      disabled={fixedBackboneShape}
+                      options={[
+                        { value: 'global', label: '全局平均' },
+                        { value: 'spatial', label: '空间特征' },
+                      ]}
+                    />
                   </Form.Item>
                 </Col>
               </Row>

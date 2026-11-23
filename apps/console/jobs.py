@@ -47,22 +47,23 @@ def _read_json(path: Path):
 def kill_tree(pid: int, timeout: float = 5.0, descendants: list[psutil.Process] | None = None) -> list[int]:
     """Terminate ``pid`` and its descendants; return pids still alive afterwards."""
     procs = list(descendants or [])
-    try:
-        root = psutil.Process(pid)
-        procs = [*root.children(recursive=True), *procs, root]
-    except psutil.NoSuchProcess:
-        pass
-    unique = {p.pid: p for p in procs}.values()
+    if pid is not None and pid > 0:
+        try:
+            root = psutil.Process(pid)
+            procs = [*root.children(recursive=True), *procs, root]
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            pass
+    unique = [p for p in {p.pid: p for p in procs}.values() if p.pid and p.pid > 0]
     for proc in unique:
         try:
             proc.terminate()
-        except psutil.NoSuchProcess:
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
             pass
-    _, alive = psutil.wait_procs(list(unique), timeout=timeout)
+    _, alive = psutil.wait_procs(unique, timeout=timeout)
     for proc in alive:
         try:
             proc.kill()
-        except psutil.NoSuchProcess:
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
             pass
     _, alive = psutil.wait_procs(alive, timeout=timeout)
     return [p.pid for p in alive]
@@ -84,6 +85,7 @@ class JobManager:
         self._procs: dict[str, subprocess.Popen | psutil.Process] = {}
         self._recorders: dict[str, object] = {}
         self._descendants: dict[str, list[psutil.Process]] = {}
+        self._killing: set[str] = set()
         self._lock = threading.RLock()
         self._stop = threading.Event()
         self._thread = threading.Thread(target=self._loop, name="console-jobs", daemon=True)
@@ -107,6 +109,10 @@ class JobManager:
                 proc = self._attach(job)
                 if proc is not None:
                     self._procs[job["id"]] = proc
+                    if self.resource_recorder_factory and job.get("record_resources"):
+                        recorder = self.resource_recorder_factory(job, proc.pid)
+                        if recorder is not None:
+                            self._recorders[job["id"]] = recorder
                 else:
                     self._finalize(job, None, note="控制台重启时进程已不存在")
             elif job["status"] == "pending" and (job.get("created_unix_s") or 0) < boot:
@@ -116,7 +122,7 @@ class JobManager:
     @staticmethod
     def _attach(job: dict) -> psutil.Process | None:
         pid, created = job.get("pid"), job.get("pid_create_time")
-        if not pid:
+        if not pid or pid <= 0:
             return None
         try:
             proc = psutil.Process(pid)
@@ -125,7 +131,7 @@ class JobManager:
             if proc.status() == psutil.STATUS_ZOMBIE:
                 return None
             return proc
-        except psutil.NoSuchProcess:
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
             return None
 
     # ---- public API ---------------------------------------------------------------
@@ -192,10 +198,10 @@ class JobManager:
             self._save(job)
             proc = self._procs.get(job_id)
         pid = job.get("pid")
-        if pid:
+        if pid and pid > 0:
             try:
                 self._descendants[job_id] = psutil.Process(pid).children(recursive=True)
-            except psutil.NoSuchProcess:
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
                 self._descendants[job_id] = []
         stop_file = job.get("stop_file")
         if stop_file:
@@ -224,22 +230,48 @@ class JobManager:
             self._stop.wait(self.poll_interval_s)
 
     def _tick(self) -> None:
+        finished: list[tuple[str, dict, int | None, object | None, list[psutil.Process] | None]] = []
+        expired: list[tuple[str, int | None, list[psutil.Process]]] = []
         with self._lock:
             for job_id, proc in list(self._procs.items()):
                 job = self._jobs[job_id]
                 code = self._returncode(proc)
                 if code is not None or not self._alive(proc):
                     self._procs.pop(job_id, None)
-                    self._finalize(job, code)
+                    recorder = self._recorders.pop(job_id, None)
+                    leftovers = self._descendants.pop(job_id, None)
+                    finished.append((job_id, job, code, recorder, leftovers))
                 elif job["status"] == "stopping":
                     waited = time.time() - (job.get("stop_requested_unix_s") or time.time())
-                    if waited > self.stop_grace_s:
-                        kill_tree(job["pid"], descendants=self._descendants.get(job_id))
+                    if waited > self.stop_grace_s and job_id not in self._killing:
+                        self._killing.add(job_id)
+                        expired.append((job_id, job.get("pid"), list(self._descendants.get(job_id) or [])))
+        for job_id, pid, descendants in expired:
+            threading.Thread(
+                target=self._kill_grace_expired, args=(job_id, pid, descendants),
+                name=f"kill-job-{job_id}", daemon=True,
+            ).start()
+        for _job_id, job, code, recorder, leftovers in finished:
+            if recorder is not None:
+                recorder.stop()
+            if leftovers:
+                kill_tree(job.get("pid") or 0, timeout=2.0, descendants=leftovers)
+            with self._lock:
+                self._finalize(job, code)
+        with self._lock:
             running = sum(1 for j in self._jobs.values() if j["status"] in ("running", "stopping"))
             pending = sorted((j for j in self._jobs.values() if j["status"] == "pending"),
                              key=lambda j: j["created_unix_s"])
             for job in pending[:max(0, self.max_running - running)]:
                 self._launch(job)
+
+    def _kill_grace_expired(self, job_id: str, pid: int | None, descendants: list[psutil.Process]) -> None:
+        try:
+            if (pid is not None and pid > 0) or descendants:
+                kill_tree(pid or 0, descendants=descendants)
+        finally:
+            with self._lock:
+                self._killing.discard(job_id)
 
     @staticmethod
     def _returncode(proc) -> int | None:
@@ -292,21 +324,35 @@ class JobManager:
             recorder.stop()
         leftovers = self._descendants.pop(job["id"], None)
         if leftovers:
-            kill_tree(job["pid"] or 0, timeout=2.0, descendants=leftovers)
+            kill_tree(job.get("pid") or 0, timeout=2.0, descendants=leftovers)
         run_dir = Path(job["run_dir"])
         results = _read_json(run_dir / "results.json") or {}
+        result = _read_json(run_dir / "result.json") or {}
+        evaluation = _read_json(run_dir / "evaluation.json") or {}
         failure = _read_json(run_dir / "failure.json") or {}
         job["returncode"] = returncode
         job["finished_unix_s"] = time.time()
+        succeeded_marker = (
+            results.get("status") in ("passed", "succeeded")
+            or result.get("status") in ("passed", "succeeded", "completed")
+            or (bool(evaluation) and isinstance(evaluation.get("results"), list) and not evaluation.get("failures"))
+        )
+        failed_marker = (
+            results.get("status") == "failed"
+            or result.get("status") == "failed"
+            or (bool(evaluation) and bool(evaluation.get("failures")))
+        )
         if job.get("stop_requested"):
             job["status"] = "cancelled"
             job["error"] = job.get("error") or "用户停止"
-        elif returncode == 0 or (returncode is None and results.get("status") == "passed"):
-            job["status"] = "succeeded" if results.get("status", "passed") == "passed" else "failed"
-            if job["status"] == "failed":
-                job["error"] = results.get("error")
+        elif returncode == 0 or (returncode is None and succeeded_marker and not failure):
+            if failed_marker:
+                job["status"] = "failed"
+                job["error"] = results.get("error") or result.get("error") or failure.get("error")
+            else:
+                job["status"] = "succeeded"
         else:
             job["status"] = "failed"
-            job["error"] = (failure.get("error") or results.get("error") or note
+            job["error"] = (failure.get("error") or results.get("error") or result.get("error") or note
                             or (f"退出码 {returncode}" if returncode is not None else "进程已结束，退出码未知"))
         self._save(job)

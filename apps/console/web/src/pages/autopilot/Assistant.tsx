@@ -31,14 +31,17 @@ export default function Assistant() {
   const { message } = App.useApp()
   const queryClient = useQueryClient()
   const status = useQuery({
-    queryKey: ['autopilot', 'dsh', campaign],
-    queryFn: () => autopilot.dshStatus(campaign),
+    queryKey: ['autopilot', 'dsh'],
+    queryFn: autopilot.dshStatus,
     refetchInterval: (q) => (q.state.data?.checking || q.state.data?.web?.state === 'starting' ? 1500 : 10000),
   })
 
   useEffect(() => {
-    if (campaign) autopilot.dshContext(campaign).catch(() => undefined)
-  }, [campaign])
+    autopilot
+      .dshStart(campaign)
+      .then((data) => queryClient.setQueryData(['autopilot', 'dsh'], data))
+      .catch(() => undefined)
+  }, [campaign, queryClient])
 
   const restart = async () => {
     try {
