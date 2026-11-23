@@ -154,6 +154,25 @@ def summarize_attempt(run_dir: Path) -> dict:
     return out
 
 
+def effective_lr(trial: dict) -> float | None:
+    """The lr the trial finished (or last ran) with when a rollback reduced it, else None."""
+    for attempt in reversed(trial.get("attempts") or []):
+        lr = (attempt.get("overrides") or {}).get("lr")
+        if lr is not None:
+            return float(lr)
+    rollbacks = trial.get("rollbacks") or []
+    return float(rollbacks[-1]["lr"]) if rollbacks else None
+
+
+def effective_params(trial: dict) -> dict:
+    """Trial parameters with any rollback lr override applied (without mutating trial['params'])."""
+    params = dict(trial.get("params") or {})
+    lr = effective_lr(trial)
+    if lr is not None:
+        params["lr"] = lr
+    return params
+
+
 @dataclass
 class Evidence:
     """What the specialists and the Planner see: the spec, working memory and every trial with its summary."""
@@ -203,5 +222,5 @@ class Evidence:
         """Trials with the same accuracy-relevant parameters (everything except throughput knobs and seed)."""
         from .spec import THROUGHPUT_KEYS
 
-        params = trial.get("params") or {}
+        params = effective_params(trial)
         return tuple(sorted((k, v) for k, v in params.items() if k not in THROUGHPUT_KEYS and k != "seed"))

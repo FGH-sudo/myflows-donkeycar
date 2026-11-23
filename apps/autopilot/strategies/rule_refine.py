@@ -8,6 +8,7 @@ the accuracy did not move by more than the baseline's seed-to-seed spread.
 from __future__ import annotations
 
 from ..agents.base import Proposal
+from ..evidence import effective_params
 
 MIN_THROUGHPUT_GAIN = 0.05
 
@@ -27,7 +28,7 @@ class RuleRefine:
         base = next((t for t in ev.trials if t["trial_id"] == proposal.base_trial), None)
         if base is None:
             return None
-        params = {**(base.get("params") or {}), **(ev.state.get("adopted") or {}), **proposal.delta}
+        params = {**effective_params(base), **(ev.state.get("adopted") or {}), **proposal.delta}
         proposal.params = params
         proposal.phase = "exploit"
         proposal.strategy = self.name

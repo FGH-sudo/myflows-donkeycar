@@ -13,7 +13,7 @@ from apps.autopilot.data import describe_split, ensure_split, load_index
 from apps.autopilot.evidence import Evidence
 from apps.autopilot.memory import KnowledgeBase
 from apps.autopilot.service import CampaignError
-from apps.autopilot.spec import default_spec, in_space, validate_spec
+from apps.autopilot.spec import SpecError, default_spec, in_space, validate_spec
 from apps.autopilot.strategies.tpe import TPEStrategy, record_rejection, rejected_proposals
 from apps.common.splits import (TIME_BLOCK_LEGACY, TIME_BLOCK_SEPARATED, build_time_block_split, frame_numbers,
                                 load_split, save_split, validate_time_split_gap)
@@ -140,6 +140,65 @@ class RollbackTest(unittest.TestCase):
         self.assertEqual(derived[0]["verdict"]["status"], "valid")
         self.assertEqual(len(h.service.events("oom-half", kinds=("oom_derived",))), 1)
 
+    def test_rollback_effective_lr_propagates_to_confirm_tpe_rule_refine_and_test_eval(self):
+        from apps.autopilot.agents.base import Proposal
+        from apps.autopilot.strategies.rule_refine import RuleRefine
+
+        h = self.harness([{"when": {"lr": 0.004}, "behavior": "nan"}], )
+        h.set_scenario({"objective": {"lr_opt": -2.7}, "rules": [{"when": {"lr": 0.004}, "behavior": "nan"}]})
+        campaign = h.run(
+            campaign_id="rollback-propagate", timeout=180,
+            baseline={"lr": 0.001, "batch": 1, "num_workers": 0, "seeds": [1, 2]},
+            fixed={"max_samples": 40, "epochs": 1, "val_size": 8, "test_size": 8,
+                   "split_kind": "time_block", "block_size": 4},
+            space={"lr": [0.001, 0.004], "batch": [1]},
+            strategy={"name": "candidate_list", "max_candidates": 1, "seed": 0},
+            budget={"max_trials": 8}, rollback=ROLLBACK,
+        )
+        self.assertEqual(campaign["status"], "completed", campaign.get("stop_reason"))
+        trials = h.service.trials("rollback-propagate")
+        explore = next(t for t in trials if t["phase"] == "explore")
+        self.assertEqual(explore["params"]["lr"], 0.004, "original requested lr must stay preserved")
+        self.assertEqual(explore["rollbacks"][0]["lr"], 0.002)
+
+        confirm = [t for t in trials if t["phase"] == "confirm" and (t.get("origin") or {}).get("base_trial") == explore["trial_id"]]
+        self.assertEqual(len(confirm), 2)
+        for t in confirm:
+            self.assertEqual(t["params"]["lr"], 0.002)
+            self.assertEqual([a["cause"] for a in t["attempts"]], ["first"], "confirm must not re-trigger the NaN lr")
+            self.assertEqual(t["verdict"]["status"], "valid")
+
+        best_group = campaign["state"]["test_evaluation"]["groups"]["best"]
+        self.assertEqual(best_group["params"]["lr"], 0.002)
+        self.assertEqual(set(best_group["trials"]), {explore["trial_id"], *(t["trial_id"] for t in confirm)})
+
+        doc = h.service.store("rollback-propagate").load()
+        ev = h.service._evidence(h.service.store("rollback-propagate"), doc, trials)
+        tpe_spec = {**doc["spec"], "strategy": {"name": "tpe", "max_candidates": 6, "seed": 0},
+                    "space": {"lr": [0.0005, 0.004], "batch": [1, 2]}}
+        tpe = TPEStrategy(tpe_spec)
+        seen_history = [tpe._history_params(explore["params"])]
+        self.assertIsNotNone(seen_history[0])
+        self.assertEqual(ev.accuracy_key(explore), ev.accuracy_key(confirm[0]))
+        refined = RuleRefine().materialize(
+            Proposal(delta={"num_workers": 2}, strategy="rule_refine", agent="benchmark", base_trial=explore["trial_id"],
+                     rationale="test"),
+            ev,
+        )
+        self.assertEqual(refined.params["lr"], 0.002)
+        import optuna
+        with mock.patch("optuna.trial.create_trial", wraps=optuna.trial.create_trial) as create_trial:
+            prop = tpe.ask(ev)
+        self.assertIsNotNone(prop)
+        recorded_lrs = [c.kwargs["params"]["lr"] for c in create_trial.call_args_list]
+        self.assertTrue(any(abs(v - 0.002) < 1e-9 for v in recorded_lrs))
+        self.assertFalse(any(abs(v - 0.004) < 1e-9 for v in recorded_lrs))
+        # Also verify TPEStrategy never suggests 0.004 or 0.002 again when explore failed at 0.004 and finished at 0.002.
+        tpe_narrow = TPEStrategy({**tpe_spec, "space": {"lr": [0.001, 0.002, 0.004], "batch": [1]}})
+        prop_narrow = tpe_narrow.ask(Evidence(spec={**tpe_spec, "space": {"lr": [0.001, 0.002, 0.004], "batch": [1]}},
+                                            state={}, trials=[explore]))
+        self.assertTrue(prop_narrow is None or prop_narrow.delta["lr"] not in (0.002, 0.004))
+
 
 class TPEStrategyTest(unittest.TestCase):
     def spec(self, **space):
@@ -181,6 +240,45 @@ class TPEStrategyTest(unittest.TestCase):
     def test_regularisation_keys_need_the_tpe_strategy(self):
         with self.assertRaises(Exception):
             validate_spec({"space": {"lr": [0.001], "batch": [2], "dropout": [0.1]}}, Path("."))
+
+    def test_tpe_allows_candidates_beyond_endpoint_count(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            make_tub(repo)
+            spec = validate_spec(
+                {"campaign_id": "tpe-continuous",
+                 "strategy": {"name": "tpe", "max_candidates": 6, "seed": 0},
+                 "space": {"lr": [0.0001, 0.001], "batch": [1]},
+                 "fixed": {"max_samples": 40, "epochs": 1, "val_size": 10}},
+                repo,
+            )
+            self.assertEqual(spec["strategy"]["max_candidates"], 6)
+            discrete = validate_spec(
+                {"campaign_id": "tpe-discrete",
+                 "strategy": {"name": "tpe", "seed": 0},
+                 "space": {"lr": [0.001], "batch": [2], "augment": [False, True],
+                           "weight_decay": [0.0001], "dropout": [0.1]},
+                 "fixed": {"max_samples": 40, "epochs": 1, "val_size": 10}},
+                repo,
+            )
+            # augment (2) * regularizer branches (none, weight_decay=0.0001, dropout=0.1 -> 3) = 6
+            self.assertEqual(discrete["strategy"]["max_candidates"], 6)
+            small_discrete = validate_spec(
+                {"campaign_id": "tpe-small-disc",
+                 "strategy": {"name": "tpe", "seed": 0},
+                 "space": {"lr": [0.001], "batch": [2], "augment": [False, True]},
+                 "fixed": {"max_samples": 40, "epochs": 1, "val_size": 10}},
+                repo,
+            )
+            self.assertEqual(small_discrete["strategy"]["max_candidates"], 2)
+            with self.assertRaises(SpecError):
+                validate_spec(
+                    {"campaign_id": "tpe-too-many",
+                     "strategy": {"name": "tpe", "max_candidates": 3, "seed": 0},
+                     "space": {"lr": [0.001], "batch": [2], "augment": [False, True]},
+                     "fixed": {"max_samples": 40, "epochs": 1, "val_size": 10}},
+                    repo,
+                )
 
     def test_refused_suggestions_and_known_failures_are_not_proposed_again(self):
         spec = self.spec()
@@ -267,6 +365,52 @@ class TPECampaignTest(unittest.TestCase):
         self.assertIn("TPE 没有新的候选", [entry["note"] for entry in campaign["state"]["phase_log"]])
         self.assertTrue(all(e["passed"] for e in prechecks))
         self.assertEqual({t["phase"] for t in trials}, {"baseline"})
+
+    def test_tpe_proceeds_when_transfer_prior_is_rejected_by_precheck(self):
+        from apps.autopilot.agents.base import Finding
+        from apps.console.presets import pretrained_path
+
+        with tempfile.TemporaryDirectory() as tmp:
+            h = Harness(Path(tmp), {"objective": {"lr_opt": -3.5}})
+            try:
+                stub = pretrained_path("resnet18", "imagenet", h.repo)
+                stub.parent.mkdir(parents=True, exist_ok=True)
+                stub.write_bytes(b"stub")
+                h.service.knowledge.add({"id": "test-oom-b4", "kind": "resource", "task": "donkey_resnet18_single",
+                                         "model": {}, "when": {"batch_min": 4}, "outcome": "oom",
+                                         "fact": "batch 4 时显存不足"})
+                orig_diagnose = h.service._diagnose
+
+                def diagnose_with_prior(store, ev, specialists):
+                    findings = orig_diagnose(store, ev, specialists)
+                    if ev.valid("baseline"):
+                        findings.append(Finding(
+                            id="transfer:prior:test", agent="transfer", kind="transfer_prior",
+                            message="prior batch 4", trial_id="t001",
+                            data={"candidate": {"freeze_stages": 5}},
+                        ))
+                    return findings
+
+                with mock.patch.object(h.service, "_diagnose", side_effect=diagnose_with_prior):
+                    campaign = h.run(
+                        campaign_id="tpe-prior-rejected", timeout=240,
+                        baseline={"lr": 0.001, "batch": 3, "num_workers": 0, "seeds": [1, 2]},
+                        fixed={"pretrained": "imagenet"},
+                        strategy={"name": "tpe", "max_candidates": 2, "seed": 1},
+                        space={"lr": [0.0001, 0.001], "batch": [1, 4], "freeze_stages": [0, 5]},
+                        budget={"max_trials": 8},
+                    )
+                self.assertEqual(campaign["status"], "completed", campaign.get("stop_reason"))
+                self.assertNotEqual(campaign["stop_reason"], "没有可运行的候选")
+                rejected = campaign["state"]["tpe"]["rejected"]
+                self.assertTrue(any(item.get("strategy") == "transfer_prior" and item["params"].get("batch") == 4
+                                    for item in rejected))
+                tpe_trials = [t for t in h.service.trials("tpe-prior-rejected")
+                              if t["phase"] == "explore" and t["origin"]["strategy"] == "tpe"]
+                self.assertEqual(len(tpe_trials), 2)
+                self.assertTrue(all(t["params"]["batch"] == 1 for t in tpe_trials))
+            finally:
+                h.close()
 
 
 class TimeBlockSplitTest(unittest.TestCase):

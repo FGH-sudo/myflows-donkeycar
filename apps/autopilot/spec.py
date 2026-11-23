@@ -253,10 +253,28 @@ def validate_spec(raw: dict, repo_root: Path) -> dict:
     grid = 1
     for key in (*ACCURACY_KEYS, *TRANSFER_KEYS):
         grid *= len(space.get(key, [None]))
-    if "max_candidates" not in (raw.get("strategy") or {}):  # the default shrinks to a small grid
-        strategy["max_candidates"] = min(int(strategy["max_candidates"]), max(1, grid))
+    continuous = False
+    if strategy["name"] == "tpe":
+        continuous = len(space["lr"]) > 1 or any(
+            len([v for v in space[k] if v > 0]) > 1 for k in ("weight_decay", "dropout") if k in space
+        )
+        if continuous:
+            max_grid = 500
+        else:
+            max_grid = grid
+            if "augment" in space:
+                max_grid *= len(space["augment"])
+            regs = [k for k in ("weight_decay", "dropout") if k in space]
+            if regs:
+                max_grid *= 1 + sum(len([v for v in space[k] if v > 0]) for k in regs)
+            max_grid = max(1, min(500, max_grid))
+    else:
+        max_grid = max(1, grid)
+    if "max_candidates" not in (raw.get("strategy") or {}) and not (strategy["name"] == "tpe" and continuous):
+        # the default shrinks to a small discrete grid
+        strategy["max_candidates"] = min(int(strategy["max_candidates"]), max_grid)
     strategy["max_candidates"] = _number(strategy.get("max_candidates", 6), "strategy.max_candidates", kind=int,
-                                         minimum=1, maximum=max(1, grid))
+                                         minimum=1, maximum=max_grid)
     strategy["seed"] = _number(strategy.get("seed", 0), "strategy.seed", kind=int, minimum=0)
 
     budget = spec["budget"]

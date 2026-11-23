@@ -633,6 +633,16 @@ class AdvisorTest(unittest.TestCase):
         self.assertEqual(call["status"], "failed")
         self.assertIn("超时", call["error"])
 
+    def test_llm_advisor_respects_zero_max_calls(self):
+        self.service.create_campaign(self.spec(campaign_id="zero-cap-campaign", llm={"enabled": True, "max_calls": 0}))
+        store = self.service.store("zero-cap-campaign")
+        with mock.patch.object(self.host, "run_headless", wraps=self.host.run_headless) as run_headless:
+            self.advisor.consult(self.service, store, "phase:baseline->explore")
+        run_headless.assert_not_called()
+        llm = store.load()["state"]["llm"]
+        self.assertEqual(llm["calls"], 0)
+        self.assertIn("0 次", llm["disabled_reason"])
+
 
 if __name__ == "__main__":
     unittest.main()

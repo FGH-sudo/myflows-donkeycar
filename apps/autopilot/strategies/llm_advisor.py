@@ -35,7 +35,8 @@ class LLMAdvisor:
         spec, llm = doc["spec"], doc["state"]["llm"]
         if not spec["llm"].get("enabled") or llm.get("disabled_reason"):
             return
-        max_calls = int(spec["llm"].get("max_calls") or MAX_LLM_CALLS)
+        raw_max_calls = spec["llm"].get("max_calls")
+        max_calls = MAX_LLM_CALLS if raw_max_calls is None else int(raw_max_calls)
         if llm.get("calls", 0) >= max_calls:
             self._disable(store, f"已达到后台调用上限（{max_calls} 次）")
             return

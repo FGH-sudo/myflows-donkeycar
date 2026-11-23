@@ -11,6 +11,7 @@ import hashlib
 import json
 
 from .agents.base import Proposal
+from .evidence import effective_params
 from .scheduler import budget_fraction
 from .spec import ACCURACY_KEYS, THROUGHPUT_KEYS, TRANSFER_DEFAULTS, baseline_params
 from .strategies.candidate_list import CandidateList
@@ -121,8 +122,9 @@ class Planner:
                 choices = self.spec["space"][key]
                 delta[key] = min(choices, key=lambda v: abs(v-base[key]))
             candidate = {**self.base_params(ev, seed), **delta}
-            if not any(all(p.get(k, self.spec["fixed"].get(k, TRANSFER_DEFAULTS.get(k))) == v
-                           for k, v in delta.items()) for p in [base, *tried]):
+            if (not any(all(p.get(k, self.spec["fixed"].get(k, TRANSFER_DEFAULTS.get(k))) == v
+                            for k, v in delta.items()) for p in [base, *tried])
+                    and proposal_key("explore", candidate) not in ev.state.get("proposed", [])):
                 initial = Proposal(delta=delta, params=candidate, strategy="transfer_prior", agent="transfer",
                                    phase="explore", base_trial=prior.trial_id, finding_ids=[prior.id],
                                    rationale=prior.message, expected=f"配对验证 {ev.metric}")
@@ -132,7 +134,7 @@ class Planner:
             done = [t for t in ev.trials if t.get("phase") == "explore" and t.get("status") in ("done", "skipped")]
             # A suggestion the pre-check refused uses up a candidate too: the search stays bounded when the
             # refusals keep coming (a space that mostly runs out of memory, for example).
-            refused = len(rejected_proposals(ev.state))
+            refused = sum(1 for item in rejected_proposals(ev.state) if item.get("strategy", "tpe") == "tpe")
             if len(done) + refused >= self.spec["strategy"]["max_candidates"]:
                 self._phase(ev, "exploit", "TPE 候选用完" + (f"（其中 {refused} 个被预检拒绝）" if refused else ""))
                 return []
@@ -234,8 +236,10 @@ class Planner:
             better = reference is None or (value < reference if ev.minimize else value > reference)
             if not better:
                 continue
-            params = {k: v for k, v in trial["params"].items() if k != "seed"}
+            params = {k: v for k, v in effective_params(trial).items() if k != "seed"}
             params.update(ev.state.get("adopted") or {})
+            if self._is_baseline({"params": params}):
+                continue
             candidates.append({"trial_id": trial["trial_id"], "rank": rank, "value": value, "params": params})
         # Fit the confirmation into the remaining trial budget: top-2 only when both fit.
         started = sum(1 for t in ev.trials if t.get("attempts"))

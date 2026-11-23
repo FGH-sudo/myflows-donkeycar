@@ -28,7 +28,7 @@ from .agents import build_specialists
 from .agents.base import Finding
 from .agents.benchmark import noise
 from .data import ensure_split
-from .evidence import Evidence, summarize_attempt
+from .evidence import Evidence, effective_params, summarize_attempt
 from .executor import Executor
 from .files import read_json, write_json
 from .memory import CampaignStore, KnowledgeBase, valid_campaign_id
@@ -44,7 +44,7 @@ from .verifier import (CONFIG_FAILURES, INFRA_FAILURES, ONLINE_FINDING_KINDS, po
 ACTIVE = ("running", "pausing", "stopping", "finishing")
 EDITABLE = ("draft", "paused")
 PLANNER_KEYS = ("phase", "phase_log", "proposed", "explore_proposed", "confirm_plan", "chains", "adopted",
-                "stop_reason", "noise", "findings", "best", "budget_used", "tpe")
+                "stop_reason", "noise", "findings", "best", "budget_used", "tpe", "unavailable")
 KEEP_TOP = 2
 # Scores kept models on the independent test set when the campaign's split has one (formal campaigns).
 LLM_EVENT_KINDS = ("llm_action", "llm_call", "llm_error", "llm_skip", "llm_disabled")
@@ -77,7 +77,7 @@ def initial_state() -> dict:
             "explore_proposed": False, "confirm_plan": None, "budget_used": {}, "best": None, "noise": None,
             "llm": {"session_id": None, "calls": 0, "tokens": 0, "failures": 0, "consecutive_failures": 0,
                     "disabled_reason": None, "decision_points": []},
-            "notes": [], "phase_log": [], "unavailable": {}}
+            "notes": [], "phase_log": [], "unavailable": {}, "test_eval_job_id": None}
 
 
 class AutoPilotService:
@@ -404,7 +404,7 @@ class AutoPilotService:
                 raise CampaignError(f"trial 不存在：{base_trial}", 404)
         else:
             base = ev.best()
-        params = dict(base["params"]) if base else baseline_params(doc["spec"], doc["spec"]["baseline"]["seeds"][0])
+        params = effective_params(base) if base else baseline_params(doc["spec"], doc["spec"]["baseline"]["seeds"][0])
         params.update(doc["state"].get("adopted") or {})
         params.update(delta)
         return params, base["trial_id"] if base else None
@@ -633,24 +633,25 @@ class AutoPilotService:
             findings = self._diagnose(store, ev, specialists)
             phase_before = ev.state.get("phase")
             proposals = planner.next(ev, findings)
-            if ev.state.get("phase") != phase_before:
-                store.event("phase", phase=ev.state["phase"], previous=phase_before,
-                            note=(ev.state.get("phase_log") or [{}])[-1].get("note"))
-                self._decision_point(store, ev, f"phase:{phase_before}->{ev.state['phase']}")
             best = ev.best()
             ev.state["best"] = {"trial_id": best["trial_id"], "value": ev.objective(best)} if best else None
             ev.state["budget_used"] = budget_state(trials)
             self._commit(store, ev.state)
+            if ev.state.get("phase") != phase_before:
+                store.event("phase", phase=ev.state["phase"], previous=phase_before,
+                            note=(ev.state.get("phase_log") or [{}])[-1].get("note"))
+                self._decision_point(store, ev, f"phase:{phase_before}->{ev.state['phase']}")
             for p in proposals:
                 origin = {"strategy": p.strategy, "agent": p.agent, "source": "rule", "base_trial": p.base_trial,
                           "finding_ids": p.finding_ids, "rationale": p.rationale, "expected": p.expected,
                           "delta": p.delta, "kind": p.kind}
                 record, check = self._admit(store, doc, phase=p.phase, params=p.params, delta=p.delta or None,
                                             origin=origin)
-                if record is None and p.strategy == "tpe":
+                if record is None and p.phase == "explore" and spec["strategy"]["name"] == "tpe":
                     # Not a trial, so not in the history TPE is rebuilt from: without this record the next ask
                     # would return the same suggestion and the campaign would idle out of the explore phase.
-                    store.update_state(lambda s, p=p, check=check: record_rejection(s, p.params, check["reasons"]))
+                    store.update_state(lambda s, p=p, check=check: record_rejection(
+                        s, p.params, check["reasons"], strategy=p.strategy))
             trials = store.trials()
             used = budget_state(trials)
             if used["trials_started"] >= spec["budget"]["max_trials"] or used["run_s"] >= spec["budget"]["wall_time_s"]:
@@ -773,7 +774,7 @@ class AutoPilotService:
         if verdict["status"] == "failed" and verdict.get("kind") in ("nan", "diverged", "oom"):
             self._decision_point(store, None, f"failure:{verdict['kind']}:{trial['trial_id']}")
 
-    def _evaluate_test_set(self, store: CampaignStore, ev: Evidence) -> None:
+    def _evaluate_test_set(self, store: CampaignStore, ev: Evidence) -> bool:
         """Score the baseline and the best configuration (every seed) on the held-out test split, once, at the end.
 
         The test set never takes part in ranking or confirmation; this is the final, independent check.
@@ -794,35 +795,49 @@ class AutoPilotService:
                 items.append({"key": t["trial_id"], "group": group, "args": t["resolved_args"],
                               "checkpoint": str(Path(attempt.get("run_dir", "")) / "checkpoints" / "best")})
         if not items:
-            return
+            return True
         out_dir = store.report_dir / "test-eval"
-        out_dir.mkdir(parents=True, exist_ok=True)
-        write_json(out_dir / "items.json", {"split": "test", "items": items})
-        job = self.jobs.submit(job_type="single", label=f"AutoPilot · {store.campaign_id} · 测试集评估",
-                               task="donkey_resnet18_single", run_dir=out_dir,
-                               command=[self.python, "-m", self.eval_module, "--items", str(out_dir / "items.json"),
-                                        "--out", str(out_dir / "evaluation.json"), "--run-dir", "{run_dir}"],
-                               extra={"campaign_id": store.campaign_id, "record_resources": False})
-        store.event("test_eval", status="started", job_id=job["id"], items=len(items))
-        deadline = time.time() + EVAL_TIMEOUT_S
-        while time.time() < deadline and not self._closing.is_set():
-            current = self.jobs.get(job["id"])
-            if current is None or current["status"] in ("succeeded", "failed", "cancelled"):
-                break
-            time.sleep(self.poll_s)
+        existing_job_id = store.load()["state"].get("test_eval_job_id")
+        job = self.jobs.get(existing_job_id) if existing_job_id else None
+        already_done_on_disk = bool(existing_job_id and job is None and (out_dir / "evaluation.json").is_file())
+        if not already_done_on_disk:
+            if job is None:
+                out_dir.mkdir(parents=True, exist_ok=True)
+                write_json(out_dir / "items.json", {"split": "test", "items": items})
+                job = self.jobs.submit(job_type="single", label=f"AutoPilot · {store.campaign_id} · 测试集评估",
+                                       task="donkey_resnet18_single", run_dir=out_dir,
+                                       command=[self.python, "-m", self.eval_module, "--items", str(out_dir / "items.json"),
+                                                "--out", str(out_dir / "evaluation.json"), "--run-dir", "{run_dir}"],
+                                       extra={"campaign_id": store.campaign_id, "record_resources": False})
+                store.update_state(lambda s, jid=job["id"]: s.update(test_eval_job_id=jid))
+                store.event("test_eval", status="started", job_id=job["id"], items=len(items))
+            job_id = job["id"]
+            deadline = time.time() + EVAL_TIMEOUT_S
+            while time.time() < deadline and not self._closing.is_set():
+                current = self.jobs.get(job_id)
+                if current is None or current["status"] in ("succeeded", "failed", "cancelled"):
+                    break
+                time.sleep(self.poll_s)
+            current = self.jobs.get(job_id)
+            if self._closing.is_set() and current is not None and current["status"] not in (
+                    "succeeded", "failed", "cancelled"):
+                return False
+        else:
+            job_id = existing_job_id
         payload = read_json(out_dir / "evaluation.json") or {}
         by_key = {r["key"]: r for r in payload.get("results") or []}
-        summary = {"split": "test", "job_id": job["id"], "failures": payload.get("failures") or [], "groups": {}}
+        summary = {"split": "test", "job_id": job_id, "failures": payload.get("failures") or [], "groups": {}}
         for group, trials in groups.items():
             values = {t["trial_id"]: by_key[t["trial_id"]]["angle_mae"] for t in trials if t["trial_id"] in by_key}
             summary["groups"][group] = {
                 "trials": [t["trial_id"] for t in trials], "angle_mae": values,
                 "mean": sum(values.values()) / len(values) if values else None,
                 "samples": next((by_key[k]["samples"] for k in values), None),
-                "params": {k: v for k, v in (trials[0].get("params") or {}).items() if k != "seed"} if trials else {}}
-        store.update_state(lambda s: s.update(test_evaluation=summary))
-        store.event("test_eval", status="done" if payload else "failed", job_id=job["id"],
+                "params": {k: v for k, v in effective_params(trials[0]).items() if k != "seed"} if trials else {}}
+        store.update_state(lambda s: s.update(test_evaluation=summary, test_eval_job_id=None))
+        store.event("test_eval", status="done" if payload else "failed", job_id=job_id,
                     groups={g: v["mean"] for g, v in summary["groups"].items()}, failures=len(summary["failures"]))
+        return True
 
     @staticmethod
     def _paging_share(attempt: dict) -> float | None:
@@ -844,7 +859,7 @@ class AutoPilotService:
         delta = rollback.oom_proposal(trial, doc["spec"])
         if delta is None or (trial.get("origin") or {}).get("strategy") == "rollback":
             return
-        params = {**trial["params"], **delta}
+        params = {**effective_params(trial), **delta}
         origin = {"strategy": "rollback", "agent": "verifier", "source": "rule", "base_trial": trial["trial_id"],
                   "delta": delta, "kind": "accuracy", "finding_ids": [],
                   "rationale": f"{trial['trial_id']} 显存不足：batch {trial['params'].get('batch')} → {delta['batch']}",
@@ -886,9 +901,13 @@ class AutoPilotService:
         ev.state["noise"] = noise(ev)
         self._commit(store, ev.state)
         if status == "completed" and ((doc["state"].get("provenance") or {}).get("split") or {}).get("test_count"):
-            self._evaluate_test_set(store, ev)
-            doc = store.load()
-            ev = self._evidence(store, doc)
+            if doc["state"].get("test_evaluation") is None:
+                if not self._evaluate_test_set(store, ev):
+                    return
+                doc = store.load()
+                ev = self._evidence(store, doc)
+        if self._closing.is_set():
+            return
         self._prune_checkpoints(store, ev)
         if self.advisor is not None:
             self._decision_point(store, ev, "report")

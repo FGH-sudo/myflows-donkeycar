@@ -11,6 +11,7 @@ from pathlib import Path
 from apps.common.datasets import DEFAULT_DATA
 from apps.train.common.outcome import FAILURE_CATEGORIES, categorized_failure
 
+from .evidence import effective_lr
 from .files import write_json
 from .planner import confirm_seeds
 from .spec import MODES, SPECIALISTS
@@ -178,8 +179,7 @@ def conclusion(ev, confirm: dict) -> str:
 
 def _effective_lr(trial: dict) -> float | None:
     """The lr the trial finished with when a rollback reduced it, else None."""
-    rollbacks = trial.get("rollbacks") or []
-    return rollbacks[-1]["lr"] if rollbacks else None
+    return effective_lr(trial)
 
 
 def _params_text(params: dict) -> str:

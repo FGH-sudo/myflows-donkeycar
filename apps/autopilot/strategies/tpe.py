@@ -18,6 +18,7 @@ from __future__ import annotations
 import math
 
 from ..agents.base import Proposal
+from ..evidence import effective_params
 from ..spec import ACCURACY_KEYS, TPE_KEYS, TRANSFER_KEYS, SpecError, baseline_params, resolve_args
 
 MAX_DRAWS = 64
@@ -34,12 +35,12 @@ def rejected_proposals(state: dict) -> list[dict]:
     return list((state.get("tpe") or {}).get("rejected") or [])
 
 
-def record_rejection(state: dict, params: dict, reasons: list[str]) -> None:
-    """Remember a refused TPE suggestion in the campaign state (called under the store's state lock)."""
+def record_rejection(state: dict, params: dict, reasons: list[str], *, strategy: str = "tpe") -> None:
+    """Remember a refused suggestion in the campaign state (called under the store's state lock)."""
     tpe = state.get("tpe") if isinstance(state.get("tpe"), dict) else {}
     rejected = list(tpe.get("rejected") or [])
     if not any(_accuracy_view(item.get("params") or {}) == _accuracy_view(params) for item in rejected):
-        rejected.append({"params": dict(params), "reasons": list(reasons)[:3]})
+        rejected.append({"params": dict(params), "reasons": list(reasons)[:3], "strategy": strategy})
     state["tpe"] = {**tpe, "rejected": rejected}
 
 
@@ -153,13 +154,14 @@ class TPEStrategy:
         study = optuna.create_study(direction="minimize" if ev.minimize else "maximize", sampler=sampler)
         warm = 0
         for trial in ev.valid():
-            params = self._history_params(trial.get("params") or {})
+            params = self._history_params(effective_params(trial))
             if params is None:
                 continue
             used = {k: distributions[k] for k in params}
             study.add_trial(optuna.trial.create_trial(params=params, distributions=used, value=ev.objective(trial)))
             warm += 1
         tried = {_accuracy_view(t.get("params") or {}) for t in ev.trials}
+        tried.update(_accuracy_view(effective_params(t)) for t in ev.trials)
         tried.add(_accuracy_view(baseline_params(self.spec, self.spec["baseline"]["seeds"][0])))
         tried.update(_accuracy_view(item.get("params") or {}) for item in rejected)
         base = {**baseline_params(self.spec, self.spec["baseline"]["seeds"][0]), **(ev.state.get("adopted") or {})}

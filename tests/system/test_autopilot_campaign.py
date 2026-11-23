@@ -409,3 +409,121 @@ class CollectedDatasetTest(CampaignTestCase):
         for bad, message in (("../../etc", "未知的数据集"), ("never-collected", "不存在"), (5, "字符串")):
             with self.assertRaisesRegex(CampaignError, message):
                 self.h.service.create_campaign(self.h.spec(campaign_id="bad-data", fixed={"data": bad}))
+
+
+class StatePersistenceAndFinalizeRaceTest(CampaignTestCase):
+    scenario = {"objective": {"lr_opt": -3.5}}
+
+    def test_unavailable_persists_and_phase_decision_point_sees_committed_state(self):
+        seen_on_disk = []
+
+        class SpyAdvisor:
+            def consult(self, _service, store, reason):
+                seen_on_disk.append((reason, store.load()["state"]))
+
+        self.h.service.advisor = SpyAdvisor()
+        campaign = self.h.run(
+            campaign_id="spy-persistence",
+            specialists=["gpu_monitor", "transfer"],
+            space={"lr": [0.0005, 0.001], "batch": [1]},
+            strategy={"max_candidates": 1, "seed": 0},
+            budget={"max_trials": 5},
+        )
+        self.assertEqual(campaign["status"], "completed")
+        phase_calls = [(r, st) for r, st in seen_on_disk if r.startswith("phase:")]
+        self.assertTrue(phase_calls)
+        first_reason, first_state = phase_calls[0]
+        self.assertEqual(first_reason, "phase:baseline->explore")
+        self.assertEqual(first_state["phase"], "explore")
+        self.assertIsNotNone(first_state["best"])
+        self.assertIn("transfer", first_state["unavailable"])
+
+        restarted = self.h.restart()
+        persisted = restarted.get_campaign("spy-persistence")["state"]
+        self.assertIn("transfer", persisted["unavailable"])
+
+    def test_finishing_recovery_preserves_existing_test_eval_and_handles_shutdown_mid_eval(self):
+        # (a) Recovery with existing test_evaluation does not re-run _evaluate_test_set.
+        c1 = self.h.run(
+            campaign_id="finishing-existing-eval",
+            fixed={"max_samples": 40, "epochs": 1, "val_size": 8, "test_size": 8,
+                   "split_kind": "time_block", "block_size": 4},
+            space={"lr": [0.001, 0.0003], "batch": [1]},
+            strategy={"max_candidates": 1, "seed": 0},
+            budget={"max_trials": 6},
+        )
+        self.assertEqual(c1["status"], "completed")
+        orig_eval = c1["state"]["test_evaluation"]
+        self.assertIsNotNone(orig_eval)
+        started_before = [e for e in self.h.service.events("finishing-existing-eval", kinds=("test_eval",))
+                          if e["status"] == "started"]
+        self.assertEqual(len(started_before), 1)
+        self.h.service.store("finishing-existing-eval").update_state(
+            lambda s: s.update(status="finishing", finishing_as="completed", report=None)
+        )
+        restarted = self.h.restart()
+        recovered = self.h.wait("finishing-existing-eval")
+        self.assertEqual(recovered["status"], "completed")
+        self.assertEqual(recovered["state"]["test_evaluation"], orig_eval)
+        started_after = [e for e in restarted.events("finishing-existing-eval", kinds=("test_eval",))
+                         if e["status"] == "started"]
+        self.assertEqual(len(started_after), 1)
+
+        # (b) Shutdown mid test_eval leaves checkpoints intact, preserves status='finishing' and test_eval_job_id,
+        # and re-attaches without submitting a duplicate job on recovery.
+        cid2 = "finishing-shutdown-eval"
+        self.h.run(
+            campaign_id=cid2,
+            fixed={"max_samples": 40, "epochs": 1, "val_size": 8, "test_size": 8,
+                   "split_kind": "time_block", "block_size": 4},
+            space={"lr": [0.001, 0.0003], "batch": [1]},
+            strategy={"max_candidates": 1, "seed": 0},
+            budget={"max_trials": 4},
+        )
+        store2 = self.h.service.store(cid2)
+        trials2 = store2.trials()
+        # Recreate a checkpoint folder on a non-top trial to verify _prune_checkpoints is skipped during closing.
+        dummy_ckpt = Path(trials2[0]["attempts"][0]["run_dir"]) / "checkpoints" / "checkpoint.0"
+        dummy_ckpt.parent.mkdir(parents=True, exist_ok=True)
+        dummy_ckpt.write_text("keep-me", encoding="utf-8")
+        store2.update_state(lambda s: s.update(status="finishing", finishing_as="completed",
+                                           test_evaluation=None, report=None))
+        eval_dir = store2.report_dir / "test-eval"
+        orig_submit = self.h.jobs.submit
+        submitted_eval_jobs = []
+
+        def interrupt_on_eval_submit(*args, **kwargs):
+            # Mark service closing right after submitting an evaluation job (simulating shutdown while eval runs).
+            job = {"id": "job-eval-inflight", "status": "running", "run_dir": str(kwargs.get("run_dir", eval_dir))}
+            submitted_eval_jobs.append(job["id"])
+            self.h.service._closing.set()
+            return job
+
+        with mock.patch.object(self.h.jobs, "submit", side_effect=interrupt_on_eval_submit), \
+                mock.patch.object(self.h.jobs, "get", return_value={"id": "job-eval-inflight", "status": "running"}):
+            doc2 = store2.load()
+            ev2 = self.h.service._evidence(store2, doc2, trials2)
+            self.h.service._finalize(store2, "completed", "done")
+
+        mid_state = store2.load()["state"]
+        self.assertEqual(mid_state["status"], "finishing")
+        self.assertEqual(mid_state["test_eval_job_id"], "job-eval-inflight")
+        self.assertIsNone(mid_state["test_evaluation"])
+        self.assertTrue(dummy_ckpt.is_file(), "checkpoints must not be pruned while shutting down")
+        self.assertEqual(len(submitted_eval_jobs), 1)
+
+        # Simulate evaluation.json having finished on disk before restart recovery runs.
+        (eval_dir / "evaluation.json").write_text(json.dumps({
+            "results": [{"key": trials2[0]["trial_id"], "angle_mae": 0.15, "samples": 8}],
+            "failures": [],
+        }), encoding="utf-8")
+        self.h.service._closing.clear()
+        restarted2 = self.h.restart()
+        done2 = self.h.wait(cid2)
+        self.assertEqual(done2["status"], "completed")
+        self.assertIsNone(done2["state"]["test_eval_job_id"])
+        self.assertIsNotNone(done2["state"]["test_evaluation"])
+        self.assertEqual(done2["state"]["test_evaluation"]["job_id"], "job-eval-inflight")
+        self.assertEqual(len([e for e in restarted2.events(cid2, kinds=("test_eval",)) if e["status"] == "started"]),
+                         2, "exactly the original completed run + the 1 interrupted eval start, no duplicate on recovery")
+        del orig_submit
