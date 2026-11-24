@@ -8,6 +8,7 @@ from pathlib import Path
 import cv2
 import numpy as np
 
+from apps.common.image_preprocess import crop_rgb, format_roi_crop, parse_roi_crop
 from apps.serve.schema import format_prediction_dict
 from tools.device_runtime import create_ort_inference_session, print_ort_device
 
@@ -27,12 +28,18 @@ class OnnxPredictor:
       model_type: str = "regression",
       *,
       sess_options=None,
+      roi_crop=None,
   ):
     self.model_path = Path(model_path)
     self.device = str(device)
     self.session, providers = create_ort_inference_session(self.model_path, device, sess_options=sess_options)
     self.providers = list(providers)
     print_ort_device(providers, device)
+    meta = self.session.get_modelmeta().custom_metadata_map or {}
+    if roi_crop is not None:
+      self.roi_crop = parse_roi_crop(roi_crop)
+    else:
+      self.roi_crop = parse_roi_crop(meta.get("myflows.roi_crop"))
     inputs = self.session.get_inputs()
     if len(inputs) != 1 or len(inputs[0].shape or ()) != 4:
       raise ValueError("the ONNX model must have one NCHW image input")
@@ -55,6 +62,8 @@ class OnnxPredictor:
   def predict(self, rgb: np.ndarray) -> np.ndarray:
     if rgb.ndim != 3 or rgb.shape[2] != 3 or min(rgb.shape[:2]) < 1:
       raise ValueError("expected a non-empty HxWx3 RGB image")
+    if self.roi_crop is not None:
+      rgb = crop_rgb(rgb, self.roi_crop)
     if rgb.shape[0] != self.image_h or rgb.shape[1] != self.image_w:
       rgb = cv2.resize(rgb, (self.image_w, self.image_h))
     x = rgb.astype(self.input_dtype) / 255.0
@@ -84,4 +93,5 @@ class OnnxPredictor:
         "input_shape": list(self.input_shape),
         "providers": list(self.providers),
         "device": self.device,
+        "roi_crop": format_roi_crop(self.roi_crop),
     }

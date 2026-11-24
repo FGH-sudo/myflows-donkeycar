@@ -16,6 +16,7 @@ if str(ROOT) not in sys.path:
 
 import MyFlows as ms  # noqa: E402
 from MyFlows.core.device import asnumpy
+from apps.common.image_preprocess import crop_rgb, parse_roi_crop
 from tools.device_runtime import resolve_myflows_device
 
 
@@ -32,6 +33,7 @@ class MyFlowsResNet18Pilot:
         device="auto",
         training_config=None,
         prefer_onnx=True,
+        roi_crop=None,
     ):
         checkpoint = Path(checkpoint_path).resolve()
         self.device = str(device)
@@ -48,6 +50,8 @@ class MyFlowsResNet18Pilot:
         self._onnx_predictor = None
         self.input_name = None
         self.input_dtype = np.float32
+        fallback_crop = training_config.get("args", {}).get("roi_crop") if isinstance(training_config, dict) else None
+        self.roi_crop = parse_roi_crop(roi_crop if roi_crop is not None else fallback_crop)
 
         print(
             f"[MyFlowsPilot] fixed throttle={self.fixed_throttle:.3f}; "
@@ -66,13 +70,15 @@ class MyFlowsResNet18Pilot:
                 sess_options.intra_op_num_threads = max(1, (os.cpu_count() or 4) - 1)
                 sess_options.inter_op_num_threads = 1
                 predictor = OnnxPredictor(
-                    onnx_path, self.image_w, self.image_h, device=self.device, sess_options=sess_options
+                    onnx_path, self.image_w, self.image_h, device=self.device,
+                    sess_options=sess_options, roi_crop=roi_crop,
                 )
                 self._onnx_predictor = predictor
                 self.session = predictor.session
                 self.input_name = predictor.input_name
                 self.input_dtype = predictor.input_dtype
                 self.image_w, self.image_h = predictor.image_w, predictor.image_h
+                self.roi_crop = predictor.roi_crop
                 print(f"[MyFlowsPilot] loaded ONNX {onnx_path}")
                 return
             except Exception as exc:
@@ -118,6 +124,8 @@ class MyFlowsResNet18Pilot:
         arr = np.asarray(img_arr)
         if arr.ndim != 3:
             return None
+        if self.roi_crop is not None:
+            arr = crop_rgb(arr, self.roi_crop)
         if arr.shape[0] != self.image_h or arr.shape[1] != self.image_w:
             arr = cv2.resize(arr, (self.image_w, self.image_h), interpolation=cv2.INTER_LINEAR)
         x = arr.astype(self.input_dtype) / 255.0

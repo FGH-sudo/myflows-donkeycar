@@ -34,7 +34,7 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 
 from apps.common.donkey_data import load_donkey_index
-from apps.common.image_preprocess import imread_nchw, read_rgb
+from apps.common.image_preprocess import crop_rgb, format_roi_crop, imread_nchw, parse_roi_crop, read_rgb
 from apps.common.splits import select_saved_split
 from tools.device_runtime import create_ort_inference_session, print_ort_device
 
@@ -71,9 +71,15 @@ def main() -> None:
         default=None,
         help="可选 INT8 ONNX；与 FP32 对比 MSE 与推理耗时",
     )
+    ap.add_argument("--roi-crop", type=str, default=None, help="ROI 裁剪 TOP,BOTTOM[,LEFT,RIGHT]（默认自动读取 ONNX 元数据）")
     args = ap.parse_args()
     if args.batch < 1:
         ap.error("--batch must be positive")
+    has_cli_roi_crop = args.roi_crop is not None
+    try:
+        cli_roi_crop = parse_roi_crop(args.roi_crop) if has_cli_roi_crop else None
+    except ValueError as exc:
+        ap.error(str(exc))
 
     data_dir = (ROOT / args.data).resolve()
     checkpoint_path = (ROOT / args.checkpoint).resolve()
@@ -110,6 +116,8 @@ def main() -> None:
         sess, providers = create_ort_inference_session(model_path, args.device)
         if label == "FP32":
             print_ort_device(providers, args.device)
+        meta = sess.get_modelmeta().custom_metadata_map or {}
+        roi_crop = cli_roi_crop if has_cli_roi_crop else parse_roi_crop(meta.get("myflows.roi_crop"))
         input_name = sess.get_inputs()[0].name
         input_type = sess.get_inputs()[0].type
         input_shape = sess.get_inputs()[0].shape
@@ -117,6 +125,8 @@ def main() -> None:
 
         B = int(args.batch)
         image_w, image_h = w, h
+        if roi_crop is not None:
+            image_h, image_w = crop_rgb(first_rgb, roi_crop).shape[:2]
         if isinstance(input_shape, (list, tuple)) and len(input_shape) == 4:
             b0 = input_shape[0]
             if isinstance(b0, int) and b0 > 0:
@@ -155,7 +165,7 @@ def main() -> None:
 
             for r, (rel, a_true, t_true) in enumerate(bi):
                 p = data_dir / rel
-                x_batch[r] = imread_nchw(p, (image_w, image_h), dtype=dtype)[0]
+                x_batch[r] = imread_nchw(p, (image_w, image_h), dtype=dtype, roi_crop=roi_crop)[0]
                 y[r, 0] = a_true
                 y[r, 1] = t_true
 
@@ -203,6 +213,7 @@ def main() -> None:
             "batch": B,
             "input_w": image_w,
             "input_h": image_h,
+            "roi_crop": format_roi_crop(roi_crop),
         }
 
     results = [_run_eval(checkpoint_path, "FP32")]
@@ -226,7 +237,8 @@ def main() -> None:
     print("\n=== ONNX Eval Summary ===")
     for r in results:
         print(f"\n--- {r['label']} ({r['path']}) ---")
-        print(f"input={r['input_w']}x{r['input_h']}")
+        crop_note = f" roi_crop={r['roi_crop']}" if r.get("roi_crop") else ""
+        print(f"input={r['input_w']}x{r['input_h']}{crop_note}")
         print(f"angle_mae={r['angle_mae']:.6f} angle_mse={r['angle_mse']:.6f} throttle_mse={r['throttle_mse']:.6f}")
         print(
             f"angle_sign_accuracy={r['angle_sign_accuracy']:.4f} "

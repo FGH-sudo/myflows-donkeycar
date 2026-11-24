@@ -12,6 +12,7 @@ from MyFlows.transfer.registry import ARCHS as TRANSFER_ARCHS
 
 from apps.common.datasets import DEFAULT_DATA, DatasetError, dataset_dir, dataset_key
 from apps.common.datasets import normalize as normalize_dataset
+from apps.common.image_preprocess import format_roi_crop, parse_roi_crop
 
 MODE_LABELS = {
     ("single", "none"): "单进程基线",
@@ -50,6 +51,9 @@ SINGLE_ARGS = {
     "data": str,
     "regression_head": str,
     "no_compress_checkpoints": bool,
+    "roi_crop": str, "lr_schedule": str, "warmup_epochs": float, "min_lr": float,
+    "loss": str, "huber_delta": float, "angle_weight": float, "throttle_weight": float, "turn_weight": float,
+    "best_metric": str, "augment_preset": str,
 }
 MAX_FREEZE_STAGES = 5
 # Parallel modes of the formal training entry: distributed value -> transports, as in apps.train.
@@ -259,6 +263,54 @@ def validate_single(args: dict, repo_root: Path) -> dict:
         raise ValidationError("spatial 回归头需要 MyFlows 结构的 ResNet")
     if out.get("regression_head") == "global":
         out.pop("regression_head")
+    if "roi_crop" in out:
+        try:
+            parsed_crop = parse_roi_crop(out["roi_crop"])
+        except ValueError as exc:
+            raise ValidationError(str(exc)) from exc
+        formatted_crop = format_roi_crop(parsed_crop)
+        if formatted_crop is None:
+            out.pop("roi_crop", None)
+        else:
+            out["roi_crop"] = formatted_crop
+    if out.get("lr_schedule", "constant") not in ("constant", "cosine"):
+        raise ValidationError("lr_schedule 只能是 constant 或 cosine")
+    if out.get("lr_schedule") == "constant":
+        out.pop("lr_schedule", None)
+    if out.get("warmup_epochs", 0.0) < 0:
+        raise ValidationError("warmup_epochs 不能为负数")
+    if out.get("warmup_epochs") == 0.0:
+        out.pop("warmup_epochs", None)
+    if out.get("min_lr", 0.0) < 0:
+        raise ValidationError("min_lr 不能为负数")
+    if out.get("lr_schedule") == "cosine" and out.get("min_lr", 0.0) > out.get("lr", 1e-3):
+        raise ValidationError("min_lr 不能大于 lr")
+    if out.get("min_lr") == 0.0:
+        out.pop("min_lr", None)
+    if out.get("loss", "mse") not in ("mse", "huber"):
+        raise ValidationError("loss 只能是 mse 或 huber")
+    if out.get("loss") == "mse":
+        out.pop("loss", None)
+    if out.get("huber_delta", 0.2) <= 0:
+        raise ValidationError("huber_delta 必须大于 0")
+    if out.get("huber_delta") == 0.2:
+        out.pop("huber_delta", None)
+    for w_key in ("angle_weight", "throttle_weight", "turn_weight"):
+        if out.get(w_key, 0.0) < 0:
+            raise ValidationError(f"{w_key} 不能为负数")
+    if out.get("angle_weight", 1.0) + out.get("throttle_weight", 1.0) <= 0:
+        raise ValidationError("angle_weight 与 throttle_weight 不能同时为 0")
+    for w_key, w_def in (("angle_weight", 1.0), ("throttle_weight", 1.0), ("turn_weight", 0.0)):
+        if out.get(w_key) == w_def:
+            out.pop(w_key, None)
+    if out.get("best_metric", "val_loss") not in ("val_loss", "val_angle_mae"):
+        raise ValidationError("best_metric 只能是 val_loss 或 val_angle_mae")
+    if out.get("best_metric") == "val_loss":
+        out.pop("best_metric", None)
+    if out.get("augment_preset", "default") not in ("default", "driving"):
+        raise ValidationError("augment_preset 只能是 default 或 driving")
+    if out.get("augment_preset") == "default":
+        out.pop("augment_preset", None)
     if out.get("backbone_lr_mult", 1.) < 0:
         raise ValidationError("backbone_lr_mult 必须非负")
     if out.get("freeze_mode", "both") not in ("both", "params", "bn") or out.get("bn_unfreeze", "follow") not in ("follow", "keep-frozen"):

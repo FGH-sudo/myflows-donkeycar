@@ -14,6 +14,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 import MyFlows as ms
+from apps.common.image_preprocess import format_roi_crop, parse_roi_crop
 from apps.train.common.regression_model import build_regression_resnet
 from MyFlows.layers.resnet import BASIC_RESNETS
 from tools.device_runtime import print_myflows_device, resolve_myflows_device
@@ -47,6 +48,7 @@ def export_resnet_onnx(
     base_width: int = 64,
     regression_head: str = "global",
     arch: str = "resnet18",
+    roi_crop: str | tuple[int, int, int, int] | None = None,
 ) -> Path:
     """Load a MyFlows BasicBlock ResNet checkpoint and export its inference graph."""
     checkpoint_path = _checkpoint_stem(_resolve_repo_path(checkpoint).resolve())
@@ -83,6 +85,9 @@ def export_resnet_onnx(
     model.eval()
     ms.load_checkpoint([model], None, str(checkpoint_path))
 
+    crop = parse_roi_crop(roi_crop)
+    crop_str = format_roi_crop(crop)
+    export_kwargs = {"metadata": {"myflows.roi_crop": crop_str}} if crop_str else {}
     graph = ms.Graph(logits, optimize=bool(graph_opt))
     graph.forward()
     exported = ms.export_onnx(
@@ -90,6 +95,7 @@ def export_resnet_onnx(
         str(output_path),
         input_nodes=[x_var],
         output_names=["control"],
+        **export_kwargs,
     )
     return Path(exported)
 
@@ -107,6 +113,7 @@ def export_vgg11_onnx(
     image_h: int = 120,
     device: str = "auto",
     graph_opt: bool = True,
+    roi_crop: str | tuple[int, int, int, int] | None = None,
 ) -> Path:
     """Load a VGG-11 Donkey regression checkpoint and export an ONNX graph for deployment."""
     checkpoint_path = _checkpoint_stem(_resolve_repo_path(checkpoint).resolve())
@@ -142,6 +149,9 @@ def export_vgg11_onnx(
     model.eval()
     ms.load_checkpoint([model], None, str(checkpoint_path))
 
+    crop = parse_roi_crop(roi_crop)
+    crop_str = format_roi_crop(crop)
+    export_kwargs = {"metadata": {"myflows.roi_crop": crop_str}} if crop_str else {}
     graph = ms.Graph(control, optimize=bool(graph_opt))
     graph.forward()
     exported = ms.export_onnx(
@@ -149,6 +159,7 @@ def export_vgg11_onnx(
         str(output_path),
         input_nodes=[x_var],
         output_names=["control"],
+        **export_kwargs,
     )
     return Path(exported)
 
@@ -173,6 +184,7 @@ def main() -> None:
     parser.add_argument("--batch-size", type=int, default=1, help="ONNX input batch size.")
     parser.add_argument("--image-w", type=int, default=160, help="Input image width.")
     parser.add_argument("--image-h", type=int, default=120, help="Input image height.")
+    parser.add_argument("--roi-crop", type=str, default=None, help="Optional ROI crop margins TOP,BOTTOM[,LEFT,RIGHT].")
     parser.add_argument("--stem", choices=("cifar", "imagenet"), default="cifar")
     parser.add_argument("--base-width", type=int, default=64, help="ResNet first-stage width used in training.")
     parser.add_argument("--regression-head", choices=("global", "spatial"), default="global")
@@ -190,6 +202,7 @@ def main() -> None:
                 image_h=args.image_h,
                 device=args.device,
                 graph_opt=not args.no_graph_opt,
+                roi_crop=args.roi_crop,
             )
         else:
             exported = export_resnet_onnx(
@@ -204,6 +217,7 @@ def main() -> None:
                 graph_opt=not args.no_graph_opt,
                 base_width=args.base_width,
                 regression_head=args.regression_head,
+                roi_crop=args.roi_crop,
             )
     except (FileNotFoundError, ValueError) as exc:
         raise SystemExit(str(exc)) from exc

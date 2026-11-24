@@ -24,6 +24,7 @@ from pathlib import Path
 import numpy as np
 
 from apps.common.gpu_lock import GpuLock
+from apps.common.image_preprocess import crop_rgb, parse_roi_crop
 from apps.common.splits import select_split
 from apps.console.presets import single_cli_args
 from apps.train import train_myflows_donkey as train
@@ -51,13 +52,15 @@ def evaluate(item: dict, split: str) -> dict:
     if not rows:
         raise SystemExit(f"划分中没有 {split} 样本")
     first = train.cv2.imread(str(data_dir / rows[0][0]))
-    h, w = train.input_size(args, first)
+    roi_crop = parse_roi_crop(getattr(args, "roi_crop", None))
+    first_for_size = crop_rgb(first, roi_crop) if roi_crop is not None else first
+    h, w = train.input_size(args, first_for_size)
     batch = int(args.batch)
     x_var, y_var, model, logits, _loss, graph = train._build_model(args, batch, h, w, dtype, conv_backend,
                                                                    load_pretrained=False)
     ms.load_checkpoint([model], None, str(item["checkpoint"]))
     model.eval()
-    samples = [(str(data_dir / rel), angle, throttle, w, h, args.dtype) for rel, angle, throttle in rows]
+    samples = [(str(data_dir / rel), angle, throttle, w, h, args.dtype, roi_crop) for rel, angle, throttle in rows]
     squared = angle_abs = 0.0
     count = 0
     for x_items, y_items in MultiprocessDataLoader(samples, batch, num_workers=0, shuffle=False,

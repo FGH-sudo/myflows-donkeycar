@@ -28,7 +28,7 @@ sys.path.insert(0, str(ROOT))
 
 import MyFlows as ms
 from apps.common.donkey_data import load_donkey_index
-from apps.common.image_preprocess import imread_nchw, read_rgb
+from apps.common.image_preprocess import crop_rgb, imread_nchw, parse_roi_crop, read_rgb
 from apps.common.splits import select_saved_split
 from apps.train.common.checkpoints import checkpoint_stem as normalize_checkpoint_stem
 from apps.train.common.regression_model import build_regression_resnet, input_size
@@ -56,6 +56,7 @@ def main() -> None:
     ap.add_argument("--base-width", type=int, default=64)
     ap.add_argument("--regression-head", choices=("global", "spatial"), default="global")
     ap.add_argument("--image-size", help="训练时使用的 HxW，默认沿用首帧尺寸")
+    ap.add_argument("--roi-crop", type=str, default=None, help="ROI 裁剪 TOP,BOTTOM[,LEFT,RIGHT]")
     ap.add_argument("--fixed-throttle", type=float, default=0.5)
     ap.add_argument("--force-fixed-throttle", action="store_true", help="忽略 catalog 中的 user/throttle，强制使用 --fixed-throttle")
     ap.add_argument("--max-samples", type=int, default=2000, help="最多评估多少条(0=catalog 全部)")
@@ -76,6 +77,10 @@ def main() -> None:
     ap.add_argument("--zero-pred-eps", type=float, default=0.05, help="接近直行时预测绝对值小于该阈值认为正确")
 
     args = ap.parse_args()
+    try:
+        roi_crop = parse_roi_crop(args.roi_crop)
+    except ValueError as exc:
+        ap.error(str(exc))
 
     data_dir = (ROOT / args.data).resolve()
     if not data_dir.is_dir():
@@ -106,7 +111,8 @@ def main() -> None:
     # 用第一条样本确定输入尺寸
     first_p = data_dir / index[0][0]
     first_rgb = read_rgb(first_p)
-    h, w = input_size(args, first_rgb)
+    first_for_size = crop_rgb(first_rgb, roi_crop) if roi_crop is not None else first_rgb
+    h, w = input_size(args, first_for_size)
     dtype = np.float32
 
     device = resolve_myflows_device(args.device)
@@ -153,7 +159,7 @@ def main() -> None:
 
         for r, (rel, a_true, t_true) in enumerate(bi):
             p = data_dir / rel
-            x_batch[r] = imread_nchw(p, (w, h), dtype=dtype)[0]
+            x_batch[r] = imread_nchw(p, (w, h), dtype=dtype, roi_crop=roi_crop)[0]
             y[r, 0] = a_true
             y[r, 1] = t_true
 

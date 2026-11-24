@@ -59,8 +59,13 @@ sys.path.insert(0, str(ROOT))
 import MyFlows as ms
 from apps.common.datasets import require_usable_dataset
 from apps.common.donkey_data import load_donkey_index as _load_donkey_index
-from apps.common.image_preprocess import imread_nchw as _imread_nchw
-from apps.common.image_preprocess import pad_fixed_batch as _pad_fixed_batch
+from apps.common.image_preprocess import (
+    crop_rgb,
+    format_roi_crop,
+    imread_nchw as _imread_nchw,
+    pad_fixed_batch as _pad_fixed_batch,
+    parse_roi_crop,
+)
 from apps.common.gpu_lock import GpuLock
 from apps.common.splits import entries_hash, resolve_splits, select_split
 from apps.train.common import outcome
@@ -79,6 +84,7 @@ from MyFlows.ops.precision import BACKENDS as PRECISION_BACKENDS, MIXED
 from MyFlows.data.pipeline import MultiprocessDataLoader
 from MyFlows.distributed.shards import split_global_batch
 from MyFlows.train.regularization import RegularizationConfig, apply_regularization
+from MyFlows.train.scheduler import CosineWarmupScheduler
 from MyFlows.utils.checkpoint import named_state, read_checkpoint_metadata, resolve_checkpoint_paths
 from MyFlows.utils.initializers import make_initializer
 from MyFlows.utils.model_inspector import format_inspection_report, format_model_summary, inspect_graph, model_summary
@@ -86,7 +92,7 @@ from tools.export_resnet_onnx import export_resnet_onnx
 from tools.device_runtime import myflows_scalar_float, print_myflows_device, resolve_myflows_device
 from MyFlows.utils.training_observer import global_gradient_norm
 from MyFlows.utils.training_dashboard import TrainingDashboard
-from MyFlows.utils.transforms import augment_chw_batch, default_train_transforms
+from MyFlows.utils.transforms import augment_chw_batch, default_train_transforms, driving_train_transforms
 from MyFlows.utils.viz import TrainingHistory, plot_training_curves
 from MyFlows.monitoring.record import MonitorProcess, monitoring_enabled
 from MyFlows.monitoring.nvtx import TrainingProfiler
@@ -233,6 +239,11 @@ _LATER_DEFAULTS = {"arch": "resnet18", "pretrained": None, "freeze_stages": 0, "
 _LATER_DEFAULTS.update(unfreeze_schedule=None, freeze_mode="both", bn_unfreeze="follow")
 _LATER_DEFAULTS.update(feature_cache=False, lora_rank=0, lora_alpha=None)
 _LATER_DEFAULTS.update(regression_head="global")
+_LATER_DEFAULTS.update(
+    roi_crop=None, lr_schedule="constant", warmup_epochs=0.0, min_lr=0.0,
+    loss="mse", huber_delta=0.2, angle_weight=1.0, throttle_weight=1.0, turn_weight=0.0,
+    best_metric="val_loss", augment_preset="default",
+)
 
 
 def trajectory_config(args: argparse.Namespace) -> dict:
@@ -264,10 +275,14 @@ def derive_seeds(seed: int | None, world: int) -> dict:
 
 
 
-def _load_training_sample(sample: tuple[str, float, float, int, int, str]) -> tuple[np.ndarray, np.ndarray]:
-    path_str, angle, throttle, image_w, image_h, dtype_name = sample
+def _load_training_sample(sample: tuple) -> tuple[np.ndarray, np.ndarray]:
+    if len(sample) == 6:
+        path_str, angle, throttle, image_w, image_h, dtype_name = sample
+        roi_crop = None
+    else:
+        path_str, angle, throttle, image_w, image_h, dtype_name, roi_crop = sample
     dtype = np.float32 if dtype_name == "float32" else np.float64
-    x = _imread_nchw(Path(path_str), (int(image_w), int(image_h)), dtype)[0]
+    x = _imread_nchw(Path(path_str), (int(image_w), int(image_h)), dtype, roi_crop=roi_crop)[0]
     y = np.array([float(angle), float(throttle)], dtype=dtype)
     return x, y
 
@@ -304,6 +319,15 @@ def build_parser() -> argparse.ArgumentParser:
     )
     ap.add_argument("--dtype", type=str, default="float32", choices=("float32", "float64"), help="训练计算 dtype（float32 通常更快）")
     ap.add_argument("--lr", type=float, default=1e-3)
+    ap.add_argument("--lr-schedule", choices=("constant", "cosine"), default="constant", help="学习率调度策略")
+    ap.add_argument("--warmup-epochs", type=float, default=0.0, help="cosine 调度时的线性预热 epoch 数")
+    ap.add_argument("--min-lr", type=float, default=0.0, help="cosine 退火终值学习率")
+    ap.add_argument("--loss", choices=("mse", "huber"), default="mse", help="回归基础损失函数")
+    ap.add_argument("--huber-delta", type=float, default=0.2, help="Huber 损失转折阈值 delta")
+    ap.add_argument("--angle-weight", type=float, default=1.0, help="转向角损失权重")
+    ap.add_argument("--throttle-weight", type=float, default=1.0, help="油门损失权重")
+    ap.add_argument("--turn-weight", type=float, default=0.0, help="按 |angle| 放大弯道转向损失的系数")
+    ap.add_argument("--best-metric", choices=("val_loss", "val_angle_mae"), default="val_loss", help="最佳模型与早停判据")
     ap.add_argument("--weight-decay", type=float, default=0.0, help="L2 正则系数；默认关闭")
     ap.add_argument("--l1-coeff", type=float, default=0.0, help="L1 正则系数；默认关闭")
     ap.add_argument("--regularize-bias-bn", action="store_true", help="正则化 bias/BN 参数；默认跳过")
@@ -348,6 +372,8 @@ def build_parser() -> argparse.ArgumentParser:
                     help="冻结前几个阶段（0..5；需 --pretrained）：参数不训练，BN 固定 running statistics 并保持 eval")
     ap.add_argument("--image-size", type=str, default=None,
                     help="输入尺寸 HxW（如 224x224）；默认与首帧一致")
+    ap.add_argument("--roi-crop", type=str, default=None,
+                    help="ROI 裁剪边距 TOP,BOTTOM[,LEFT,RIGHT]（在 resize 前切除天空与车头引擎盖）")
     ap.add_argument("--input-norm", type=str, default="auto", choices=("auto", "none", "imagenet"),
                     help="输入归一化；auto = 有 --pretrained 时按 ImageNet 均值/标准差，否则不归一化")
     ap.add_argument("--base-width", type=int, default=64, help="ResNet 第一阶段通道数，后续阶段依次翻倍，导出 ONNX 时沿用")
@@ -411,6 +437,12 @@ def build_parser() -> argparse.ArgumentParser:
         "--augment",
         action="store_true",
         help="启用数据增强（RandomCrop/Rotation/ColorJitter）",
+    )
+    ap.add_argument(
+        "--augment-preset",
+        choices=("default", "driving"),
+        default="default",
+        help="增强预设：default 沿用默认几何增强；driving 使用水平平移+转向补偿、随机阴影与色彩抖动",
     )
     ap.add_argument(
         "--mixup",
@@ -525,6 +557,7 @@ class TrainPlan:
     fixed_state: str | None = None
     transfer_state: dict | None = None
     initialization: dict | None = None
+    roi_crop: tuple[int, int, int, int] | None = None
 
     @property
     def world_size(self) -> int:
@@ -596,7 +629,8 @@ def _apply_resume_state(args: argparse.Namespace, plan: "TrainPlan") -> None:
     plan.best_loss = state.get("best_loss")
     plan.early_stopping_state = state.get("early_stopping")
     plan.resume_found = True
-    lr_note = "" if float(state.get("lr", args.lr)) == float(args.lr) else f"，lr {state.get('lr')} → {args.lr}"
+    saved_lr = float(state.get("base_lr", state.get("lr", args.lr)))
+    lr_note = "" if saved_lr == float(args.lr) else f"，lr {saved_lr} → {args.lr}"
     print(f"[resume-state] {path.name}：从 epoch {plan.start_epoch + 1} 第 {plan.start_step + 1} 步精确续训"
           f"（已训练 {plan.start_global_step} 步{lr_note}）")
 
@@ -670,6 +704,28 @@ def prepare(args: argparse.Namespace) -> tuple[TrainPlan, TeeLogger]:
     """主进程：解析路径、读数据索引与划分、确定输入尺寸与 Worker 分片，返回训练计划与日志。"""
     if args.conv_backend in MIXED and args.distributed != "none":
         raise SystemExit("动态 loss scaling 的混合精度实验使用单进程")
+    try:
+        roi_crop = parse_roi_crop(getattr(args, "roi_crop", None))
+    except ValueError as exc:
+        raise SystemExit(f"[roi-crop] {exc}") from exc
+    args.roi_crop = format_roi_crop(roi_crop)
+    if not math.isfinite(args.warmup_epochs) or args.warmup_epochs < 0:
+        raise SystemExit("--warmup-epochs 必须为有限非负数")
+    if not math.isfinite(args.min_lr) or args.min_lr < 0:
+        raise SystemExit("--min-lr 必须为有限非负数")
+    if args.lr_schedule == "cosine" and args.min_lr > args.lr and not args.resume_state:
+        raise SystemExit("--min-lr 不能大于 --lr")
+    if not math.isfinite(args.huber_delta) or args.huber_delta <= 0:
+        raise SystemExit("--huber-delta 必须为有限正数")
+    for flag, val in (
+        ("--angle-weight", args.angle_weight),
+        ("--throttle-weight", args.throttle_weight),
+        ("--turn-weight", args.turn_weight),
+    ):
+        if not math.isfinite(val) or val < 0:
+            raise SystemExit(f"{flag} 必须为有限非负数")
+    if args.angle_weight + args.throttle_weight <= 0:
+        raise SystemExit("--angle-weight 与 --throttle-weight 不能同时为 0")
     data_dir = (ROOT / args.data).resolve()
     if not data_dir.is_dir():
         raise SystemExit(f"数据目录不存在: {data_dir}")
@@ -740,26 +796,38 @@ def prepare(args: argparse.Namespace) -> tuple[TrainPlan, TeeLogger]:
     img0 = cv2.imread(str(first_p), cv2.IMREAD_COLOR)
     if img0 is None:
         raise SystemExit(f"首帧读取失败: {first_p}")
-    h, w = input_size(args, img0)
-    print(f"使用输入尺寸 H×W = {h}×{w}" + (" (与首帧一致)" if not args.image_size else " (--image-size)"))
+    try:
+        img0_for_size = crop_rgb(img0, roi_crop) if roi_crop is not None else img0
+    except ValueError as exc:
+        raise SystemExit(f"[roi-crop] {exc}") from exc
+    h, w = input_size(args, img0_for_size)
+    crop_note = f", roi_crop={args.roi_crop}" if args.roi_crop else ""
+    print(f"使用输入尺寸 H×W = {h}×{w}" + (" (与首帧一致)" if not args.image_size else " (--image-size)") + crop_note)
 
     out_base = _checkpoint_stem((ROOT / args.out).resolve())
     best_base = _checkpoint_stem((ROOT / args.best_out).resolve())
     out_base.parent.mkdir(parents=True, exist_ok=True)
     best_base.parent.mkdir(parents=True, exist_ok=True)
     distributed = args.distributed != "none"
+
+    def _pack_samples(rows: list) -> list:
+        if roi_crop is None:
+            return [(str(data_dir / rel), angle, throttle, w, h, args.dtype) for rel, angle, throttle in rows]
+        return [(str(data_dir / rel), angle, throttle, w, h, args.dtype, roi_crop) for rel, angle, throttle in rows]
+
     plan = TrainPlan(
         args=args, run_id=run_id, run_stamp=run_stamp, log_dir=str(log_dir), log_file=str(log_file),
         plot_prefix=plot_prefix, tb_logdir=str(tb_logdir), out_base=str(out_base), best_base=str(best_base),
         stop_file=str((ROOT / args.stop_file).resolve()),
         run_dir=str((ROOT / args.run_dir).resolve()) if args.run_dir else None,
-        dataset=[(str(data_dir / rel), angle, throttle, w, h, args.dtype) for rel, angle, throttle in index],
-        val_dataset=[(str(data_dir / rel), angle, throttle, w, h, args.dtype) for rel, angle, throttle in val_index],
-        test_dataset=[(str(data_dir / rel), angle, throttle, w, h, args.dtype) for rel, angle, throttle in test_index],
+        dataset=_pack_samples(index),
+        val_dataset=_pack_samples(val_index),
+        test_dataset=_pack_samples(test_index),
         h=h, w=w, mode=args.distributed, transport=args.transport if distributed else "none",
         shard_sizes=split_global_batch(int(args.batch), int(args.workers) if distributed else 1),
         data_hash=entries_hash(index), val_hash=entries_hash(val_index) if val_index else None,
         split_file=str(split_path) if split_path is not None else None,
+        roi_crop=roi_crop,
     )
     plan.seeds = derive_seeds(args.seed, plan.world_size)
     if getattr(args, "init_checkpoint", None):
@@ -866,6 +934,26 @@ def transfer_config(args, *, require_weights=True) -> dict | None:
             "input_norm": norm}
 
 
+def _build_loss_node(args, logits, y_var):
+    if (
+        getattr(args, "loss", "mse") == "mse"
+        and float(getattr(args, "angle_weight", 1.0)) == 1.0
+        and float(getattr(args, "throttle_weight", 1.0)) == 1.0
+        and float(getattr(args, "turn_weight", 0.0)) == 0.0
+    ):
+        return ms.MSELoss(logits, y_var, name="loss")
+    return ms.WeightedControlLoss(
+        logits,
+        y_var,
+        base=getattr(args, "loss", "mse"),
+        delta=float(getattr(args, "huber_delta", 0.2)),
+        angle_weight=float(getattr(args, "angle_weight", 1.0)),
+        throttle_weight=float(getattr(args, "throttle_weight", 1.0)),
+        turn_weight=float(getattr(args, "turn_weight", 0.0)),
+        name="loss",
+    )
+
+
 def _build_model(args, batch: int, h: int, w: int, dtype, conv_backend: str, dropout_seed: int | None = None,
                  load_pretrained: bool = True):
     """构图（批大小固定为 batch）。输入与标签不需要梯度：stem 卷积因此跳过 dX 的 GEMM 与 col2im。
@@ -925,7 +1013,7 @@ def _build_model(args, batch: int, h: int, w: int, dtype, conv_backend: str, dro
         model.transfer_manager = manager
         model.transfer = {**transfer, **manager.result()}
     logits = model(x_var)
-    loss_node = ms.MSELoss(logits, y_var, name="loss")
+    loss_node = _build_loss_node(args, logits, y_var)
     graph = ms.Graph(loss_node, optimize=bool(args.graph_opt))
     return x_var, y_var, model, logits, loss_node, graph
 
@@ -1132,15 +1220,18 @@ def _train_rank(plan: TrainPlan, rank, sync, device, profiler) -> dict:
     cached_val = None
     cache_info = None
     if args.feature_cache:
-        if manager is None or sync is not None or args.augment or args.mixup or args.cutmix:
+        if manager is None or sync is not None or args.augment or args.augment_preset != "default" or args.mixup or args.cutmix:
             raise ValueError("feature cache requires a single-process frozen backbone with no random augmentation")
         selected = {"train": plan.dataset, "val": plan.val_dataset, "test": plan.test_dataset}
+        preprocessing = {"height": h, "width": w, "dtype": args.dtype, "backend": conv_backend,
+                         "input_norm": getattr(model, "input_norm", None)}
+        if plan.roi_crop is not None:
+            preprocessing["roi_crop"] = format_roi_crop(plan.roi_crop)
         cache_arrays, cache_info = manager.cache_features(
             Path(plan.run_dir or plan.log_dir) / "feature-cache", selected,
             sample_manifest={key: [list(sample) for sample in values] for key, values in selected.items()},
             input_node=evaluation_x, batch=batch, load_input=lambda sample: _load_training_sample(sample)[0],
-            preprocessing={"height": h, "width": w, "dtype": args.dtype, "backend": conv_backend,
-                           "input_norm": getattr(model, "input_norm", None)})
+            preprocessing=preprocessing)
         cached_train = {tuple(sample): (cache_arrays["train"][i], np.asarray(sample[1:3], dtype=dtype))
                         for i, sample in enumerate(plan.dataset)}
         if plan.val_dataset and "val" in cache_arrays and len(cache_arrays["val"]) == len(plan.val_dataset):
@@ -1150,7 +1241,7 @@ def _train_rank(plan: TrainPlan, rank, sync, device, profiler) -> dict:
             ]
         x_var = ms.Variable(np.zeros((batch, cache_arrays["train"].shape[1]), dtype=dtype), name="features", requires_grad=False)
         logits = model.forward_head(x_var)
-        loss_node = ms.MSELoss(logits, y_var, name="loss")
+        loss_node = _build_loss_node(args, logits, y_var)
         graph = ms.Graph(loss_node)
         profiler.bind_graph(graph)
         opt.graph = graph
@@ -1178,10 +1269,15 @@ def _train_rank(plan: TrainPlan, rank, sync, device, profiler) -> dict:
         labels = np.asarray([[angle, throttle] for _, angle, throttle, *_ in plan.dataset], dtype=np.float64)
         dashboard.log_dataset_summary(labels, task="regression")
     # 各 Worker 的增强用不同种子（由 --seed 派生），避免每个分片得到同样的随机变换
-    train_transform = default_train_transforms(seed=seeds["augment"][rank]) if args.augment else None
-    mix_seed = seeds["mix"][rank]
-    if args.augment:
+    if args.augment_preset == "driving":
+        train_transform = driving_train_transforms(seed=seeds["augment"][rank])
+        say("数据增强 (driving): RandomHorizontalShift + RandomShadow + ColorJitter")
+    elif args.augment:
+        train_transform = default_train_transforms(seed=seeds["augment"][rank])
         say("数据增强: RandomCrop + RandomRotation + ColorJitter")
+    else:
+        train_transform = None
+    mix_seed = seeds["mix"][rank]
     if args.mixup:
         say("MixUp: 已启用")
     if args.cutmix:
@@ -1201,6 +1297,22 @@ def _train_rank(plan: TrainPlan, rank, sync, device, profiler) -> dict:
     validation_history: list[dict] = []
     best_epoch = None
     end_epoch = plan.end_epoch if plan.resume_state else plan.start_epoch + int(args.epochs)
+    scheduler = None
+    if args.lr_schedule == "cosine":
+        if (plan.resume_meta or {}).get("scheduler"):
+            scheduler = CosineWarmupScheduler.from_state_dict(plan.resume_meta["scheduler"])
+            if float(args.lr) != float(scheduler.base_lr):
+                scheduler.base_lr = float(args.lr)
+                scheduler.min_lr = min(scheduler.min_lr, scheduler.base_lr)
+        else:
+            total_steps = max(1, int(end_epoch) * steps)
+            warmup_steps = int(round(float(args.warmup_epochs) * steps))
+            scheduler = CosineWarmupScheduler(
+                float(args.lr),
+                total_steps,
+                warmup_steps=warmup_steps,
+                min_lr=float(args.min_lr),
+            )
     rng_streams = _rng_streams(train_transform, graph)
     resumed = plan.resume_meta or {}
     first_loss = resumed.get("first_loss")
@@ -1214,7 +1326,9 @@ def _train_rank(plan: TrainPlan, rank, sync, device, profiler) -> dict:
         validation_history = list(resumed.get("validation_history") or [])
         best_epoch = resumed.get("best_epoch")
         last_mean_loss = resumed.get("last_mean_loss")
-        if float(resumed.get("lr", args.lr)) != float(args.lr):
+        if scheduler is not None and plan.start_global_step > 0:
+            opt.learning_rate = scheduler.lr_at(plan.start_global_step - 1)
+        if float(resumed.get("base_lr", resumed.get("lr", args.lr))) != float(args.lr):
             lr_history.append({"global_step": plan.start_global_step, "lr": float(args.lr)})
     rank_steps = None
     if run_dir is not None and sync is not None:
@@ -1259,6 +1373,8 @@ def _train_rank(plan: TrainPlan, rank, sync, device, profiler) -> dict:
             "epochs_completed": epochs_completed, "trained_samples": samples, "train_wall_s": wall_s,
             "last_mean_loss": last_mean_loss, "loss": loss, "running_loss": running_loss, "first_loss": first_loss,
             "lr": float(opt.learning_rate), "lr_history": lr_history, "fingerprint": plan.fingerprint,
+            "base_lr": float(scheduler.base_lr) if scheduler is not None else float(args.lr),
+            "scheduler": scheduler.state_dict() if scheduler is not None else None,
             "group_learning_rates": opt.group_learning_rates(),
             "transfer_state": manager.state_dict() if manager else None,
             "initial_validation": initial_validation,
@@ -1363,11 +1479,13 @@ def _train_rank(plan: TrainPlan, rank, sync, device, profiler) -> dict:
                     raise SystemExit("graph inspection failed")
                 inspect_done = True
                 graph.materialize_intermediates(False)
+            if scheduler is not None:
+                scheduler.step(opt, global_step)
             if dashboard.active and dashboard.grad_interval > 0 and (global_step % dashboard.grad_interval == 0):
                 # 只在要记录时才算：全局范数要读回一个标量，会让 CPU 等 GPU 跑完整个反向
                 dashboard.tb.log_scalar("gradients/global_norm", global_gradient_norm(model), global_step)
             dashboard.log_gradients(global_step, model)
-            dashboard.log_parameters(global_step, model, args.lr)
+            dashboard.log_parameters(global_step, model, float(opt.learning_rate))
             if sync is None:
                 with phases("optimizer"):
                     opt.update()
@@ -1486,7 +1604,7 @@ def _train_rank(plan: TrainPlan, rank, sync, device, profiler) -> dict:
                 ep + 1,
                 loss=last_mean_loss,
                 validation_loss=validation,
-                learning_rate=args.lr,
+                learning_rate=float(opt.learning_rate),
                 epoch_time_s=time.perf_counter() - epoch_start,
                 extra=epoch_extra,
             )
@@ -1498,8 +1616,11 @@ def _train_rank(plan: TrainPlan, rank, sync, device, profiler) -> dict:
                 say(f"epoch {ep+1} val loss: {validation:.6f} val angle MAE: {angle_mae:.6f} "
                     f"({validation_count} samples)")
 
-            # 每个 Worker 拿到相同的验证 loss，所以最佳模型与早停的判断处处一致
-            score_for_best = float(validation if validation is not None else last_mean_loss)
+            # 每个 Worker 拿到相同的验证指标，所以最佳模型与早停的判断处处一致
+            if args.best_metric == "val_angle_mae" and angle_mae is not None:
+                score_for_best = float(angle_mae)
+            else:
+                score_for_best = float(validation if validation is not None else last_mean_loss)
             improved = best_tracker.update(score_for_best)
             if early_stopper is not None:
                 stop_state = early_stopper.update(score_for_best)
@@ -1695,11 +1816,14 @@ def _result(args, plan: TrainPlan | None, summary: dict, *, started_unix_s: floa
                                                        "split_seed", "arch", "pretrained", "freeze_stages",
                                                        "image_size", "input_norm", "backbone_lr_mult",
                                                        "stage_lr_mults", "compat", "unfreeze_schedule", "freeze_mode",
-                                                       "bn_unfreeze", "feature_cache", "lora_rank", "lora_alpha")},
+                                                       "bn_unfreeze", "feature_cache", "lora_rank", "lora_alpha",
+                                                       "roi_crop", "lr_schedule", "warmup_epochs", "min_lr",
+                                                       "loss", "huber_delta", "angle_weight", "throttle_weight",
+                                                       "turn_weight", "best_metric", "augment_preset")},
         "metrics": {"val_angle_mae": at_best if at_best is not None else final, "val_angle_mae_final": final,
                     "best_val_angle_mae": summary.get("best_val_angle_mae"), "val_loss": summary.get("val_loss"),
                     "best_loss": summary.get("best_loss"), "last_train_loss": summary.get("last_mean_loss"),
-                    "best_epoch": summary.get("best_epoch")},
+                    "best_epoch": summary.get("best_epoch"), "best_metric": args.best_metric},
         "epochs": summary.get("epochs", []),
         "initial_validation": summary.get("initial_validation"),
         "throughput": {"samples_per_s": summary.get("samples_per_s"),
@@ -1724,7 +1848,7 @@ def _result(args, plan: TrainPlan | None, summary: dict, *, started_unix_s: floa
             expected = int(plan.end_epoch) * plan.steps_per_epoch * plan.global_batch
             meta = plan.resume_meta or {}
             result["resume"] = {"state": plan.resume_state, "from_global_step": meta.get("global_step"),
-                                "lr_before": meta.get("lr"), "lr": float(args.lr)}
+                                "lr_before": meta.get("base_lr", meta.get("lr")), "lr": float(args.lr)}
         elif not plan.resume_found:
             expected = int(args.epochs) * plan.steps_per_epoch * plan.global_batch
         result.update(
@@ -1815,9 +1939,12 @@ def main() -> None:
         raise SystemExit(exit_code)
 
 
+_ONNX_ARCHS = set(BASIC_RESNETS) | {"mobilenet_v2", "alexnet"}
+
+
 def _export_onnx(args, plan: TrainPlan) -> None:
     transfer = transfer_config(args, require_weights=False)
-    if transfer and transfer["arch"] not in BASIC_RESNETS:
+    if transfer and transfer["arch"] not in _ONNX_ARCHS:
         print(f"ONNX 导出暂不支持 {transfer['arch']}，跳过")
         return
     best_base = Path(plan.best_base)
@@ -1825,6 +1952,8 @@ def _export_onnx(args, plan: TrainPlan) -> None:
         print(f"还没有最佳模型（第一个 epoch 结束前就停止了），跳过 ONNX 导出: {best_base}")
         return
     onnx_path = (ROOT / args.onnx_out).resolve() if args.onnx_out else best_base.with_suffix(".onnx")
+    crop_str = format_roi_crop(plan.roi_crop)
+    export_kwargs = {"metadata": {"myflows.roi_crop": crop_str}} if crop_str else {}
     if transfer:
         from MyFlows.core.device import get_device
         from MyFlows.core.dtype import get_default_dtype
@@ -1839,12 +1968,19 @@ def _export_onnx(args, plan: TrainPlan) -> None:
             merge_resnet_lora(model).eval()
             graph = ms.Graph(model(x))
             onnx_path.parent.mkdir(parents=True, exist_ok=True)
-            ms.export_onnx(graph, str(onnx_path), input_nodes=[x], output_names=["prediction"])
+            ms.export_onnx(
+                graph,
+                str(onnx_path),
+                input_nodes=[x],
+                output_names=["prediction"],
+                **export_kwargs,
+            )
         finally:
             set_device(previous_device)
             ms.set_default_dtype(previous_dtype)
         print(f"已导出 ONNX: {onnx_path} (batch=1)")
         return
+    roi_kwargs = {"roi_crop": plan.roi_crop} if plan.roi_crop is not None else {}
     export_resnet_onnx(
         best_base,
         output=onnx_path,
@@ -1857,6 +1993,7 @@ def _export_onnx(args, plan: TrainPlan) -> None:
         base_width=int(args.base_width),
         regression_head=getattr(args, "regression_head", "global"),
         arch=args.arch,
+        **roi_kwargs,
     )
     print(f"已导出 ONNX: {onnx_path} (batch=1)")
 

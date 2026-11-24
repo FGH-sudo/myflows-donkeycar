@@ -93,6 +93,51 @@ class RoadFinderSettings:
     steady_pictures: int = 40  # accepted pictures in a row, no jump and at the episode's own distance: a steady view
 
 
+def _consensus_line(
+    pts: list[tuple[float, float]],
+    *,
+    sign: int,
+    max_err: float,
+    min_count: int,
+    width: int,
+    c0_hint: float | None = None,
+    c1_hint: float | None = None,
+):
+    """Find the dominant near-linear road edge ``c0 + c1 * depth`` across bimodal scanlines."""
+    n = len(pts)
+    if n < min_count:
+        return None
+    depths = np.array([p[0] for p in pts], dtype=np.float64)
+    cols = np.array([p[1] for p in pts], dtype=np.float64)
+    best = None
+    for i in range(n):
+        d_i, x_i = depths[i], cols[i]
+        for j in range(i + 1, n):
+            dd = depths[j] - d_i
+            if abs(dd) < 6.0:
+                continue
+            c1 = (cols[j] - x_i) / dd
+            if sign * c1 <= 0.0 or not (0.5 <= abs(c1) <= 6.5):
+                continue
+            c0 = x_i - c1 * d_i
+            if not (0.15 * width <= c0 <= 0.85 * width):
+                continue
+            if c0_hint is not None and abs(c0 - c0_hint) > 30.0:
+                continue
+            errs = np.abs(cols - (c0 + c1 * depths))
+            inliers = errs <= max_err
+            cnt = int(inliers.sum())
+            if cnt < min_count:
+                continue
+            slope_pen = 0.0 if c1_hint is None else 0.5 * abs(c1 - c1_hint)
+            score = (cnt - slope_pen, -float(np.median(errs[inliers])))
+            if best is None or score > best[0]:
+                best = (score, float(c0), float(c1), inliers)
+    if best is None:
+        return None
+    return best[1], best[2], best[3]
+
+
 class RoadFinder:
     def __init__(self, settings: RoadFinderSettings | None = None):
         self.settings = settings or RoadFinderSettings()
@@ -200,7 +245,7 @@ class RoadFinder:
         return runs
 
     # ---- edge points to a road ----------------------------------------------------------------------
-    def fit(self, runs, *, gated: bool = True):
+    def fit(self, runs, *, gated: bool = True, curvature_prior: float | None = None):
         """``(c0, c2, c1 left, c1 right), (left points kept, right points kept), rms`` or None.
 
         Least squares on the edge points, reweighted so that points far from their edge lose their say (a
@@ -229,7 +274,8 @@ class RoadFinder:
         design = np.column_stack([np.ones_like(depths), 1. / depths, np.where(sides == 0, depths, 0.),
                                   np.where(sides == 1, depths, 0.)])
         reference = float(s.prior_depth)
-        rows, targets, strengths = [[0., 1. / reference, 0., 0.]], [0.], [s.curvature_prior]
+        bend_prior = s.curvature_prior if curvature_prior is None else float(curvature_prior)
+        rows, targets, strengths = [[0., 1. / reference, 0., 0.]], [0.], [bend_prior]
         if previous is not None and s.temporal_prior > 0:
             # Heading and bend change little from one picture to the next. With one edge in view they are hard to
             # tell from that edge's slope, and this is what tells them apart.
@@ -265,19 +311,63 @@ class RoadFinder:
         rms = float(np.sqrt(np.sum(weight * residual ** 2) / np.sum(weight)))
         return tuple(float(v) for v in solution), kept, rms
 
-    def _accept(self, fitted, runs, *, fresh: bool = False):
+    def _consensus_fit(self, runs, width: int):
+        """Recover the true road edge when half the scanlines leak onto a parallel curb or verge."""
+        s = self.settings
+        right_idx, right_pts = [], []
+        left_idx, left_pts = [], []
+        for idx, (row, left, right, left_seen, right_seen) in enumerate(runs):
+            depth = float(row - s.horizon)
+            if right_seen:
+                right_idx.append(idx)
+                right_pts.append((depth, right + .5))
+            if left_seen:
+                left_idx.append(idx)
+                left_pts.append((depth, left - .5))
+        right_res = _consensus_line(
+            right_pts,
+            sign=1,
+            max_err=3.0,
+            min_count=s.side_points,
+            width=width,
+            c1_hint=self.initial,
+        )
+        if right_res is None:
+            return None
+        c0_r, _c1_r, r_mask = right_res
+        left_res = _consensus_line(
+            left_pts,
+            sign=-1,
+            max_err=3.0,
+            min_count=s.min_points,
+            width=width,
+            c0_hint=c0_r,
+        )
+        keep_r = {right_idx[k] for k in np.flatnonzero(r_mask)}
+        keep_l = {left_idx[k] for k in np.flatnonzero(left_res[2])} if left_res is not None else set()
+        filtered = [
+            (row, left, right, left_seen and idx in keep_l, right_seen and idx in keep_r)
+            for idx, (row, left, right, left_seen, right_seen) in enumerate(runs)
+        ]
+        return self.fit(filtered, gated=False, curvature_prior=50.0 * s.curvature_prior)
+
+    def _accept(self, fitted, runs, *, fresh: bool = False, bimodal: bool = False):
         """The fit if it is a road the car can follow, else None."""
         if fitted is None:
             return None
         s = self.settings
         (_c0, _c2, left, right), kept, rms = fitted
+        support = .35 if bimodal else s.support
+        max_rms = .65 * s.max_residual if bimodal else s.max_residual
         seen_right = sum(1 for run in runs if run[4])
-        if seen_right >= s.side_points and kept[1] < s.support * seen_right:
+        if seen_right >= s.side_points and kept[1] < support * seen_right:
             # Most of what the scan found on the right is not where this road has its edge: the previous
             # picture's road is being stretched over a few stray points while the real edge is elsewhere.
             return None
+        if bimodal and kept[1] < s.side_points:
+            return None
         right_known = kept[1] >= s.min_points or (self.edge_distance is not None and kept[0] >= s.min_points)
-        if rms > s.max_residual or not right_known or right <= left:
+        if rms > max_rms or not right_known or right <= left:
             return None
         if len(self.starts) < s.start_pictures and (kept[1] < s.min_points + 1 or right <= 0):
             return None  # the reference distance has to come from a right edge that is plainly there
@@ -304,6 +394,9 @@ class RoadFinder:
             # The edges are not where the last picture's road says. Where a lane line ends and a wall begins the
             # edge really does jump: look again without the guidance of the previous road.
             fitted = self._accept(self.fit(runs, gated=False), runs, fresh=True)
+        if fitted is None and runs and not starting:
+            # When glare splits scanlines across the lane line and an outer curb, isolate the coherent line.
+            fitted = self._accept(self._consensus_fit(runs, width), runs, fresh=True, bimodal=True)
         if fitted is None:
             self.misses += 1
             self.steady_run = 0
