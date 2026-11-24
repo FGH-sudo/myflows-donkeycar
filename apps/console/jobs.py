@@ -198,11 +198,15 @@ class JobManager:
             self._save(job)
             proc = self._procs.get(job_id)
         pid = job.get("pid")
+        children: list[psutil.Process] = []
         if pid and pid > 0:
             try:
-                self._descendants[job_id] = psutil.Process(pid).children(recursive=True)
+                children = psutil.Process(pid).children(recursive=True)
             except (psutil.NoSuchProcess, psutil.AccessDenied):
-                self._descendants[job_id] = []
+                children = []
+            with self._lock:
+                if job["status"] == "stopping":
+                    self._descendants[job_id] = list(children)
         stop_file = job.get("stop_file")
         if stop_file:
             Path(stop_file).parent.mkdir(parents=True, exist_ok=True)
@@ -216,7 +220,7 @@ class JobManager:
                 except (OSError, AttributeError):
                     delivered = False
             if not delivered:
-                threading.Thread(target=kill_tree, args=(pid,), kwargs={"descendants": self._descendants.get(job_id)},
+                threading.Thread(target=kill_tree, args=(pid,), kwargs={"descendants": list(children)},
                                  daemon=True).start()
         return dict(job)
 

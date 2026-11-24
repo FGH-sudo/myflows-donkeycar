@@ -304,7 +304,7 @@ class JobManagerTest(unittest.TestCase):
         self.assertIsNone(manager.get(third["id"])["pid"])
 
     def test_stop_signals_process_tree(self):
-        manager = self.manager()
+        manager = self.manager(stop_grace_s=1.0)
         child = "import subprocess, sys, time; subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)']); time.sleep(60)"
         job = manager.submit(job_type="distributed", label="long", task="t", command=_py(child))
         root = psutil.Process(manager.get(job["id"])["pid"])

@@ -1129,6 +1129,7 @@ def _train_rank(plan: TrainPlan, rank, sync, device, profiler) -> dict:
             manager.probe = linear_probe(model, x_var, plan.dataset, _load_training_sample)
             transfer["probe"] = manager.probe
     cached_train = None
+    cached_val = None
     cache_info = None
     if args.feature_cache:
         if manager is None or sync is not None or args.augment or args.mixup or args.cutmix:
@@ -1142,6 +1143,11 @@ def _train_rank(plan: TrainPlan, rank, sync, device, profiler) -> dict:
                            "input_norm": getattr(model, "input_norm", None)})
         cached_train = {tuple(sample): (cache_arrays["train"][i], np.asarray(sample[1:3], dtype=dtype))
                         for i, sample in enumerate(plan.dataset)}
+        if plan.val_dataset and "val" in cache_arrays and len(cache_arrays["val"]) == len(plan.val_dataset):
+            cached_val = [
+                (cache_arrays["val"][i], np.asarray(sample[1:3], dtype=dtype))
+                for i, sample in enumerate(plan.val_dataset)
+            ]
         x_var = ms.Variable(np.zeros((batch, cache_arrays["train"].shape[1]), dtype=dtype), name="features", requires_grad=False)
         logits = model.forward_head(x_var)
         loss_node = ms.MSELoss(logits, y_var, name="loss")
@@ -1271,17 +1277,23 @@ def _train_rank(plan: TrainPlan, rank, sync, device, profiler) -> dict:
             return None, None, 0
         squared, angle_abs, count = 0.0, 0.0, 0
         model.eval()
-        loader = MultiprocessDataLoader(plan.val_dataset[rank::world], batch, num_workers=0, shuffle=False,
-                                        load_fn=_load_training_sample)
+        if cached_val is not None:
+            loader = MultiprocessDataLoader(cached_val[rank::world], batch, num_workers=0, shuffle=False,
+                                            load_fn=lambda sample: sample)
+            val_x, val_logits, val_graph = x_var, logits, graph
+        else:
+            loader = MultiprocessDataLoader(plan.val_dataset[rank::world], batch, num_workers=0, shuffle=False,
+                                            load_fn=_load_training_sample)
+            val_x, val_logits, val_graph = evaluation_x, evaluation_logits, evaluation_graph
         for x_items, y_items in loader:
             real = len(x_items)
             x_batch = np.asarray(x_items, dtype=dtype)
             y_batch = np.asarray(y_items, dtype=dtype).reshape(-1, 2)
             x_batch, y_batch = _pad_fixed_batch(x_batch, y_batch, batch)
-            evaluation_x.value = x_batch
+            val_x.value = x_batch
             y_var.value = y_batch
-            evaluation_graph.forward()
-            pred = np.asarray(asnumpy(evaluation_logits.value), dtype=np.float64)[:real]
+            val_graph.forward()
+            pred = np.asarray(asnumpy(val_logits.value), dtype=np.float64)[:real]
             target = y_batch[:real].astype(np.float64)
             squared += float(np.sum((pred - target) ** 2)) / 2.0
             angle_abs += float(np.sum(np.abs(pred[:, 0] - target[:, 0])))

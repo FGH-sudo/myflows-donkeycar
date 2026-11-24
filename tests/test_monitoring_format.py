@@ -1,10 +1,12 @@
 """New-format validation and real historical run compatibility across consumers."""
 
 import json
+import os
 from pathlib import Path
 import shutil
 import tempfile
 import unittest
+from unittest import mock
 
 from apps.autopilot.evidence import summarize_attempt
 from apps.autopilot.verifier import OnlineMonitor
@@ -58,6 +60,52 @@ class MonitoringFormatTest(unittest.TestCase):
             errors = check_run(root)["errors"]
             self.assertTrue(any("incomplete JSONL" in error for error in errors))
             self.assertTrue(any("environment" in error for error in errors))
+
+    def test_distributed_experiment_resources_uses_v1_and_respects_external_monitor(self):
+        from benchmark.distributed_experiment import Resources
+        from MyFlows.monitoring.schema import EXTERNAL_MONITOR_ENV
+
+        class _StubSampler:
+            backend_name = "stub"
+
+            def sample(self):
+                return {
+                    "backend": "stub",
+                    "monotonic_s": 1.0,
+                    "unix_s": 100.0,
+                    "status": "ok",
+                    "gpus": [{
+                        "index": 0, "name": "GPU0", "uuid": "gpu-0",
+                        "utilization_pct": 12.0, "memory_used_mib": 256.0, "memory_total_mib": 8192.0,
+                        "temperature_c": 45.0, "power_w": 18.0, "power_limit_w": 80.0,
+                        "processes": None, "missing": {"processes": "n/a"},
+                    }],
+                    "error": None,
+                }
+
+            def close(self):
+                pass
+
+        with tempfile.TemporaryDirectory() as tmp:
+            out_active = Path(tmp) / "active"
+            out_active.mkdir()
+            with mock.patch("benchmark.distributed_experiment.GpuSampler", return_value=_StubSampler()):
+                with Resources(out_active, enabled=True, interval_s=0.02) as res:
+                    import time
+                    deadline = time.monotonic() + 2.0
+                    while res._recorder.latest() is None and time.monotonic() < deadline:
+                        time.sleep(0.01)
+            rows = [json.loads(line) for line in (out_active / "resources.jsonl").read_text(encoding="utf-8").splitlines() if line]
+            self.assertGreaterEqual(len(rows), 1)
+            self.assertEqual(rows[0]["schema_version"], 1)
+            self.assertEqual(validate_record(rows[0], "resources"), [])
+
+            out_ext = Path(tmp) / "external"
+            out_ext.mkdir()
+            with mock.patch.dict(os.environ, {EXTERNAL_MONITOR_ENV: "1"}):
+                with Resources(out_ext, enabled=True, interval_s=0.02):
+                    pass
+            self.assertFalse((out_ext / "resources.jsonl").exists())
 
 
 if __name__ == "__main__":

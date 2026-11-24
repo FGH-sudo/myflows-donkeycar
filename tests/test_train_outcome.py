@@ -153,6 +153,44 @@ class TrainOutcomeTest(unittest.TestCase):
         checked = check_run(out / "run")
         self.assertTrue(checked["valid"], checked["errors"])
 
+    def test_feature_cache_reuses_val_split_and_matches_uncached_validation(self):
+        from MyFlows.core.device import asnumpy, get_device, set_device
+        from MyFlows.transfer.registry import PretrainedModelRegistry
+        import MyFlows as ms
+
+        prev_device = get_device()
+        prev_dtype = ms.set_default_dtype(np.float32)
+        stub = self.work / "resnet18_stub.npz"
+        try:
+            set_device("cpu")
+            model = PretrainedModelRegistry().build("resnet18", 2)
+            tensors = {}
+            for key, target, kind in model.torchvision_tensors():
+                if isinstance(target, tuple):
+                    arr = asnumpy(getattr(target[0], target[1]))
+                else:
+                    arr = asnumpy(target.value)
+                    if kind == "param_t":
+                        arr = np.ascontiguousarray(arr.T)
+                tensors[key] = arr.astype(np.float32, copy=False)
+            np.savez(stub, **tensors)
+        finally:
+            ms.set_default_dtype(prev_dtype)
+            set_device(prev_device)
+
+        common = (
+            "--arch", "resnet18", "--compat", "torchvision", "--pretrained", str(stub),
+            "--freeze-stages", "5", "--dtype", "float32", "--image-size", "32x32",
+            "--max-samples", "10", "--val-size", "2", "--test-size", "2",
+            "--epochs", "2", "--batch", "2", "--seed", "7", "--lr", "0.01",
+        )
+        _, plain = self.ok("fc-plain", *common)
+        _, cached = self.ok("fc-cache", *common, "--feature-cache")
+        self.assertFalse(cached["transfer"]["cache"]["hit"])
+        self.assertIn("val", cached["transfer"]["cache"]["splits"])
+        np.testing.assert_allclose(cached["metrics"]["val_loss"], plain["metrics"]["val_loss"], rtol=1e-5, atol=1e-5)
+        np.testing.assert_allclose(cached["metrics"]["val_angle_mae"], plain["metrics"]["val_angle_mae"], rtol=1e-5, atol=1e-5)
+
 
 class ClassifyTest(unittest.TestCase):
     def test_failure_kinds(self):

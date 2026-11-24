@@ -10,54 +10,47 @@ from pathlib import Path
 import platform
 import subprocess
 import sys
-import threading
-import time
 import traceback
 
 import numpy as np
-import psutil
 
 from apps.common.gpu_lock import GpuLock
 from benchmark.config_paths import resolve_config_paths
 from MyFlows.distributed.launcher import run_training
 from MyFlows.distributed.measurement import write_json
+from MyFlows.monitoring.gpu import GpuSampler, ResourceRecorder
+from MyFlows.monitoring.record import monitoring_enabled
 
 
 class Resources:
-    def __init__(self, out, enabled=True):
-        self.out, self.enabled = out, enabled
-        self.stop = threading.Event()
-        self.thread = threading.Thread(target=self.loop, daemon=True)
+    def __init__(self, out, enabled=True, interval_s=1.0):
+        self.out = Path(out)
+        self.interval_s = float(interval_s)
+        self.enabled = monitoring_enabled("auto" if enabled else "off", self.out)
+        self._sampler = None
+        self._recorder = None
 
     def __enter__(self):
         if self.enabled:
-            self.thread.start()
+            self._sampler = GpuSampler()
+            self._recorder = ResourceRecorder(
+                self._sampler,
+                interval_s=self.interval_s,
+                jsonl_path=self.out / "resources.jsonl",
+                root_pid=os.getpid(),
+                history=2,
+            ).start()
         return self
 
     def __exit__(self, *args):
-        self.stop.set()
-        if self.enabled:
-            self.thread.join(timeout=6)
-
-    def loop(self):
-        me = psutil.Process()
-        with (self.out / 'resources.jsonl').open('w', encoding='utf-8', buffering=1) as f:
-            while not self.stop.is_set():
-                row = {'monotonic_s': time.perf_counter(), 'cpu_utilization_pct': psutil.cpu_percent(),
-                       'ram_used_bytes': psutil.virtual_memory().used}
-                try:
-                    row['process_rss_bytes'] = {str(p.pid): p.memory_info().rss for p in [me]+me.children(recursive=True)
-                                                if p.is_running()}
-                    result = subprocess.run(['nvidia-smi', '--query-gpu=utilization.gpu,memory.used,temperature.gpu,power.draw',
-                                             '--format=csv,noheader,nounits'], capture_output=True, text=True, timeout=4,
-                                             creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
-                    fields = result.stdout.strip().splitlines()[0].split(',')
-                    row.update(zip(('gpu_utilization_pct','gpu_memory_mib','gpu_temperature_c','gpu_power_w'),
-                                   [float(v.strip()) for v in fields]))
-                except Exception as exc:
-                    row['sampling_error'] = str(exc)
-                f.write(json.dumps(row)+'\n')
-                self.stop.wait(1.)
+        try:
+            if self._recorder is not None:
+                self._recorder.stop(timeout=6.0)
+                self._recorder = None
+        finally:
+            if self._sampler is not None:
+                self._sampler.close()
+                self._sampler = None
 
 
 def git(*args):

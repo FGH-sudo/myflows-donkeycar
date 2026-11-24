@@ -239,8 +239,15 @@ class WebPermissionColumnTest(HeadlessScenarioTest):
 
     def run_scenario(self, tool, arguments, *, profile_env=None):
         # The Web profile's tool server offers every tool, so the guard is what decides.
-        return super().run_scenario(tool, arguments,
-                                    profile_env={**(profile_env or {}), "MYFLOWS_AUTOPILOT_SOURCE": "llm:web"})
+        return super().run_scenario(
+            tool,
+            arguments,
+            profile_env={
+                **(profile_env or {}),
+                "MYFLOWS_AUTOPILOT_SOURCE": "llm:web",
+                "MYFLOWS_AUTOPILOT_TOKEN": self.host.token,
+            },
+        )
 
     # The headless scenarios are not repeated under this profile.
     test_both_profiles_compose_as_designed = None

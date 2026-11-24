@@ -67,6 +67,18 @@ class StageThreeGateTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             violations(ratios,rows)
 
+    def test_operator_ratios_gate(self):
+        ratios = {name: 1.0 for name, *_ in CONFIGS}
+        rows = [dict(model=model, part=part, layout=layout, m=4, n=3, k=2, register_ms=1.0, cublas_ms=1.0)
+                for model in ("w16", "w64") for part, layout in (("forward", "NT"), ("dW", "TN"), ("dX", "NN"))]
+        self.assertEqual(violations(ratios, rows, operator_ratios={"conv:forward": 1.15}), [])
+        failed = violations(ratios, rows, operator_ratios={"conv:forward": 1.16})
+        self.assertEqual(len(failed), 1)
+        self.assertIn("conv:forward operator", failed[0])
+        for bad in ({}, {"conv:forward": float("nan")}, {"conv:forward": 0.0}, {"conv:forward": True}):
+            with self.assertRaises(ValueError):
+                violations(ratios, rows, operator_ratios=bad)
+
     def test_sanitizer_requires_tests_and_an_explicit_clean_tool_summary(self):
         log="Ran 22 tests in 1.5s\n\nOK\n"
         self.assertTrue(parse_result("memcheck",log,"ERROR SUMMARY: 0 errors",0)["passed"])

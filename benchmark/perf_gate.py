@@ -15,6 +15,7 @@ from benchmark.resnet_before_after import _import
 
 STEP_LIMIT = 1.10
 GEMM_LIMIT = 1.20
+OPERATOR_LIMIT = 1.15
 
 
 def gemm_ratio(row):
@@ -25,7 +26,7 @@ def gemm_ratio(row):
     return row[keys[0]] / row[keys[1]]
 
 
-def violations(step_ratios, gemm_rows):
+def violations(step_ratios, gemm_rows, operator_ratios=None):
     from benchmark.gemm_engines import GEMM_MODELS
 
     if set(step_ratios) != {name for name, *_ in CONFIGS} or not all(
@@ -39,6 +40,15 @@ def violations(step_ratios, gemm_rows):
     if len(keys) != len(gemm_rows):
         raise ValueError("duplicate GEMM shape within a measurement group")
     failed = [f"{name} step {ratio:.3f}×" for name, ratio in step_ratios.items() if ratio > STEP_LIMIT]
+    if operator_ratios is not None:
+        if not operator_ratios:
+            raise ValueError("expected at least one operator measurement")
+        for key, ratio in operator_ratios.items():
+            if isinstance(ratio, bool) or not isinstance(ratio, (int, float)) or not math.isfinite(ratio) or ratio <= 0.:
+                raise ValueError("operator ratios must be finite and positive")
+            if ratio > OPERATOR_LIMIT:
+                label = f"{key[0]} {key[1]}" if isinstance(key, tuple) else str(key)
+                failed.append(f"{label} operator {ratio:.3f}×")
     for row in gemm_rows:
         ratio = gemm_ratio(row)
         if ratio > GEMM_LIMIT:
@@ -95,8 +105,8 @@ def run_gate(args):
             raise RuntimeError("a GPU identity is required to select a performance baseline")
         gpu_key = hashlib.sha256(devices[0]["uuid"].encode()).hexdigest()[:16]
         protocol = {"rounds": args.rounds, "steps": args.steps, "warmup": args.warmup, "configs": CONFIGS,
-                    "step_limit": STEP_LIMIT, "gemm_limit": GEMM_LIMIT, "gemm_timer": args.gemm_timer,
-                    "gemm_reps": args.gemm_reps}
+                    "step_limit": STEP_LIMIT, "operator_limit": OPERATOR_LIMIT, "gemm_limit": GEMM_LIMIT,
+                    "gemm_timer": args.gemm_timer, "gemm_reps": args.gemm_reps}
         archive = args.baselines/gpu_key/states["baseline"]["code_hash"]/out.name
         archive.mkdir(parents=True, exist_ok=False)
         write_json(out/"manifest.json", {"schema_version": 1, "environment": environment(), "trees": states,
@@ -132,12 +142,15 @@ def run_gate(args):
         ratios[name] = b/a
         lines.append(f"| {name} | {a:.3f} ± {statistics.stdev(groups[0]):.3f} | "
                      f"{b:.3f} ± {statistics.stdev(groups[1]):.3f} | {b/a:.3f} | {STEP_LIMIT:.2f} |")
-    lines += ["", "| 单算子 | 阶段 | 基线 ms | 当前 ms | 比值 |", "| --- | --- | ---: | ---: | ---: |"]
+    lines += ["", "| 单算子 | 阶段 | 基线 ms | 当前 ms | 比值 | 门槛 |", "| --- | --- | ---: | ---: | ---: | ---: |"]
+    operator_ratios = {}
     for case, phase in sorted({(r["case"], r["phase"]) for r in operators}):
         a, b = [med(r["median_ms"] for r in operators if r["side"] == side and r["case"] == case and r["phase"] == phase)
                 for side in trees]
-        lines.append(f"| {case} | {phase} | {a:.4f} | {b:.4f} | {b/a:.3f} |")
-    failed = violations(ratios, gemms)
+        ratio = b / a
+        operator_ratios[f"{case}:{phase}"] = ratio
+        lines.append(f"| {case} | {phase} | {a:.4f} | {b:.4f} | {ratio:.3f} | {OPERATOR_LIMIT:.2f} |")
+    failed = violations(ratios, gemms, operator_ratios=operator_ratios)
     if args.gemm_timer == "ncu":
         method = (f"在 Nsight Compute 下比较 register 与 cuBLAS：GPC 时钟锁定在基频（实测 SM {gemm_meta['sm_ghz_median']:.3f} GHz），"
                   f"每个 kernel 前清空缓存，每次调用的 GEMM 与 split-K 归约 kernel 按 NVTX 区间求和，两引擎交替 "
@@ -155,8 +168,9 @@ def run_gate(args):
     lines += ["", "## 超限项目", ""]
     lines += [f"- {v}" for v in failed] if failed else ["无。"]
     lines += ["", "原始比较在本目录的 steps.json、operators.json、gemms.json，本机基线按 GPU 标识和代码哈希保存。"]
-    write_json(out/"result.json", {"passed": not failed, "step_ratios": ratios, "gemm_count": len(gemms),
-                                   "gemm_weighted_ratio": weighted, "gemm_timer": args.gemm_timer, "gemm": gemm_meta,
+    write_json(out/"result.json", {"passed": not failed, "step_ratios": ratios, "operator_ratios": operator_ratios,
+                                   "gemm_count": len(gemms), "gemm_weighted_ratio": weighted,
+                                   "gemm_timer": args.gemm_timer, "gemm": gemm_meta,
                                    "violations": failed, "baseline": str(archive)})
     (out/"report.md").write_text("\n".join(lines)+"\n", encoding="utf-8")
     return int(bool(failed))
