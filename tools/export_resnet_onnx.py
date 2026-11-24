@@ -26,8 +26,9 @@ def _checkpoint_stem(path: Path) -> Path:
     return path
 
 
-def _default_output_path(checkpoint: Path, batch_size: int) -> Path:
-    return checkpoint.with_name(f"{checkpoint.name}_b{int(batch_size)}.onnx")
+def _default_output_path(checkpoint: Path, batch_size: int, *, dynamic_batch: bool = False) -> Path:
+    suffix = "_dynamic.onnx" if dynamic_batch else f"_b{int(batch_size)}.onnx"
+    return checkpoint.with_name(f"{checkpoint.name}{suffix}")
 
 
 def _resolve_repo_path(path: str | Path) -> Path:
@@ -49,6 +50,7 @@ def export_resnet_onnx(
     regression_head: str = "global",
     arch: str = "resnet18",
     roi_crop: str | tuple[int, int, int, int] | None = None,
+    dynamic_batch: bool = False,
 ) -> Path:
     """Load a MyFlows BasicBlock ResNet checkpoint and export its inference graph."""
     checkpoint_path = _checkpoint_stem(_resolve_repo_path(checkpoint).resolve())
@@ -63,7 +65,11 @@ def export_resnet_onnx(
     image_w = int(image_w)
     image_h = int(image_h)
 
-    output_path = _resolve_repo_path(output).resolve() if output else _default_output_path(checkpoint_path, batch_size)
+    output_path = (
+        _resolve_repo_path(output).resolve()
+        if output
+        else _default_output_path(checkpoint_path, batch_size, dynamic_batch=bool(dynamic_batch))
+    )
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
     resolved_device = resolve_myflows_device(device)
@@ -87,7 +93,11 @@ def export_resnet_onnx(
 
     crop = parse_roi_crop(roi_crop)
     crop_str = format_roi_crop(crop)
-    export_kwargs = {"metadata": {"myflows.roi_crop": crop_str}} if crop_str else {}
+    export_kwargs = {}
+    if crop_str:
+        export_kwargs["metadata"] = {"myflows.roi_crop": crop_str}
+    if dynamic_batch:
+        export_kwargs["dynamic_batch"] = True
     graph = ms.Graph(logits, optimize=bool(graph_opt))
     graph.forward()
     exported = ms.export_onnx(
@@ -114,6 +124,7 @@ def export_vgg11_onnx(
     device: str = "auto",
     graph_opt: bool = True,
     roi_crop: str | tuple[int, int, int, int] | None = None,
+    dynamic_batch: bool = False,
 ) -> Path:
     """Load a VGG-11 Donkey regression checkpoint and export an ONNX graph for deployment."""
     checkpoint_path = _checkpoint_stem(_resolve_repo_path(checkpoint).resolve())
@@ -128,7 +139,11 @@ def export_vgg11_onnx(
     image_w = int(image_w)
     image_h = int(image_h)
 
-    output_path = _resolve_repo_path(output).resolve() if output else _default_output_path(checkpoint_path, batch_size)
+    output_path = (
+        _resolve_repo_path(output).resolve()
+        if output
+        else _default_output_path(checkpoint_path, batch_size, dynamic_batch=bool(dynamic_batch))
+    )
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
     resolved_device = resolve_myflows_device(device)
@@ -151,7 +166,11 @@ def export_vgg11_onnx(
 
     crop = parse_roi_crop(roi_crop)
     crop_str = format_roi_crop(crop)
-    export_kwargs = {"metadata": {"myflows.roi_crop": crop_str}} if crop_str else {}
+    export_kwargs = {}
+    if crop_str:
+        export_kwargs["metadata"] = {"myflows.roi_crop": crop_str}
+    if dynamic_batch:
+        export_kwargs["dynamic_batch"] = True
     graph = ms.Graph(control, optimize=bool(graph_opt))
     graph.forward()
     exported = ms.export_onnx(
@@ -190,9 +209,11 @@ def main() -> None:
     parser.add_argument("--regression-head", choices=("global", "spatial"), default="global")
     parser.add_argument("--device", choices=("auto", "cpu", "cuda"), default="auto")
     parser.add_argument("--no-graph-opt", action="store_true", help="Disable graph optimization during export.")
+    parser.add_argument("--dynamic-batch", action="store_true", help="Export ONNX with symbolic batch dimension 'batch'.")
     args = parser.parse_args()
 
     try:
+        dyn_kwargs = {"dynamic_batch": True} if args.dynamic_batch else {}
         if args.model == "vgg11":
             exported = export_vgg11_onnx(
                 args.checkpoint,
@@ -203,6 +224,7 @@ def main() -> None:
                 device=args.device,
                 graph_opt=not args.no_graph_opt,
                 roi_crop=args.roi_crop,
+                **dyn_kwargs,
             )
         else:
             exported = export_resnet_onnx(
@@ -218,11 +240,13 @@ def main() -> None:
                 base_width=args.base_width,
                 regression_head=args.regression_head,
                 roi_crop=args.roi_crop,
+                **dyn_kwargs,
             )
     except (FileNotFoundError, ValueError) as exc:
         raise SystemExit(str(exc)) from exc
     print(f"Exported ONNX: {exported}")
-    print(f"Input shape: [{int(args.batch_size)}, 3, {int(args.image_h)}, {int(args.image_w)}]")
+    batch_label = "batch" if args.dynamic_batch else int(args.batch_size)
+    print(f"Input shape: [{batch_label}, 3, {int(args.image_h)}, {int(args.image_w)}]")
 
 
 if __name__ == "__main__":

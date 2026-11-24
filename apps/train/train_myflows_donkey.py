@@ -225,7 +225,7 @@ class _StepPhases:
 # the TrainingState fingerprint; --lr may differ on --resume-state (a rollback halves it) and is recorded.
 _NON_TRAJECTORY_ARGS = {
     "out", "best_out", "run_dir", "log_file", "stop_file", "resume", "resume_state", "state_every", "state_dir",
-    "keep_states", "checkpoint_every", "no_compress_checkpoints", "unique_run", "run_id", "export_onnx", "onnx_out", "no_tensorboard",
+    "keep_states", "checkpoint_every", "no_compress_checkpoints", "unique_run", "run_id", "export_onnx", "onnx_out", "onnx_dynamic_batch", "no_tensorboard",
     "save_png_plots", "summary_once", "check_shape", "check_content", "num_workers", "gpu_lock_timeout",
     "phase_timing_every", "sync_timeout", "worker_memory_mb", "epochs", "lr", "log_dir", "logdir", "plot_prefix",
     "split_out", "monitor", "monitor_interval_s", "nvtx", "nvtx_nodes", "profile_steps", "initial_validation", "transfer_probe",
@@ -360,6 +360,7 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--stop-file", type=str, default="mycar/logs/STOP_TRAINING", help="检测到该文件时保存断点并退出")
     ap.add_argument("--export-onnx", action="store_true", help="训练结束后导出 ONNX 推理图")
     ap.add_argument("--onnx-out", type=str, default=None, help="ONNX 输出路径，默认跟 --best-out 同名 .onnx")
+    ap.add_argument("--onnx-dynamic-batch", action="store_true", help="导出 ONNX 时将第 0 维设成动态符号 'batch'")
     ap.add_argument("--stem", type=str, default="cifar", choices=("cifar", "imagenet"), help="小分辨率建议 cifar")
     ap.add_argument("--regression-head", choices=("global", "spatial"), default="global",
                     help="ResNet 回归头：global 沿用全局平均；spatial 保留道路特征的空间位置")
@@ -1953,7 +1954,10 @@ def _export_onnx(args, plan: TrainPlan) -> None:
         return
     onnx_path = (ROOT / args.onnx_out).resolve() if args.onnx_out else best_base.with_suffix(".onnx")
     crop_str = format_roi_crop(plan.roi_crop)
+    dynamic_batch = bool(getattr(args, "onnx_dynamic_batch", False))
     export_kwargs = {"metadata": {"myflows.roi_crop": crop_str}} if crop_str else {}
+    if dynamic_batch:
+        export_kwargs["dynamic_batch"] = True
     if transfer:
         from MyFlows.core.device import get_device
         from MyFlows.core.dtype import get_default_dtype
@@ -1978,9 +1982,12 @@ def _export_onnx(args, plan: TrainPlan) -> None:
         finally:
             set_device(previous_device)
             ms.set_default_dtype(previous_dtype)
-        print(f"已导出 ONNX: {onnx_path} (batch=1)")
+        batch_desc = "dynamic batch" if dynamic_batch else "batch=1"
+        print(f"已导出 ONNX: {onnx_path} ({batch_desc})")
         return
     roi_kwargs = {"roi_crop": plan.roi_crop} if plan.roi_crop is not None else {}
+    if dynamic_batch:
+        roi_kwargs["dynamic_batch"] = True
     export_resnet_onnx(
         best_base,
         output=onnx_path,
@@ -1995,7 +2002,8 @@ def _export_onnx(args, plan: TrainPlan) -> None:
         arch=args.arch,
         **roi_kwargs,
     )
-    print(f"已导出 ONNX: {onnx_path} (batch=1)")
+    batch_desc = "dynamic batch" if dynamic_batch else "batch=1"
+    print(f"已导出 ONNX: {onnx_path} ({batch_desc})")
 
 
 if __name__ == "__main__":
