@@ -85,6 +85,8 @@ def default_spec(mode: str = "dev") -> dict:
         # E3: exact rollback from TrainingStates (saved every state_every steps) on NaN/divergence; OOM → batch/2
         "rollback": {"enabled": mode == "formal", "max_rollbacks": 2, "lr_factor": 0.5, "state_every": 100,
                      "oom_half_batch": True},
+        "closed_loop": {"enabled": False, "sim": "fake", "track": "lake", "speed_mph": 12.0, "seconds": 60.0,
+                        "device": "auto", "max_models": 2, "timeout_s": 600.0},
         "created_by": "user",
     }
 
@@ -327,6 +329,26 @@ def validate_spec(raw: dict, repo_root: Path) -> dict:
                                         minimum=0, maximum=5)
     rollback["lr_factor"] = _number(rollback.get("lr_factor", 0.5), "rollback.lr_factor", minimum=0.01, maximum=0.99)
     rollback["state_every"] = _number(rollback.get("state_every", 100), "rollback.state_every", kind=int, minimum=1)
+    closed_loop = spec["closed_loop"]
+    if type(closed_loop.get("enabled")) is not bool:
+        raise SpecError("closed_loop.enabled 必须是布尔值")
+    sim_val = closed_loop.get("sim")
+    if sim_val is not None:
+        if not isinstance(sim_val, str) or not sim_val.strip():
+            raise SpecError("closed_loop.sim 必须是非空字符串或 null")
+        closed_loop["sim"] = sim_val.strip()
+    if closed_loop.get("track", "lake") not in ("lake", "jungle"):
+        raise SpecError("closed_loop.track 只能是 lake 或 jungle")
+    closed_loop["track"] = closed_loop.get("track", "lake")
+    closed_loop["speed_mph"] = _number(closed_loop.get("speed_mph", 12.0), "closed_loop.speed_mph", minimum=0.1)
+    closed_loop["seconds"] = _number(closed_loop.get("seconds", 60.0), "closed_loop.seconds", minimum=0.5)
+    if closed_loop.get("device", "auto") not in ("auto", "cuda", "cpu"):
+        raise SpecError("closed_loop.device 只能是 auto、cuda 或 cpu")
+    closed_loop["device"] = closed_loop.get("device", "auto")
+    closed_loop["max_models"] = _number(
+        closed_loop.get("max_models", 2), "closed_loop.max_models", kind=int, minimum=1, maximum=10
+    )
+    closed_loop["timeout_s"] = _number(closed_loop.get("timeout_s", 600.0), "closed_loop.timeout_s", minimum=5.0)
     if spec["created_by"] not in ("user", "llm"):
         raise SpecError("created_by 只能是 user 或 llm")
     if not isinstance(spec.get("title") or "", str):

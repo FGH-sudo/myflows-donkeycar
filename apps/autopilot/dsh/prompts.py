@@ -47,6 +47,7 @@ def report_prompt(campaign_id: str) -> str:
         "然后用 write_note 写一段不超过 500 字的解读，标题为“LLM 解读”，内容包括：\n"
         "- 最好的配置与人工基线相比，差异是否超过基线 seed 间的标准差（不超过就明确说“未超越基线”）；\n"
         "- 诊断链的结论（例如数据读取瓶颈、吞吐变化）；\n"
+        "- 若已执行闭环仿真验证（get_campaign 的 closed_loop_evaluation），点评其通过情况与横向误差（mean_abs_cte、excursions）；\n"
         "- 下一步值得做的实验。\n"
         "不要提出新的 trial。"
     )

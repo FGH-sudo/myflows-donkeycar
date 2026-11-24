@@ -160,6 +160,10 @@ def main() -> None:
                   "transfer": transfer_record(args, behavior)}
         if failure is not None:
             result["metrics"] = {}
+        if scenario.get("write_fake_onnx") and args.best_out and failure is None:
+            best_path = Path(args.best_out)
+            best_path.parent.mkdir(parents=True, exist_ok=True)
+            best_path.with_suffix(".onnx").write_bytes(b"fake-onnx-model")
         outcome.write_result(run_dir, result)
         (run_dir / "results.json").write_text(json.dumps({"status": "passed" if failure is None else "failed"}),
                                               encoding="utf-8")

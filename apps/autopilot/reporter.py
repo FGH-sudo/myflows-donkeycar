@@ -145,6 +145,26 @@ def confirmation(ev) -> dict:
 
 
 def conclusion(ev, confirm: dict) -> str:
+    text = _conclusion_core(ev, confirm)
+    cl = ev.state.get("closed_loop_evaluation") or {}
+    groups = cl.get("groups") or {}
+    if groups:
+        parts = []
+        for g in ("best", "baseline"):
+            if g in groups:
+                item = groups[g]
+                status = "通过" if item.get("passed") else f"未通过（{item.get('termination') or item.get('status') or 'failed'}）"
+                parts.append(
+                    f"{'最佳候选' if g == 'best' else '基线'} {item.get('trial_id')}：{status}"
+                    + (f"，mean_abs_cte={_fmt(item.get('mean_abs_cte'))}，越界={item.get('excursions', '—')}"
+                       if item.get("mean_abs_cte") is not None else "")
+                )
+        if parts:
+            text += " 闭环仿真验证（" + "；".join(parts) + "）。"
+    return text
+
+
+def _conclusion_core(ev, confirm: dict) -> str:
     if not ev.valid("baseline"):
         return "人工基线没有有效结果，本 campaign 不能给出结论。"
     significant = [c for c in confirm["candidates"] if c["verdict"].startswith("显著")]
@@ -426,6 +446,29 @@ def write(ev, store, *, llm_events: list[dict] | None = None, specialists_status
                          f"{'、'.join(item['trials'])} | {values} | {_fmt(item.get('mean'))} |")
         for failure in test.get("failures") or []:
             lines.append(f"- 评估失败：{failure.get('key')}：{failure.get('error')}")
+        lines.append("")
+    closed_loop = state.get("closed_loop_evaluation")
+    if closed_loop:
+        lines += [
+            "### 闭环仿真验证（Closed-Loop）", "",
+            f"在 track=`{closed_loop.get('track')}`（sim=`{closed_loop.get('sim') or 'default'}`，"
+            f"目标速度 {_fmt(closed_loop.get('speed_mph'))} mph，限时 {_fmt(closed_loop.get('seconds'))} s）下验证代表模型：", "",
+            "| 配置 | trial | 通过 | 终止 | 存活时长 (s) | 距离 | 平均 |CTE| | 越界次数 | 推理 P50/P95 (ms) |",
+            "|---|---|---|---|---:|---:|---:|---:|---|",
+        ]
+        labels = {"baseline": "人工基线", "best": "最好的候选"}
+        for group, item in (closed_loop.get("groups") or {}).items():
+            p50 = item.get("inference_p50_ms")
+            p95 = item.get("inference_p95_ms")
+            lat = f"{_fmt(p50, 3)} / {_fmt(p95, 3)}" if p50 is not None and p95 is not None else "—"
+            lines.append(
+                f"| {labels.get(group, group)} | {item.get('trial_id')} | {'是' if item.get('passed') else '否'} | "
+                f"{item.get('termination') or item.get('status') or '—'} | {_fmt(item.get('survival_s'))} | "
+                f"{_fmt(item.get('distance_units'))} | {_fmt(item.get('mean_abs_cte'))} | "
+                f"{item.get('excursions') if item.get('excursions') is not None else '—'} | {lat} |"
+            )
+        for failure in closed_loop.get("failures") or []:
+            lines.append(f"- 闭环评估失败：{failure.get('group')} ({failure.get('trial_id')})：{failure.get('error')}")
         lines.append("")
     if figures:
         lines += ["## 7. 图表", ""] + [f"![{name}](figures/{name})" for name in figures] + [""]

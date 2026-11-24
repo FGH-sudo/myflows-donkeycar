@@ -13,9 +13,8 @@ import time
 
 import numpy as np
 
-from benchmark.resnet_before_after import _build, _import
+from benchmark._common import ROOT, build_resnet_workload as _build, import_tree as _import
 
-ROOT = Path(__file__).resolve().parents[1]
 CONFIGS = (("cifar-w64-b2", "cifar", 64, 2), ("cifar-w16-b16", "cifar", 16, 16),
            ("imagenet-w16-b128", "imagenet", 16, 128))
 

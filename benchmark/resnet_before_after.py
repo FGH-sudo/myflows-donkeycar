@@ -28,7 +28,8 @@ from pathlib import Path
 
 import numpy as np
 
-ROOT = Path(__file__).resolve().parents[1]
+from benchmark._common import ROOT, build_resnet_workload as _build, import_tree as _import
+
 SPEED_CONFIGS = (
     # name, stem, width, batch, bn, dtype, backend
     ("w16-frozen-bn", "imagenet", 16, 128, "frozen", "float32", "cuda_native_cublas"),
@@ -43,57 +44,6 @@ GRAD_CONFIGS = (
     ("cupy-fp32", "cuda", "float32", "cupy"),
     ("native-fp32", "cuda", "float32", "cuda_native_cublas"),
 )
-
-
-# ------------------------------------------------------------------------------------------------
-# Worker (imports MyFlows from --tree)
-# ------------------------------------------------------------------------------------------------
-def _import(tree):
-    sys.path.insert(0, str(Path(tree).resolve()))
-    import MyFlows as ms
-
-    if not Path(ms.__file__).resolve().is_relative_to(Path(tree).resolve()):
-        raise RuntimeError(f"imported {ms.__file__}, expected a module under {tree}")
-    return ms
-
-
-def _build(ms, args, device, dtype, backend):
-    from MyFlows.core.device import set_device, xp
-    from MyFlows.core.node import Variable
-    from MyFlows.layers.layer import Conv2D
-    from MyFlows.layers.resnet import BatchNorm2d
-    from MyFlows.ops.convolution import MaxPool2d_Op
-    from MyFlows.utils.initializers import make_initializer
-
-    set_device(device)
-    model = ms.ResNet18(in_channels=3, output_dim=2, stem=args.stem, base_width=args.width, name="resnet18",
-                        initializer=make_initializer("kaiming_normal", seed=0))
-    if backend in ("cuda_tf32", "cuda_fp16", "cuda_bf16"):
-        model.linear_backend = backend
-    forced = {"float32": np.float32, "float64": np.float64}.get(dtype)
-    for layer in model.sub_layers:
-        if isinstance(layer, Conv2D) and backend != "default":
-            layer.backend = backend
-        if isinstance(layer, BatchNorm2d) and forced is not None:
-            layer.running_mean = xp.asarray(layer.running_mean, dtype=forced)
-            layer.running_var = xp.asarray(layer.running_var, dtype=forced)
-    if forced is not None:
-        for node in model.params:
-            node.value = xp.asarray(node.value, dtype=forced)
-    shape = (args.batch, 3, args.height, args.width_px)
-    input_dtype = np.float64 if forced is np.float64 else np.float32  # apps/train feeds float32 images
-    try:
-        x = Variable(xp.zeros(shape, input_dtype), name="X", requires_grad=False)
-        y = Variable(xp.zeros((args.batch, 2), input_dtype), name="y", requires_grad=False)
-    except TypeError:  # the previous Variable has no requires_grad
-        x = Variable(xp.zeros(shape, input_dtype), name="X")
-        y = Variable(xp.zeros((args.batch, 2), input_dtype), name="y")
-    loss = ms.MSELoss(model(x), y)
-    graph = ms.Graph(loss, optimize=getattr(args, "graph_opt", False))
-    for node in graph.nodes:
-        if isinstance(node, MaxPool2d_Op) and backend != "default":
-            node.backend = backend
-    return model, x, y, loss, graph
 
 
 def worker_reference(args):

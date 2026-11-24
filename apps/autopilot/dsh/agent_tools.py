@@ -122,9 +122,10 @@ class AgentTools:
             "objective": c["objective"], "budget": c["budget"], "used": c["used"],
             "best": c.get("best"), "trials": c["trials"], "valid": c["valid"],
             "spec": {k: c["spec"].get(k) for k in ("task", "mode", "baseline", "fixed", "space", "strategy",
-                                                    "confirm", "specialists", "llm")},
+                                                    "confirm", "specialists", "llm", "closed_loop")},
             "phase_log": state.get("phase_log") or [], "noise": state.get("noise"),
             "adopted": state.get("adopted") or {}, "confirm_plan": state.get("confirm_plan"),
+            "closed_loop_evaluation": state.get("closed_loop_evaluation"),
             "pending": [{k: p.get(k) for k in ("id", "kind", "status", "source", "precheck")}
                         for p in state.get("pending") or []],
             "notes": [{"title": n.get("title"), "source": n.get("source"), "text": n.get("text", "")[:400]}

@@ -16,7 +16,8 @@ from pathlib import Path
 
 import numpy as np
 
-ROOT = Path(__file__).resolve().parents[1]
+from benchmark._common import ROOT, import_tree
+
 CONV = {"stride": (1, 1), "padding": (1, 1)}
 ADAM = {"lr": 1e-3, "beta1": 0.9, "beta2": 0.999, "eps": 1e-8, "steps": 10}
 
@@ -44,11 +45,7 @@ def fixture(seed=0):
 # Worker
 # ------------------------------------------------------------------------------------------------
 def worker(args):
-    sys.path.insert(0, str(Path(args.tree).resolve()))
-    import MyFlows
-
-    if not Path(MyFlows.__file__).resolve().is_relative_to(Path(args.tree).resolve()):
-        raise RuntimeError(f"imported {MyFlows.__file__} instead of {args.tree}")
+    MyFlows = import_tree(args.tree)
     from MyFlows.core.device import asnumpy, cuda_available, set_device, xp
     from MyFlows.core.graph import Graph
     from MyFlows.core.node import Variable

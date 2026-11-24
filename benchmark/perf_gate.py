@@ -10,8 +10,8 @@ import subprocess
 import sys
 from types import SimpleNamespace
 
+from benchmark._common import import_tree as _import, run_worker_json
 from benchmark.memory_study import CONFIGS, ROOT, run_case
-from benchmark.resnet_before_after import _import
 
 STEP_LIMIT = 1.10
 GEMM_LIMIT = 1.20
@@ -80,12 +80,13 @@ def gemm_worker(args):
 
 
 def measure_part(tree, args, part):
-    cmd = [sys.executable, "-X", "utf8", "-m", "benchmark.perf_gate", "--worker", part, "--tree", str(tree),
-           "--rounds", str(args.rounds), "--warmup", str(args.warmup), "--steps", str(args.steps)]
-    proc = subprocess.run(cmd, cwd=ROOT, capture_output=True, encoding="utf-8", errors="replace", timeout=1800)
-    if proc.returncode:
-        raise RuntimeError(proc.stdout[-1000:] + proc.stderr[-2000:])
-    return json.loads(proc.stdout.strip().splitlines()[-1])
+    return run_worker_json(
+        "benchmark.perf_gate",
+        ["--worker", part, "--tree", str(tree), "--rounds", str(args.rounds),
+         "--warmup", str(args.warmup), "--steps", str(args.steps)],
+        cwd=ROOT,
+        timeout=1800,
+    )
 
 
 def run_gate(args):

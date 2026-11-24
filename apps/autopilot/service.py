@@ -49,6 +49,7 @@ KEEP_TOP = 2
 # Scores kept models on the independent test set when the campaign's split has one (formal campaigns).
 LLM_EVENT_KINDS = ("llm_action", "llm_call", "llm_error", "llm_skip", "llm_disabled")
 EVAL_MODULE = "apps.train.evaluate_donkey"
+DRIVE_MODULE = "apps.sim.udacity_drive"
 EVAL_TIMEOUT_S = 3600.0
 
 
@@ -77,13 +78,14 @@ def initial_state() -> dict:
             "explore_proposed": False, "confirm_plan": None, "budget_used": {}, "best": None, "noise": None,
             "llm": {"session_id": None, "calls": 0, "tokens": 0, "failures": 0, "consecutive_failures": 0,
                     "disabled_reason": None, "decision_points": []},
-            "notes": [], "phase_log": [], "unavailable": {}, "test_eval_job_id": None}
+            "notes": [], "phase_log": [], "unavailable": {}, "test_eval_job_id": None,
+            "closed_loop_evaluation": None, "closed_loop_job_ids": {}}
 
 
 class AutoPilotService:
     def __init__(self, root: Path, *, jobs, repo_root: Path, python: str | None = None,
                  module: str = TRAIN_MODULE, poll_s: float = 1.0, advisor=None, record_environment: bool = True,
-                 eval_module: str = EVAL_MODULE):
+                 eval_module: str = EVAL_MODULE, drive_module: str = DRIVE_MODULE):
         self.root = Path(root)
         self.root.mkdir(parents=True, exist_ok=True)
         self.jobs = jobs
@@ -96,6 +98,7 @@ class AutoPilotService:
         self.advisor = advisor
         self.record_environment = record_environment
         self.eval_module = eval_module
+        self.drive_module = drive_module
         self._stores: dict[str, CampaignStore] = {}
         self._drivers: dict[str, threading.Thread] = {}
         self._lock = threading.RLock()
@@ -197,6 +200,7 @@ class AutoPilotService:
                 "pending": sum(1 for p in state.get("pending") or [] if p["status"] == "pending_confirmation"),
                 "llm": {"enabled": spec["llm"]["enabled"], "calls": state["llm"].get("calls", 0),
                         "disabled_reason": state["llm"].get("disabled_reason")},
+                "closed_loop_evaluation": state.get("closed_loop_evaluation"),
                 "stop_reason": state.get("stop_reason")}
 
     def get_campaign(self, cid: str) -> dict:
@@ -839,6 +843,184 @@ class AutoPilotService:
                     groups={g: v["mean"] for g, v in summary["groups"].items()}, failures=len(summary["failures"]))
         return True
 
+    def _select_closed_loop_candidates(self, ev: Evidence, limit: int) -> list[tuple[str, dict]]:
+        from .planner import Planner
+
+        planner = Planner(ev.spec)
+        valid = ev.valid()
+        baseline_trials = [t for t in valid if planner._is_baseline(t)]
+        other_trials = [t for t in ev.ranked() if not planner._is_baseline(t)]
+        selected: list[tuple[str, dict]] = []
+        seen_ids: set[str] = set()
+        if other_trials:
+            best_trial = other_trials[0]
+            selected.append(("best", best_trial))
+            seen_ids.add(best_trial["trial_id"])
+        if baseline_trials:
+            ordered = sorted(
+                baseline_trials,
+                key=lambda t: ev.objective(t) if ev.minimize else -ev.objective(t),
+            )
+            base_trial = ordered[0]
+            if base_trial["trial_id"] not in seen_ids:
+                selected.append(("baseline", base_trial))
+                seen_ids.add(base_trial["trial_id"])
+        for t in ev.ranked():
+            if len(selected) >= limit:
+                break
+            if t["trial_id"] not in seen_ids:
+                selected.append((f"rank-{len(selected) + 1}", t))
+                seen_ids.add(t["trial_id"])
+        return selected[:limit]
+
+    @staticmethod
+    def _resolve_trial_model(attempt_dir: Path) -> tuple[str | None, str | None]:
+        ckpt_dir = attempt_dir / "checkpoints"
+        onnx_candidates = sorted(ckpt_dir.glob("best*.onnx"))
+        if onnx_candidates:
+            dyn = [p for p in onnx_candidates if p.name.endswith("_dynamic.onnx")]
+            chosen = dyn[0] if dyn else onnx_candidates[0]
+            return str(chosen), None
+        best_stem = ckpt_dir / "best"
+        if best_stem.with_suffix(".json").is_file() and best_stem.with_suffix(".npz").is_file():
+            cfg = attempt_dir / "config.json"
+            return str(best_stem), (str(cfg) if cfg.is_file() else None)
+        return None, None
+
+    def _evaluate_closed_loop(self, store: CampaignStore, ev: Evidence) -> bool:
+        """Run optional closed-loop simulator checks on the winning candidate and baseline before pruning."""
+        cl = dict(ev.spec.get("closed_loop") or {})
+        selected = self._select_closed_loop_candidates(ev, int(cl.get("max_models", 2)))
+        if not selected:
+            return True
+
+        existing_ids = dict(store.load()["state"].get("closed_loop_job_ids") or {})
+        groups: dict[str, dict] = {}
+        failures: list[dict] = []
+        cl_root = store.report_dir / "closed-loop"
+
+        for group, trial in selected:
+            attempt = (trial.get("attempts") or [{}])[-1]
+            attempt_dir = Path(attempt.get("run_dir", ""))
+            model_path, cfg_path = self._resolve_trial_model(attempt_dir)
+            if not model_path:
+                err = f"{trial['trial_id']} 缺少可用模型产物（{attempt_dir / 'checkpoints'}）"
+                groups[group] = {"trial_id": trial["trial_id"], "group": group, "status": "failed",
+                                 "passed": False, "error": err,
+                                 "params": {k: v for k, v in effective_params(trial).items() if k != "seed"}}
+                failures.append({"group": group, "trial_id": trial["trial_id"], "error": err})
+                continue
+
+            item_dir = cl_root / f"{group}-{trial['trial_id']}"
+            drive_out = item_dir / "drive"
+            summary_path = drive_out / "summary.json"
+            existing_job_id = existing_ids.get(group)
+            job = self.jobs.get(existing_job_id) if existing_job_id else None
+            already_done = bool(existing_job_id and job is None and summary_path.is_file())
+
+            if not already_done:
+                if job is None:
+                    item_dir.mkdir(parents=True, exist_ok=True)
+                    cmd = [
+                        self.python, "-m", self.drive_module,
+                        "--model", model_path,
+                        "--speed", str(cl.get("speed_mph", 12.0)),
+                        "--seconds", str(cl.get("seconds", 60.0)),
+                        "--track", str(cl.get("track", "lake")),
+                        "--device", str(cl.get("device", "auto")),
+                        "--out", str(drive_out),
+                    ]
+                    if cl.get("sim"):
+                        cmd += ["--sim", str(cl["sim"])]
+                    if cfg_path:
+                        cmd += ["--config", cfg_path]
+                    job = self.jobs.submit(
+                        job_type="single",
+                        label=f"AutoPilot · {store.campaign_id} · 闭环验证 ({group})",
+                        task=ev.spec["task"],
+                        run_dir=item_dir,
+                        command=cmd,
+                        extra={"campaign_id": store.campaign_id, "record_resources": False},
+                    )
+                    existing_ids[group] = job["id"]
+                    store.update_state(
+                        lambda s, ids=dict(existing_ids): s.update(closed_loop_job_ids=ids)
+                    )
+                    store.event("closed_loop_eval", status="started", group=group,
+                                trial_id=trial["trial_id"], job_id=job["id"])
+                job_id = job["id"]
+                deadline = time.time() + float(cl.get("timeout_s", 600.0))
+                while time.time() < deadline and not self._closing.is_set():
+                    current = self.jobs.get(job_id)
+                    if current is None or current["status"] in ("succeeded", "failed", "cancelled"):
+                        break
+                    time.sleep(self.poll_s)
+                current = self.jobs.get(job_id)
+                if self._closing.is_set() and current is not None and current["status"] not in (
+                        "succeeded", "failed", "cancelled"):
+                    return False
+                if current is not None and current["status"] not in ("succeeded", "failed", "cancelled"):
+                    self.jobs.stop(job_id)
+            else:
+                job_id = existing_job_id
+
+            payload = read_json(summary_path) if summary_path.is_file() else None
+            if payload:
+                entry = {
+                    "trial_id": trial["trial_id"],
+                    "group": group,
+                    "params": {k: v for k, v in effective_params(trial).items() if k != "seed"},
+                    "model": model_path,
+                    "job_id": job_id,
+                    "status": payload.get("status"),
+                    "passed": bool(payload.get("passed")),
+                    "termination": payload.get("termination"),
+                    "survival_s": payload.get("survival_s"),
+                    "distance_units": payload.get("distance_units"),
+                    "mean_abs_cte": payload.get("mean_abs_cte"),
+                    "max_abs_cte": payload.get("max_abs_cte"),
+                    "excursions": payload.get("excursions"),
+                    "cte_coverage": payload.get("cte_coverage"),
+                    "inference_p50_ms": payload.get("inference_p50_ms"),
+                    "inference_p95_ms": payload.get("inference_p95_ms"),
+                    "environment": payload.get("environment"),
+                    "error": payload.get("error"),
+                    "summary_path": str(summary_path),
+                }
+            else:
+                cur = self.jobs.get(job_id) or {}
+                err = cur.get("error") or f"闭环验证未生成 summary.json（job={job_id}, status={cur.get('status')}）"
+                entry = {
+                    "trial_id": trial["trial_id"],
+                    "group": group,
+                    "params": {k: v for k, v in effective_params(trial).items() if k != "seed"},
+                    "model": model_path,
+                    "job_id": job_id,
+                    "status": "failed",
+                    "passed": False,
+                    "error": err,
+                    "summary_path": str(summary_path),
+                }
+                failures.append({"group": group, "trial_id": trial["trial_id"], "error": err})
+            groups[group] = entry
+
+        summary = {
+            "track": cl.get("track", "lake"),
+            "sim": cl.get("sim"),
+            "speed_mph": cl.get("speed_mph", 12.0),
+            "seconds": cl.get("seconds", 60.0),
+            "groups": groups,
+            "failures": failures,
+        }
+        store.update_state(lambda s: s.update(closed_loop_evaluation=summary, closed_loop_job_ids={}))
+        store.event(
+            "closed_loop_eval",
+            status="done" if not failures else "partial",
+            groups={g: {"passed": v.get("passed"), "mean_abs_cte": v.get("mean_abs_cte")} for g, v in groups.items()},
+            failures=len(failures),
+        )
+        return True
+
     @staticmethod
     def _paging_share(attempt: dict) -> float | None:
         """The attempt's GPU memory share when it is high enough to explain a hang by paging, else None."""
@@ -903,6 +1085,12 @@ class AutoPilotService:
         if status == "completed" and ((doc["state"].get("provenance") or {}).get("split") or {}).get("test_count"):
             if doc["state"].get("test_evaluation") is None:
                 if not self._evaluate_test_set(store, ev):
+                    return
+                doc = store.load()
+                ev = self._evidence(store, doc)
+        if status == "completed" and (doc["spec"].get("closed_loop") or {}).get("enabled"):
+            if doc["state"].get("closed_loop_evaluation") is None:
+                if not self._evaluate_closed_loop(store, ev):
                     return
                 doc = store.load()
                 ev = self._evidence(store, doc)

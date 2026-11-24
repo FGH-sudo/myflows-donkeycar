@@ -35,18 +35,18 @@
 - 单机同步 Parameter Server（Socket JSON / gRPC）与 Ring AllReduce（gRPC），1/2/4 个 GPU Worker 共享单卡；数值等价、状态恢复、故障注入与通信量检查。
 - 分布式实验中的资源采样（nvidia-smi + psutil，约 1 秒一次）和 CUDA Event 阶段计时。
 - MyFlows/monitoring：NVML 优先、nvidia-smi 兜底的整卡 GPU 采样与后台记录器（JSONL）。
-- 正式训练的数据并行：`apps.train.train_myflows_donkey` 单进程与 PS / Ring 多 Worker 共用同一个训练循环；每步按样本数平均梯度与 BN 滑动统计量并核对各 Worker 状态一致，停止时所有 Worker 在同一步保存断点，可按断点中的 epoch 与 step 续训。
-- 训练控制台 apps/console：浏览器中查看全部历史/实时运行的 loss、阶段耗时、GPU 占用、PS/Ring 拓扑与 AutoPilot 状态，并能发起、排队和停止正式训练（单进程或 PS / Ring 数据并行）与分布式实验。
-- 模型与迁移学习：支持 `ResNet18` / `ResNet34`（含可选 `stem` 与 `base_width`）以及 `AlexNet` / `MobileNetV2` 等轻量或迁移模型，支持线性/MLP 回归头、预训练参数导入、分层冻结与 LoRA 微调。
-- AutoPilot 自动实验闭环（`apps/autopilot`）：围绕实验 Spec、GPU 锁与显存感知配置过滤、在线发散/OOM 监控、自动回退、证据归因与按模型/分辨率/回归头/精度隔离的经验记忆库驱动训练搜索。
-- DonkeyCar 与 Udacity 数据、评估与部署管线：覆盖视觉自动采集与数据集融合（`apps/collect`）、DonkeyCar 训练/验证与 ONNX 导出、TensorBoard 指标与资源曲线、Grad-CAM、INT8 量化、闭环驾驶评测（`apps/eval`）以及 FastAPI / gRPC 推理服务（`apps/serve`）。
-- 模拟器与本地环境：集成 DonkeySim 与 Udacity 模拟器启动及控制适配（按平台支持 Windows / Linux / macOS）。
+- **核心框架演进（路线 C 全部交付）**：提供自动注册的 `Module`/`Parameter`/`Buffer` 体系与 `state_dict` 检查点互通；支持第 0 维动态 `"batch"` ONNX 导出（`--dynamic-batch`/`--onnx-dynamic-batch`）；新增通用 `device_capabilities()` 与 `cc >= 8.0` `cp.async` autotune 守卫；手写融合 FP32 CUDA 深度可分离卷积 kernel 让 `MobileNetV2 (64×160, batch=32)` 降至 `50.9 ms/step` / `648.6 MiB` 显存池（较优化前提速 44.8×，并通过 `compute-sanitizer` `memcheck`/`racecheck`/`synccheck` 零错误零竞争验证）；支持多卡 `cuda:<rank>` 进程隔离、`--sync-bn` 跨卡 `SyncBatchNorm2d` 与共享 benchmark 底座 `benchmark/_common.py`。
+- **AutoPilot 与控制台演进（路线 A 全部交付）**：完善 TPE 搜索（含正则项与自适应范围）、精确断点回滚、`JobManager`/`RunRegistry`、SSE 实时日志、DSH 工具安全边界、NVML 监控以及可回归性能门槛 `benchmark/perf_gate.py`，并将仿真闭环验证（`closed_loop`）与 LLM 解读报告打通至 AutoPilot 全流程。
+- **DonkeyCar 与 Udacity 自动驾驶闭环（路线 B 全部交付）**：统一预处理/训练/导出/评测/驾驶链路 `roi_crop` 与 ONNX 元数据，新增 `HuberLoss`、`WeightedControlLoss`、`CosineWarmupScheduler` 与驾驶增强；`w24-recipe` 在保留测试集取得 `angle_mae = 0.012645`（符号准确率 `93.44%`），真实 Udacity 12 mph 360 s 闭环实跑 `excursions = 0`、`mean_abs_cte = 0.1361`，实时 FastAPI 60 s 服务闭环 `0.0465` CTE；完整实验记录见 [Route B 实验报告](docs/experiments/semester_2026_fall/route_b_driving/README.md)。
+- 正式训练的数据并行：`apps.train.train_myflows_donkey` 单进程与 PS / Ring 多 Worker 共用同一个训练循环；每步支持 `--sync-bn` 跨卡同步 BN 与样本加权平均，停止时所有 Worker 在同一步保存断点并支持续训。
+- 训练控制台 apps/console 与 AutoPilot 自动化实验闭环（`apps/autopilot`）：浏览器端支持排队管理与 SSE 实时监控，支持 GPU 锁与显存感知过滤、在线异常监控与精确回滚、经验记忆库与闭环仿真自动验收。
+- 模型与部署链路：支持 `ResNet18` / `ResNet34`（可选 `stem` / `base_width`）与 `AlexNet` / `MobileNetV2`、迁移冻结与 LoRA 微调，以及 DonkeySim / Udacity 模拟器控制与 `RoadFinder` 双峰一致性检测、FastAPI / gRPC / INT8 推理服务。
 
 ## 当前已知限制与后续重点
 
-- 当前数据并行主要围绕单机多进程共享单卡验证；`resnet34` 在 `socket_json` 传输下 `base_width` 限制为不超过 24，多机真实跨网部署尚未系统验证。
+- 当前分布式多卡仅在本机单张 RTX 4060 Laptop GPU（8 GB）上通过多进程与模拟多卡逻辑完成正确性验证；多物理 GPU 扩展效率与跨主机集群部署有待多卡设备实测。
+- `resnet34` 在 `socket_json` 传输下 `base_width` 限制为不超过 24，大模型分布式训练建议使用默认 `grpc_proto`。
 - Windows WDDM 驱动下无法读取单进程细粒度显存占用，控制台与监控以整卡显存及各 Worker 进程 RSS 为准。
-- AutoPilot、Console、分布式容错与安全边界的工程稳定性仍在按路线 A 持续加固；Udacity 自动驾驶闭环性能与数据闭环质量将按路线 B 重点推进。
 - 本学期不再把 VGG 作为训练、评估或模型对比方向。相关源码暂时保留，避免同时引入兼容性风险。
 
 ## 目录
@@ -101,7 +101,7 @@
 .venv/bin/python -m tools.run_tests --scope all
 ~~~
 
-第一阶段已修复原先偶发失败的图像分类用例；2026-09-19 分布式阶段交付时统一回归为 204 项通过，2026-09-23 加入训练控制台与 GPU 采样后为 229 项通过，2026-11-23 Stage 0 加固与统一回归后为 651 项全部通过（原生 CUDA `compute-sanitizer` 28 项零错误/零竞争通过）。
+第一阶段已修复原先偶发失败的图像分类用例；2026-09-19 分布式阶段交付时统一回归为 204 项通过，2026-09-23 加入训练控制台与 GPU 采样后为 229 项通过，2026-11-23 Stage 0 为 651 项全部通过；**2026-11-24 路线 A→B→C 全部交付后，`tools.run_tests --scope all` 统一全量回归为 717 项全部通过**（`706.593 s`，零失败、零跳过）。
 
 ## 当前有效入口
 
@@ -140,7 +140,7 @@ CUDA 原生后端会自动加速残差块中步长为 1、填充为 1 的 3×3 �
 .\.venv\Scripts\python.exe -m apps.train.train_myflows_donkey --distributed ring --workers 2 --batch 8 --max-samples 1000 --val-size 100 --epochs 2 --export-onnx --device cuda
 ~~~
 
-所有 Worker 共享本机一张 GPU，每个 Worker 的 CuPy 显存池默认上限为启动时空闲显存的 90% 除以 Worker 数（`--worker-memory-mb` 可改），超出时直接报显存不足。Socket JSON 每条消息有 64 MB 上限，只能用于 `--base-width 32` 及以下的模型。BN 前向用各 Worker 本地 batch 的统计量，所以多 Worker 结果与单进程不会逐位相同；1 个 Worker 时 PS、Ring 与单进程逐位一致（见 `tests/test_train_distributed.py`）。
+支持多卡 `cuda:<rank>` 进程隔离与跨卡同步 BN：默认 BN 前向使用各 Worker 本地 batch 统计量；加上 `--sync-bn` 可启用跨 Worker `SyncBatchNorm2d` 同步均值、方差与反向梯度。在单卡共享 GPU 时，每个 Worker 的 CuPy 显存池默认上限为启动时空闲显存的 90% 除以共享 Worker 数（`--worker-memory-mb` 可改），超出时直接报显存不足。Socket JSON 每条消息有 64 MB 上限，只适合 `--base-width 32` 及以下的模型；1 个 Worker 时 PS、Ring 与单进程逐位一致（见 `tests/test_train_distributed.py`）。
 
 评估现有 ONNX 模型：
 

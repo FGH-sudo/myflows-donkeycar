@@ -11,7 +11,7 @@ import time
 
 import numpy as np
 
-from benchmark.resnet_before_after import ROOT, _build, _import
+from benchmark._common import ROOT, build_resnet_workload as _build, import_tree as _import
 
 
 def measure(args):

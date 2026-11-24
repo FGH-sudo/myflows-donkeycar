@@ -78,8 +78,8 @@ from apps.train.common.checkpoints import (
 from apps.train.common.training_control import BestScore, EarlyStopping
 from apps.train.common.logging import TeeLogger
 from apps.train.common.regression_model import build_regression_resnet, input_size
-from MyFlows.core.device import asnumpy, cuda_available, set_device, xp
-from MyFlows.layers.resnet import BASIC_RESNETS
+from MyFlows.core.device import asnumpy, cuda_available, cuda_device_count, get_device_string, resolve_rank_device, set_device, xp
+from MyFlows.layers.resnet import BASIC_RESNETS, convert_sync_batchnorm
 from MyFlows.ops.precision import BACKENDS as PRECISION_BACKENDS, MIXED
 from MyFlows.data.pipeline import MultiprocessDataLoader
 from MyFlows.distributed.shards import split_global_batch
@@ -242,7 +242,7 @@ _LATER_DEFAULTS.update(regression_head="global")
 _LATER_DEFAULTS.update(
     roi_crop=None, lr_schedule="constant", warmup_epochs=0.0, min_lr=0.0,
     loss="mse", huber_delta=0.2, angle_weight=1.0, throttle_weight=1.0, turn_weight=0.0,
-    best_metric="val_loss", augment_preset="default",
+    best_metric="val_loss", augment_preset="default", sync_bn=False,
 )
 
 
@@ -417,6 +417,11 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--sync-timeout", type=float, default=300.0, help="分布式时等待其他 Worker 的最长秒数（含验证与保存断点）")
     ap.add_argument("--worker-memory-mb", type=int, default=0,
                     help="分布式时每个 Worker 的 GPU 显存池上限（MiB）；0=把启动时的空闲显存平分给各 Worker")
+    ap.add_argument(
+        "--sync-bn",
+        action="store_true",
+        help="分布式训练时启用跨 Worker 同步 BatchNorm 统计量与反向梯度（SyncBatchNorm2d）",
+    )
     ap.add_argument(
         "--logdir",
         type=str,
@@ -956,7 +961,7 @@ def _build_loss_node(args, logits, y_var):
 
 
 def _build_model(args, batch: int, h: int, w: int, dtype, conv_backend: str, dropout_seed: int | None = None,
-                 load_pretrained: bool = True):
+                 load_pretrained: bool = True, sync_bn_allreduce=None):
     """构图（批大小固定为 batch）。输入与标签不需要梯度：stem 卷积因此跳过 dX 的 GEMM 与 col2im。
 
     迁移训练（--arch / --pretrained）时按 torchvision 结构建模型，载入预训练主干、替换回归头并冻结前
@@ -1013,6 +1018,9 @@ def _build_model(args, batch: int, h: int, w: int, dtype, conv_backend: str, dro
         model = manager.model
         model.transfer_manager = manager
         model.transfer = {**transfer, **manager.result()}
+    if sync_bn_allreduce is not None:
+        _, converted = convert_sync_batchnorm(model, sync_bn_allreduce, sample_weighted=True)
+        model.sync_bn_converted = converted
     logits = model(x_var)
     loss_node = _build_loss_node(args, logits, y_var)
     graph = ms.Graph(loss_node, optimize=bool(args.graph_opt))
@@ -1084,6 +1092,9 @@ def _epoch_samples(dataset: list, epoch: int, shard_sizes: list, rank: int) -> l
 
 def train_rank(plan: TrainPlan, rank: int = 0, sync=None) -> dict:
     device = resolve_myflows_device(plan.args.device)
+    if sync is not None and device == "cuda":
+        set_device(resolve_rank_device(plan.args.device, rank))
+        device = "cuda"
     directory = Path(plan.run_dir or plan.log_dir)
     if rank:
         directory = directory / f"rank-{rank}"
@@ -1117,13 +1128,25 @@ def _train_rank(plan: TrainPlan, rank, sync, device, profiler) -> dict:
     ms.set_default_dtype(dtype)
     conv_backend = _resolve_conv_backend(args.conv_backend, device, dtype)
     if sync is not None and device == "cuda":
-        limit = _share_gpu_memory(world, args.worker_memory_mb)
-        say(f"GPU 显存: {world} 个 Worker 共享，每个 Worker 的显存池上限 {limit / 2**20:.0f} MiB")
+        per_gpu = max(1, math.ceil(world / max(1, cuda_device_count())))
+        if per_gpu > 1 or args.worker_memory_mb > 0:
+            limit = _share_gpu_memory(per_gpu, args.worker_memory_mb)
+            say(f"GPU 显存 ({get_device_string()}): {per_gpu} 个 Worker 共享当前卡，每个 Worker 显存池上限 {limit / 2**20:.0f} MiB")
+        else:
+            say(f"GPU 设备: rank {rank} 独占 {get_device_string()}")
     say(f"计算 dtype: {args.dtype}, 卷积后端: {conv_backend}")
 
     seeds = plan.seeds or derive_seeds(args.seed, world)
-    x_var, y_var, model, logits, loss_node, graph = _build_model(args, batch, h, w, dtype, conv_backend,
-                                                                 dropout_seed=seeds["dropout"][rank])
+    sync_bn_allreduce = None
+    if getattr(args, "sync_bn", False) and sync is not None:
+        from MyFlows.distributed.sync import make_sync_bn_allreduce
+
+        sync_bn_allreduce = make_sync_bn_allreduce(sync)
+        say("SyncBatchNorm2d 已启用：跨 Worker 同步前向均值/方差与反向梯度")
+    x_var, y_var, model, logits, loss_node, graph = _build_model(
+        args, batch, h, w, dtype, conv_backend,
+        dropout_seed=seeds["dropout"][rank], sync_bn_allreduce=sync_bn_allreduce,
+    )
     manager = getattr(model, "transfer_manager", None)
     opt = ms.Adam(graph, learning_rate=args.lr, param_groups=manager.parameter_groups() if manager else None)
     profiler.bind_graph(graph)

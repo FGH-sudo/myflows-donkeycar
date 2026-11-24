@@ -44,7 +44,8 @@ def wait_for(predicate, timeout: float = 60.0, interval: float = 0.05):
 
 
 class Harness:
-    def __init__(self, tmp: Path, scenario: dict | None = None, *, start: bool = True, stop_grace_s: float = 1.0):
+    def __init__(self, tmp: Path, scenario: dict | None = None, *, start: bool = True, stop_grace_s: float = 1.0,
+                 drive_module: str | None = None):
         self.tmp = Path(tmp)
         self.repo = self.tmp / "repo"
         if not (self.repo / "mycar" / "data").exists():
@@ -57,6 +58,7 @@ class Harness:
             "MYFLOWS_GPU_LOCK": str(self.lock_path), "FAKE_TRAIN_SCENARIO": str(self.scenario_path)})
         self.env.start()
         self.stop_grace_s = stop_grace_s
+        self.drive_module = drive_module
         self.jobs = None
         self.service = None
         if start:
@@ -68,9 +70,10 @@ class Harness:
     def start(self) -> AutoPilotService:
         self.jobs = JobManager(self.tmp / "console", self.repo, python=sys.executable, poll_interval_s=0.05,
                                stop_grace_s=self.stop_grace_s).start()
+        kwargs = {"drive_module": self.drive_module} if self.drive_module else {}
         self.service = AutoPilotService(self.tmp / "autopilot", jobs=self.jobs, repo_root=self.repo,
                                         python=sys.executable, module=FAKE_MODULE, poll_s=0.05,
-                                        record_environment=False, eval_module=FAKE_EVAL_MODULE).start()
+                                        record_environment=False, eval_module=FAKE_EVAL_MODULE, **kwargs).start()
         return self.service
 
     def restart(self) -> AutoPilotService:
